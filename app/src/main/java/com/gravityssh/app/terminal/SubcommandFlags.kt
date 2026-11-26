@@ -21,6 +21,13 @@ object SubcommandFlags {
     "df" to listOf(f("-h", "可读大小"), f("-Th", "含文件系统")),
     "du" to listOf(f("-sh", "总计大小"), f("-h --max-depth=1", "一级汇总")),
     "ps" to listOf(f("-ef", "完整格式"), f("-aux", "全部进程")),
+    "free" to listOf(
+      f("-h", "人类可读"),
+      f("-m", "MB显示"),
+      f("-g", "GB显示"),
+      f("-s 2", "每2秒刷新"),
+      f("-w", "宽输出")
+    ),
     "docker ps" to listOf(
       f("-a", "全部容器"),
       f("--format", "输出格式", true),
