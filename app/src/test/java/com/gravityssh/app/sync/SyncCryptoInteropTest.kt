@@ -5,6 +5,7 @@ import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
@@ -81,5 +82,19 @@ class SyncCryptoInteropTest {
         val blob = SyncCrypto.encryptBundle(input, code)
         val decoded = SyncCrypto.decryptBundle(blob.saltB64, blob.nonceB64, blob.ciphertextB64, code)
         assertEquals(input, decoded)
+    }
+
+    @Test
+    fun normalizeRelayUrlAndRawIpHost() {
+        assertEquals("", SyncConfig.normalizeRelayUrl("   "))
+        assertEquals("https://1.2.3.4:54843", SyncConfig.normalizeRelayUrl("1.2.3.4:54843"))
+        assertEquals("https://1.2.3.4:54843", SyncConfig.normalizeRelayUrl("https://1.2.3.4:54843/"))
+        assertEquals("https://sync.example.com", SyncConfig.normalizeRelayUrl("sync.example.com"))
+        assertEquals("https://sync.example.com:8443", SyncConfig.normalizeRelayUrl("sync.example.com:8443"))
+        assertTrue(SyncConfig.isRawIpHost("107.172.98.169"))
+        assertTrue(SyncConfig.isRawIpHost("[2001:db8::1]"))
+        assertFalse(SyncConfig.isRawIpHost("sync.example.com"))
+        val rejected = runCatching { SyncConfig.normalizeRelayUrl("http://1.2.3.4:54843") }.isFailure
+        assertTrue(rejected)
     }
 }
