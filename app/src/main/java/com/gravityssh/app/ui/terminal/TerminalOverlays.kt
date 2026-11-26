@@ -12,7 +12,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.gravityssh.app.model.CompletionItem
 import com.gravityssh.app.model.SessionTab
 import com.gravityssh.app.model.VaultData
 import com.gravityssh.app.terminal.CursorDir
@@ -67,19 +66,14 @@ internal fun TerminalSearchStrip(query: String, onQueryChange: (String) -> Unit)
 internal fun TerminalBottomAccessory(
     isAltScreen: Boolean,
     isNano: Boolean,
-    suggestions: List<CompletionItem>,
     ctrlActive: Boolean,
     altActive: Boolean,
-    onPickCompletion: (CompletionItem) -> Unit,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
     onSendArrow: (CursorDir) -> Unit,
     onSendControl: (Char) -> Unit,
     onSendSequence: (String) -> Unit
 ) {
-    if (!isAltScreen) {
-        AutocompleteBar(suggestions = suggestions, onPick = onPickCompletion)
-    }
     NanoQuickActionBar(visible = isNano || isAltScreen, onSendControl = onSendControl, onSendRaw = onSendSequence)
     HorizontalDivider(color = AgBorder)
     ExtraKeysBar(
