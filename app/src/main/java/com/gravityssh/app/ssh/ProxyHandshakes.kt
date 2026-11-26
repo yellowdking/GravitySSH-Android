@@ -1,0 +1,100 @@
+package com.gravityssh.app.ssh
+
+import com.gravityssh.app.model.ProxyConfig
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.Base64
+
+internal object ProxyHandshakes {
+
+    fun socks5(input: InputStream, out: OutputStream, proxy: ProxyConfig, targetHost: String, targetPort: Int) {
+        val hasAuth = proxy.username.isNotEmpty() || proxy.password.isNotEmpty()
+        out.write(if (hasAuth) byteArrayOf(0x05, 0x02, 0x00, 0x02) else byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+
+        val methodResp = readExact(input, 2)
+        if (methodResp[0].toInt() != 0x05) throw IOException("SOCKS5 协议版本错误")
+        when (methodResp[1].toInt() and 0xFF) {
+            0x00 -> Unit
+            0x02 -> {
+                val u = proxy.username.toByteArray(Charsets.UTF_8)
+                val p = proxy.password.toByteArray(Charsets.UTF_8)
+                if (u.size > 255 || p.size > 255) throw IOException("SOCKS5 凭据过长")
+                val authReq = ByteArray(3 + u.size + p.size)
+                authReq[0] = 0x01
+                authReq[1] = u.size.toByte()
+                System.arraycopy(u, 0, authReq, 2, u.size)
+                authReq[2 + u.size] = p.size.toByte()
+                System.arraycopy(p, 0, authReq, 3 + u.size, p.size)
+                out.write(authReq)
+                out.flush()
+                if (readExact(input, 2)[1].toInt() != 0x00) throw IOException("SOCKS5 代理鉴权失败")
+            }
+            else -> throw IOException("SOCKS5 代理拒绝认证方式")
+        }
+
+        val hostBytes = targetHost.toByteArray(Charsets.UTF_8)
+        if (hostBytes.size > 255) throw IOException("目标主机名过长")
+        val req = ByteArray(7 + hostBytes.size)
+        req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x03; req[4] = hostBytes.size.toByte()
+        System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
+        req[5 + hostBytes.size] = ((targetPort ushr 8) and 0xFF).toByte()
+        req[6 + hostBytes.size] = (targetPort and 0xFF).toByte()
+        out.write(req)
+        out.flush()
+
+        val head = readExact(input, 4)
+        if (head[1].toInt() != 0x00) throw IOException("SOCKS5 连接目标失败 (code=${head[1].toInt() and 0xFF})")
+        val addrLen = when (val atyp = head[3].toInt() and 0xFF) {
+            0x01 -> 4
+            0x03 -> readExact(input, 1)[0].toInt() and 0xFF
+            0x04 -> 16
+            else -> throw IOException("SOCKS5 未知地址类型: $atyp")
+        }
+        readExact(input, addrLen + 2)
+    }
+
+    fun httpConnect(input: InputStream, out: OutputStream, proxy: ProxyConfig, targetHost: String, targetPort: Int) {
+        val hostHeader = if (targetHost.contains(':')) "[$targetHost]:$targetPort" else "$targetHost:$targetPort"
+        val sb = StringBuilder()
+            .append("CONNECT $hostHeader HTTP/1.1\r\n")
+            .append("Host: $hostHeader\r\n")
+        if (proxy.username.isNotEmpty() || proxy.password.isNotEmpty()) {
+            val token = Base64.getEncoder()
+                .encodeToString("${proxy.username}:${proxy.password}".toByteArray(Charsets.UTF_8))
+            sb.append("Proxy-Authorization: Basic $token\r\n")
+        }
+        sb.append("Proxy-Connection: Keep-Alive\r\n\r\n")
+        out.write(sb.toString().toByteArray(Charsets.US_ASCII))
+        out.flush()
+
+        val statusLine = readAsciiLine(input)
+        if (!statusLine.startsWith("HTTP/") || !statusLine.contains(" 200")) {
+            throw IOException("HTTP 代理连接失败: $statusLine")
+        }
+        while (readAsciiLine(input).isNotEmpty()) { /* consume headers */ }
+    }
+
+    private fun readExact(input: InputStream, len: Int): ByteArray {
+        val buf = ByteArray(len)
+        var off = 0
+        while (off < len) {
+            val n = input.read(buf, off, len - off)
+            if (n < 0) throw IOException("代理连接意外关闭")
+            off += n
+        }
+        return buf
+    }
+
+    private fun readAsciiLine(input: InputStream): String {
+        val sb = StringBuilder()
+        while (sb.length < 4096) {
+            val b = input.read()
+            if (b < 0) throw IOException("HTTP 代理提前断开")
+            if (b == '\n'.code) break
+            if (b != '\r'.code) sb.append(b.toChar())
+        }
+        return sb.toString()
+    }
+}
