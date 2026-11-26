@@ -9,6 +9,7 @@ import com.gravityssh.app.model.PresetLoadResult
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.ssh.SshKeyGenerator
+import com.gravityssh.app.sync.SyncConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,9 +44,7 @@ fun AppViewModel.generateKey(type: String, name: String, comment: String, onDone
 fun AppViewModel.importKey(name: String, pem: String, passphrase: String, comment: String, onDone: () -> Unit) {
     viewModelScope.launch {
         runCatching {
-            withContext(Dispatchers.Default) {
-                SshKeyGenerator.importKey(name, pem, passphrase, comment)
-            }
+            withContext(Dispatchers.Default) { SshKeyGenerator.importKey(name, pem, passphrase, comment) }
         }.onSuccess { key ->
             container.vaultRepository.saveSshKey(key)
             showToast("已导入密钥 ${key.name}")
@@ -60,10 +59,8 @@ fun AppViewModel.deleteKey(id: String) {
         .onFailure { showToast("删除失败: ${it.message}") }
 }
 
-suspend fun AppViewModel.deployKey(key: SSHKeyRecord, targets: List<ServerConfig>): List<KeyDeployResult> {
-    val data = vaultState.value.data
-    return container.keyDeployer.deployToServers(key, targets, data.servers, data.sshKeys)
-}
+suspend fun AppViewModel.deployKey(key: SSHKeyRecord, targets: List<ServerConfig>): List<KeyDeployResult> =
+    vaultState.value.data.let { container.keyDeployer.deployToServers(key, targets, it.servers, it.sshKeys) }
 
 fun AppViewModel.saveShortcut(sc: CommandShortcut) {
     runCatching { container.vaultRepository.saveShortcut(sc) }
@@ -72,8 +69,7 @@ fun AppViewModel.saveShortcut(sc: CommandShortcut) {
 }
 
 fun AppViewModel.deleteShortcut(id: String) {
-    runCatching { container.vaultRepository.deleteShortcut(id) }
-        .onSuccess { showToast("已删除快捷命令") }
+    runCatching { container.vaultRepository.deleteShortcut(id) }.onSuccess { showToast("已删除快捷命令") }
 }
 
 fun AppViewModel.runShortcutInActive(sc: CommandShortcut): Boolean {
@@ -96,44 +92,46 @@ fun AppViewModel.saveTemplate(tpl: BuiltinTemplate) {
 }
 
 fun AppViewModel.deleteTemplate(id: String) {
-    runCatching { container.vaultRepository.deleteTemplate(id) }
-        .onSuccess { showToast("已删除运维模板") }
+    runCatching { container.vaultRepository.deleteTemplate(id) }.onSuccess { showToast("已删除运维模板") }
 }
 
 fun AppViewModel.loadPresetTemplates(): PresetLoadResult? =
     runCatching { container.vaultRepository.loadPresetTemplates() }
-        .onSuccess { res -> showToast("预置模板加载完成：新增 ${res.added} 项，跳过 ${res.skipped} 项") }
+        .onSuccess { showToast("预置模板加载完成：新增 ${it.added} 项，跳过 ${it.skipped} 项") }
         .onFailure { showToast("加载失败: ${it.message}") }
         .getOrNull()
 
 fun AppViewModel.clearHistory() {
-    runCatching { container.vaultRepository.clearHistory() }
-        .onSuccess { showToast("已清空命令历史") }
+    runCatching { container.vaultRepository.clearHistory() }.onSuccess { showToast("已清空命令历史") }
 }
 
 fun AppViewModel.updateSettings(transform: (AppSettings) -> AppSettings) {
-    runCatching { container.vaultRepository.updateSettings(transform) }
-        .onFailure { showToast("更新设置失败: ${it.message}") }
+    runCatching { container.vaultRepository.updateSettings(transform) }.onFailure { showToast("更新设置失败: ${it.message}") }
 }
 
 fun AppViewModel.cycleTouchCursorMode() {
-    val cur = vaultState.value.data.settings.touchCursorMode.lowercase()
-    val (next, label) = when (cur) {
-        "auto" -> "cursor" to "光标"
-        "cursor" -> "scroll" to "滚屏"
-        else -> "auto" to "自动"
+    val (next, label) = when (vaultState.value.data.settings.touchCursorMode.lowercase()) {
+        "auto" -> "cursor" to "光标"; "cursor" -> "scroll" to "滚屏"; else -> "auto" to "自动"
     }
-    updateSettings { it.copy(touchCursorMode = next) }
-    showToast("触控模式：$label")
+    updateSettings { it.copy(touchCursorMode = next) }; showToast("触控模式：$label")
 }
 
 fun AppViewModel.cycleTouchCursorSensitivity() {
-    val cur = vaultState.value.data.settings.touchCursorSensitivity.lowercase()
-    val (next, label) = when (cur) {
-        "precise" -> "balanced" to "标准"
-        "balanced" -> "fast" to "疾速"
-        else -> "precise" to "精细"
+    val (next, label) = when (vaultState.value.data.settings.touchCursorSensitivity.lowercase()) {
+        "precise" -> "balanced" to "标准"; "balanced" -> "fast" to "疾速"; else -> "precise" to "精细"
     }
-    updateSettings { it.copy(touchCursorSensitivity = next) }
-    showToast("光标灵敏度：$label")
+    updateSettings { it.copy(touchCursorSensitivity = next) }; showToast("光标灵敏度：$label")
+}
+
+fun AppViewModel.saveSyncRelayUrl(rawUrl: String) {
+    runCatching { SyncConfig.normalizeRelayUrl(rawUrl) }.onSuccess { norm ->
+        updateSettings { it.copy(syncRelayUrl = norm) }
+        showToast(if (norm.isEmpty()) "已恢复默认同步中继" else "已保存中继地址 $norm")
+    }.onFailure { showToast(it.message ?: "中继地址无效") }
+}
+
+fun AppViewModel.testSyncRelay(rawUrl: String, onResult: (Result<Long>) -> Unit) {
+    viewModelScope.launch {
+        onResult(runCatching { container.syncService.testRelay(rawUrl.trim().ifEmpty { null }) })
+    }
 }
