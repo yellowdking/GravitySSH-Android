@@ -40,7 +40,7 @@ fun TouchVelocityBadge(
       color = AgPanel.copy(0.88f),
       border = BorderStroke(1.dp, accent.copy(0.65f))
     ) {
-      Row(Modifier.padding(10.dp, 5.dp), Arrangement.spacedBy(6.dp), Alignment.CenterVertically) {
+      Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), Arrangement.spacedBy(6.dp), Alignment.CenterVertically) {
         Box(Modifier.size(6.dp).background(accent, CircleShape))
         Text(zoneLabel, color = AgText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
         Text(
@@ -140,7 +140,7 @@ fun NanoQuickActionBar(
   val haptic = LocalHapticFeedback.current
   AnimatedVisibility(visible, modifier, fadeIn() + expandVertically(), fadeOut() + shrinkVertically()) {
     Row(
-      Modifier.fillMaxWidth().background(AgSurface).horizontalScroll(rememberScrollState()).padding(6.dp, 4.dp),
+      Modifier.fillMaxWidth().background(AgSurface).horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 4.dp),
       Arrangement.spacedBy(5.dp),
       Alignment.CenterVertically
     ) {
