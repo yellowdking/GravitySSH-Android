@@ -24,9 +24,15 @@ class SyncService(
 
     private fun resolveRelayUrl(overrideUrl: String?): String {
         val candidate = overrideUrl?.trim().orEmpty()
-        if (candidate.isNotEmpty()) return candidate
+        if (candidate.isNotEmpty()) {
+            return SyncConfig.normalizeRelayUrl(candidate).ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
+        }
         val saved = vaultRepository.state.value.data.settings.syncRelayUrl.trim()
-        return saved.ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
+        return if (saved.isNotEmpty()) {
+            SyncConfig.normalizeRelayUrl(saved).ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
+        } else {
+            SyncConfig.DEFAULT_RELAY_URL
+        }
     }
 
     private fun deviceName(): String {
@@ -34,6 +40,9 @@ class SyncService(
         val model = Build.MODEL.orEmpty().trim()
         return listOf(mfg, model).filter { it.isNotEmpty() }.joinToString(" ").ifEmpty { "Android" }
     }
+
+    suspend fun testRelay(relayUrl: String? = null): Long =
+        relayClient.ping(resolveRelayUrl(relayUrl))
 
     suspend fun startSend(relayUrl: String? = null): SyncSendSession {
         val url = resolveRelayUrl(relayUrl)
