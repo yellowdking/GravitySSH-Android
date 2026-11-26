@@ -52,7 +52,7 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Rounded.QrCode2, null, tint = AgCyan, modifier = Modifier.size(28.dp))
                         Column {
-                            Text("多端安全同步 (Windows ↔ Android)", style = MaterialTheme.typography.titleMedium, color = AgText)
+                            Text("多端同步", style = MaterialTheme.typography.titleMedium, color = AgText)
                             Text("一次性同步码 / 二维码端到端加密迁移", style = MaterialTheme.typography.bodySmall, color = AgMuted)
                         }
                     }
