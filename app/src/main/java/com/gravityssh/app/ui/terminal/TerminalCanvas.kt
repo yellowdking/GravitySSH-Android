@@ -32,6 +32,7 @@ fun TerminalCanvas(
     fontSizeSp: Float,
     searchQuery: String,
     scrollOffset: Int,
+    autocomplete: FloatingAutocompleteState,
     onScrollOffsetChange: (Int) -> Unit,
     onFontSizeChange: (Float) -> Unit,
     onResize: (cols: Int, rows: Int) -> Unit,
@@ -55,12 +56,8 @@ fun TerminalCanvas(
     var lastRows by remember { mutableIntStateOf(0) }
 
     val fontSizePx = with(density) { fontSizeSp.coerceIn(10f, 22f).dp.toPx() * 1.05f }
-    val paint = remember(fontSizePx) {
-        Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE; textSize = fontSizePx; isSubpixelText = true }
-    }
-    val boldPaint = remember(fontSizePx) {
-        Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD); textSize = fontSizePx; isSubpixelText = true }
-    }
+    val paint = remember(fontSizePx) { Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE; textSize = fontSizePx; isSubpixelText = true } }
+    val boldPaint = remember(fontSizePx) { Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD); textSize = fontSizePx; isSubpixelText = true } }
     val cellW = remember(paint) { paint.measureText("M").coerceAtLeast(6f) }
     val fm = remember(paint) { paint.fontMetrics }
     val cellH = remember(fm) { (fm.descent - fm.ascent + 2f).coerceAtLeast(10f) }
@@ -88,36 +85,26 @@ fun TerminalCanvas(
         modifier = modifier.fillMaxSize().background(AgBg).onSizeChanged { canvasSize = it }
             .pointerInput(Unit) {
                 detectTerminalTouchGestures(
-                    density = density.density,
-                    getMode = { curMode },
-                    getIsAltScreen = { curCtrl.isAlternateScreen() },
-                    getCellW = { curCellW },
-                    getCellH = { curCellH },
-                    getFontSizeSp = { curFont },
-                    getScrollOffset = { curScroll },
-                    getScrollbackSize = { curScrollback },
-                    onCancelFling = { touchState.cancelFling() },
-                    onTapCell = { row, col ->
+                    density.density, { curMode }, { curCtrl.isAlternateScreen() },
+                    { curCellW }, { curCellH }, { curFont }, { curScroll }, { curScrollback },
+                    { touchState.cancelFling() },
+                    { row, col ->
                         touchState.handleTapCell(row, col, curMode, curCtrl)
-                        runCatching { focusRequester.requestFocus() }
-                        keyboard?.show()
+                        runCatching { focusRequester.requestFocus() }; keyboard?.show()
                     },
-                    onLongPressCopy = onLongPressCopy,
-                    onFontSizeChange = onFontSizeChange,
-                    onScrollOffsetChange = onScrollOffsetChange,
-                    onCursorDragStart = { touchState.handleDragStart() },
-                    onCursorDragDelta = { dx, dy, dt, _ ->
-                        touchState.handleDragDelta(dx, dy, dt, curCellW / density.density, curCellH / density.density, curCtrl)
-                    },
-                    onCursorDragEnd = { vx, vy, _ ->
-                        touchState.handleDragEnd(vx, vy, curCellW / density.density, curCellH / density.density, curFling, curCtrl)
-                    }
+                    onLongPressCopy, onFontSizeChange, onScrollOffsetChange,
+                    { touchState.handleDragStart() },
+                    { dx, dy, dt, _ -> touchState.handleDragDelta(dx, dy, dt, curCellW / density.density, curCellH / density.density, curCtrl) },
+                    { vx, vy, _ -> touchState.handleDragEnd(vx, vy, curCellW / density.density, curCellH / density.density, curFling, curCtrl) }
                 )
             }
     ) {
-        TerminalImeSink(focusRequester = focusRequester, onImeInput = onImeInput)
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        TerminalImeSink(focusRequester, onImeInput)
+        Canvas(Modifier.fillMaxSize()) {
             drawTerminalSnapshot(snapshot, paint, boldPaint, cellW, cellH, baselineOffset, scrollOffset, qLower, touchState.tapCell)
+        }
+        if (scrollOffset == 0) {
+            FloatingAutocompletePopup(autocomplete, snapshot.cursorRow, snapshot.cursorCol, cellW, cellH, canvasSize, density.density)
         }
         TouchVelocityBadge(
             visible = touchState.dragBadge != null,
