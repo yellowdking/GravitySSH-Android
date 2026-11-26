@@ -24,7 +24,14 @@ class SyncRelayClient(
     }
 
     private val pinnedClient: OkHttpClient by lazy { SyncTlsFactory.buildPinnedClient(pinnedSpkiSha256) }
+    private val selfSignedIpClient: OkHttpClient by lazy { SyncTlsFactory.buildSelfSignedIpClient() }
     private val standardClient: OkHttpClient by lazy { SyncTlsFactory.buildStandardClient() }
+
+    suspend fun ping(relayUrl: String): Long = withContext(Dispatchers.IO) {
+        val start = System.nanoTime()
+        executePost(relayUrl, "/v1/ping", "{}".toByteArray(Charsets.UTF_8), isPing = true)
+        ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(1L)
+    }
 
     suspend fun drop(relayUrl: String, req: DropRequest): DropResponse = withContext(Dispatchers.IO) {
         val body = json.encodeToString(req).toByteArray(Charsets.UTF_8)
@@ -44,10 +51,19 @@ class SyncRelayClient(
         Unit
     }
 
-    private fun executePost(relayUrl: String, path: String, rawBody: ByteArray): String {
-        val base = relayUrl.trim().trimEnd('/').ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
+    private fun executePost(
+        relayUrl: String,
+        path: String,
+        rawBody: ByteArray,
+        isPing: Boolean = false
+    ): String {
+        val base = SyncConfig.normalizeRelayUrl(relayUrl).ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
         val url = "$base$path".toHttpUrl()
-        val client = if ("${url.host}:${url.port}" == defaultHostPort) pinnedClient else standardClient
+        val client = when {
+            "${url.host}:${url.port}" == defaultHostPort -> pinnedClient
+            SyncConfig.isRawIpHost(url.host) -> selfSignedIpClient
+            else -> standardClient
+        }
 
         val ts = System.currentTimeMillis() / 1000L
         val sig = SyncCrypto.signAppGate(appGateKey, "POST", path, ts, rawBody)
@@ -63,7 +79,9 @@ class SyncRelayClient(
         client.newCall(request).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             when (resp.code) {
-                404 -> throw IOException("同步码不存在、已过期或已被使用")
+                404 -> throw IOException(
+                    if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
+                )
                 429 -> throw IOException("同步中继繁忙或请求过于频繁，请稍后重试")
                 409 -> throw IOException("同步通道冲突，请重新生成同步码")
             }
