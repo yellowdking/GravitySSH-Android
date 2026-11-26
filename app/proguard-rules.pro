@@ -1,0 +1,12 @@
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep class com.gravityssh.app.model.** { *; }
+-keep class kotlinx.serialization.** { *; }
+-keep class com.hierynomus.sshj.** { *; }
+-keep class net.schmizz.sshj.** { *; }
+-keep class net.i2p.crypto.eddsa.** { *; }
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.bouncycastle.**
+-dontwarn net.schmizz.**
+-dontwarn com.hierynomus.**
+-dontwarn javax.naming.**
+-dontwarn java.lang.management.**
