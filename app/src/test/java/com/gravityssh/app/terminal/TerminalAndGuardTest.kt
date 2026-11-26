@@ -64,7 +64,8 @@ class TerminalAndGuardTest {
             settings = AppSettings()
         )
         assertTrue(suggestions.isNotEmpty())
-        assertEquals("shortcut", suggestions.first().source)
+        assertTrue(suggestions.none { it.source == "shortcut" })
+        assertTrue(suggestions.first().insertText.startsWith("docker"))
 
         val edit = AutocompleteEngine.computeCompletionInsert("doc", "docker ps")
         assertEquals(0, edit.backspaces)
