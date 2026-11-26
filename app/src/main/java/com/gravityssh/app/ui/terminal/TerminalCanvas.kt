@@ -2,19 +2,16 @@ package com.gravityssh.app.ui.terminal
 
 import android.graphics.Paint
 import android.graphics.Typeface
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.compose.ui.*
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.*
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.*
 import com.gravityssh.app.terminal.*
 import com.gravityssh.app.ui.theme.AgBg
 import kotlin.math.floor
@@ -70,23 +67,18 @@ fun TerminalCanvas(
     }
   }
 
-  val sSnap by rememberUpdatedState(snapshot)
-  val sSel by rememberUpdatedState(selection)
-  val sMode by rememberUpdatedState(touchMode)
-  val sFling by rememberUpdatedState(touchFlingEnabled)
-  val sFont by rememberUpdatedState(fontSizeSp)
-  val sScroll by rememberUpdatedState(scrollOffset)
-  val sCW by rememberUpdatedState(cellW)
-  val sCH by rememberUpdatedState(cellH)
-  val sCtrl by rememberUpdatedState(controller)
-  val sOnSel by rememberUpdatedState(onSelectionChange)
-  val sOnFont by rememberUpdatedState(onFontSizeChange)
-  val sOnScroll by rememberUpdatedState(onScrollOffsetChange)
+  val sSnap by rememberUpdatedState(snapshot); val sSel by rememberUpdatedState(selection)
+  val sMode by rememberUpdatedState(touchMode); val sFling by rememberUpdatedState(touchFlingEnabled)
+  val sFont by rememberUpdatedState(fontSizeSp); val sScroll by rememberUpdatedState(scrollOffset)
+  val sCW by rememberUpdatedState(cellW); val sCH by rememberUpdatedState(cellH)
+  val sCtrl by rememberUpdatedState(controller); val sOnSel by rememberUpdatedState(onSelectionChange)
+  val sOnFont by rememberUpdatedState(onFontSizeChange); val sOnScroll by rememberUpdatedState(onScrollOffsetChange)
   val qLower = remember(searchQuery) { searchQuery.trim().lowercase() }
 
-  Box(
-    modifier = modifier.fillMaxSize().background(AgBg).onSizeChanged { canvasSize = it }
-      .pointerInput(Unit) {
+  Box(modifier.fillMaxSize().background(AgBg).onSizeChanged { canvasSize = it }) {
+    TerminalImeSink(focusReq, onImeInput)
+    Canvas(
+      Modifier.fillMaxSize().pointerInput(Unit) {
         detectTerminalTouchGestures(
           d, { sMode }, { sCtrl.isAlternateScreen() }, { sCW }, { sCH }, { sFont }, { sScroll }, { sSnap.scrollbackSize },
           { ts.cancelFling() },
@@ -101,14 +93,8 @@ fun TerminalCanvas(
           { vx, vy, _ -> ts.handleDragEnd(vx, vy, sCW / d, sCH / d, sFling, sCtrl) }
         )
       }
-  ) {
-    TerminalImeSink(focusReq, onImeInput)
-    Canvas(Modifier.fillMaxSize()) {
-      drawTerminalSnapshot(snapshot, paint, boldPaint, cellW, cellH, baseline, scrollOffset, qLower, ts.tapCell, selection)
-    }
-    if (scrollOffset == 0 && selection == null) {
-      FloatingAutocompletePopup(autocomplete, snapshot.cursorRow, snapshot.cursorCol, cellW, cellH, canvasSize, d)
-    }
+    ) { drawTerminalSnapshot(snapshot, paint, boldPaint, cellW, cellH, baseline, scrollOffset, qLower, ts.tapCell, selection) }
+    if (scrollOffset == 0 && selection == null) FloatingAutocompletePopup(autocomplete, snapshot.cursorRow, snapshot.cursorCol, cellW, cellH, canvasSize, d)
     selection?.let { sel ->
       SelectionActionToolbar(
         sel, cellW, cellH, canvasSize, d,
