@@ -1,141 +1,113 @@
 package com.gravityssh.app.ui.terminal
 
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.ui.input.pointer.AwaitPointerEventScope
-import androidx.compose.ui.input.pointer.PointerInputScope
-import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.foundation.gestures.*
+import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.input.pointer.util.VelocityTracker
-import com.gravityssh.app.terminal.TouchCursorMode
-import kotlin.math.abs
-import kotlin.math.floor
-import kotlin.math.hypot
+import com.gravityssh.app.terminal.*
+import com.gravityssh.app.terminal.SelectionHandle.*
+import com.gravityssh.app.terminal.TouchCursorMode.*
+import kotlin.math.*
 
 internal const val TERM_PAD_X = 12f
 internal const val TERM_PAD_Y = 4f
 
-private suspend fun AwaitPointerEventScope.drainPointers() {
-    while (true) {
-        val ev = awaitPointerEvent()
-        ev.changes.forEach { it.consume() }
-        if (ev.changes.none { it.pressed }) break
-    }
-}
+private suspend fun AwaitPointerEventScope.nextPos(id: PointerId) =
+  awaitPointerEvent().also { it.changes.forEach { c -> c.consume() } }.changes.firstOrNull { it.id == id && it.pressed }?.position
 
 internal suspend fun PointerInputScope.detectTerminalTouchGestures(
-    density: Float,
-    getMode: () -> TouchCursorMode,
-    getIsAltScreen: () -> Boolean,
-    getCellW: () -> Float,
-    getCellH: () -> Float,
-    getFontSizeSp: () -> Float,
-    getScrollOffset: () -> Int,
-    getScrollbackSize: () -> Int,
-    onCancelFling: () -> Unit,
-    onTapCell: (row: Int, col: Int) -> Unit,
-    onLongPressCopy: (row: Int, col: Int) -> Unit,
-    onFontSizeChange: (Float) -> Unit,
-    onScrollOffsetChange: (Int) -> Unit,
-    onCursorDragStart: () -> Unit,
-    onCursorDragDelta: (dxDp: Float, dyDp: Float, dtSec: Float, horizontalOnly: Boolean) -> Unit,
-    onCursorDragEnd: (vxDpPerSec: Float, vyDpPerSec: Float, horizontalOnly: Boolean) -> Unit
+  density: Float, getMode: () -> TouchCursorMode, getIsAltScreen: () -> Boolean,
+  getCellW: () -> Float, getCellH: () -> Float, getFontSizeSp: () -> Float,
+  getScrollOffset: () -> Int, getScrollbackSize: () -> Int,
+  onCancelFling: () -> Unit, onTapCell: (row: Int, col: Int) -> Unit,
+  getSelection: () -> TextSelection?, onStartSelectionAt: (row: Int, col: Int) -> Unit,
+  onUpdateSelection: (TextSelection?) -> Unit, onSelectionHaptic: () -> Unit,
+  onFontSizeChange: (Float) -> Unit, onScrollOffsetChange: (Int) -> Unit,
+  onCursorDragStart: () -> Unit,
+  onCursorDragDelta: (dxDp: Float, dyDp: Float, dtSec: Float, horizontalOnly: Boolean) -> Unit,
+  onCursorDragEnd: (vxDpPerSec: Float, vyDpPerSec: Float, horizontalOnly: Boolean) -> Unit
 ) {
-    val slop = viewConfiguration.touchSlop
-    val lpMs = viewConfiguration.longPressTimeoutMillis
-
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        onCancelFling()
-        val pos0 = down.position
-        val t0 = down.uptimeMillis
-        val ns0 = System.nanoTime()
-        var prevMs = t0
-        var dragging = false
-        var multi = false
-        var lpFired = false
-        var scrollAcc = 0f
-        var cursorDrag = false
-        var horizOnly = false
-        val tracker = VelocityTracker().apply { addPosition(t0, pos0) }
-
-        fun col() = floor((pos0.x - TERM_PAD_X) / getCellW().coerceAtLeast(6f)).toInt().coerceAtLeast(0)
-        fun row() = floor((pos0.y - TERM_PAD_Y) / getCellH().coerceAtLeast(10f)).toInt().coerceAtLeast(0)
-
+  val vc = viewConfiguration; val slop = vc.touchSlop; val lpMs = vc.longPressTimeoutMillis
+  val px = TERM_PAD_X; val py = TERM_PAD_Y
+  fun cw() = getCellW().coerceAtLeast(6f); fun ch() = getCellH().coerceAtLeast(10f)
+  fun lim(s: Int, p: Float, u: Float) = if (s > 0) (floor((s - p * 2f) / u).toInt() - 1).coerceAtLeast(0) else Int.MAX_VALUE
+  fun cellAt(x: Float, y: Float): CellPos {
+    val w = cw(); val h = ch()
+    return CellPos(floor((y - py) / h).toInt().coerceIn(0, lim(size.height, py, h)), floor((x - px) / w).toInt().coerceIn(0, lim(size.width, px, w)))
+  }
+  awaitEachGesture {
+    val down = awaitFirstDown(); onCancelFling()
+    val p0 = down.position; val sel = getSelection()
+    if (sel != null) {
+      val w = cw(); val h = ch(); val rad = 30f * density
+      val hit = TerminalSelectionHelper.hitTestHandle(p0.x, p0.y, sel, w, h, px, py, rad)
+      if (hit != NONE) {
+        down.consume()
+        val isS = hit == START; val anc = if (isS) sel.end else sel.start; var last = if (isS) sel.start else sel.end
+        val dx = (p0.x - (px + (last.col + 0.5f) * w)).coerceIn(-rad, rad)
+        val dy = (p0.y - (py + (last.row + 0.5f) * h)).coerceIn(0.6f * h, rad * 1.4f)
         while (true) {
-            val event = if (!dragging && !multi && !lpFired) {
-                val rem = lpMs - (System.nanoTime() - ns0) / 1_000_000L
-                if (rem <= 0L) null else withTimeoutOrNull(rem) { awaitPointerEvent() }
-            } else {
-                awaitPointerEvent()
-            }
-            if (event == null) {
-                lpFired = true
-                onLongPressCopy(row(), col())
-                drainPointers()
-                break
-            }
-
-            val pressed = event.changes.filter { it.pressed }
-            if (pressed.isEmpty()) break
-
-            if (pressed.size >= 2) {
-                multi = true
-                if (cursorDrag) { cursorDrag = false; onCursorDragEnd(0f, 0f, horizOnly) }
-                val zoom = event.calculateZoom()
-                if (zoom > 1.015f || zoom < 0.985f) onFontSizeChange((getFontSizeSp() * zoom).coerceIn(10f, 22f))
-                event.changes.forEach { it.consume() }
-                continue
-            }
-            if (multi) continue
-
-            val chg = pressed.first()
-            val delta = chg.positionChange()
-            val nowMs = chg.uptimeMillis
-            val dtSec = ((nowMs - prevMs).coerceAtLeast(4L)) / 1000f
-            prevMs = nowMs
-            tracker.addPosition(nowMs, chg.position)
-
-            if (!dragging) {
-                val dist = hypot(chg.position.x - pos0.x, chg.position.y - pos0.y)
-                if (dist >= slop) {
-                    dragging = true
-                    val mode = getMode()
-                    val alt = getIsAltScreen()
-                    if (mode == TouchCursorMode.CURSOR || (mode == TouchCursorMode.AUTO && alt)) {
-                        cursorDrag = true; horizOnly = false; onCursorDragStart()
-                    } else if (mode == TouchCursorMode.AUTO && !alt && abs(chg.position.x - pos0.x) > abs(chg.position.y - pos0.y) * 1.35f) {
-                        cursorDrag = true; horizOnly = true; onCursorDragStart()
-                    }
-                } else if (!lpFired && (nowMs - t0) >= lpMs) {
-                    lpFired = true
-                    onLongPressCopy(row(), col())
-                    drainPointers()
-                    break
-                }
-            }
-
-            if (dragging && (delta.x != 0f || delta.y != 0f)) {
-                chg.consume()
-                if (cursorDrag) {
-                    onCursorDragDelta(delta.x / density, if (horizOnly) 0f else delta.y / density, dtSec, horizOnly)
-                } else {
-                    scrollAcc += delta.y
-                    val ch = getCellH().coerceAtLeast(10f)
-                    val steps = (scrollAcc / ch).toInt()
-                    if (steps != 0) {
-                        scrollAcc -= steps * ch
-                        onScrollOffsetChange((getScrollOffset() + steps).coerceIn(0, getScrollbackSize()))
-                    }
-                }
-            }
+          val p = nextPos(down.id) ?: break
+          val n = cellAt(p.x - dx, p.y - dy)
+          if (n != last) { last = n; onUpdateSelection(TextSelection(anc, n)); onSelectionHaptic() }
         }
-
-        if (cursorDrag) {
-            val vel = tracker.calculateVelocity()
-            onCursorDragEnd(vel.x / density, if (horizOnly) 0f else vel.y / density, horizOnly)
-        } else if (!dragging && !multi && !lpFired) {
-            onTapCell(row(), col())
-        }
+        return@awaitEachGesture
+      }
     }
+    val t0 = down.uptimeMillis; val ns0 = System.nanoTime()
+    var pm = t0; var dr = false; var mu = false; var lpF = false; var upC = false
+    var sAcc = 0f; var cDr = false; var hz = false
+    val tr = VelocityTracker().apply { addPosition(t0, p0) }
+    while (true) {
+      val ev = if (!dr && !mu && !lpF) {
+        val rem = lpMs - (System.nanoTime() - ns0) / 1_000_000L
+        if (rem <= 0L) null else withTimeoutOrNull(rem) { awaitPointerEvent() }
+      } else awaitPointerEvent()
+      if (ev == null) { lpF = true; break }
+      val pr = ev.changes.filter { it.pressed }
+      if (pr.isEmpty()) { upC = ev.changes.any { it.isConsumed }; break }
+      if (pr.size >= 2) {
+        mu = true; if (cDr) { cDr = false; onCursorDragEnd(0f, 0f, hz) }
+        val z = ev.calculateZoom()
+        if (z > 1.015f || z < 0.985f) onFontSizeChange((getFontSizeSp() * z).coerceIn(10f, 22f))
+        ev.changes.forEach { it.consume() }; continue
+      }
+      if (mu) continue
+      val chg = pr.first(); val pos = chg.position; val d = chg.positionChange()
+      val now = chg.uptimeMillis; val dt = (now - pm).coerceAtLeast(4L) / 1000f
+      pm = now; tr.addPosition(now, pos)
+      if (!dr) {
+        val rx = pos.x - p0.x; val ry = pos.y - p0.y
+        if (hypot(rx, ry) >= slop) {
+          dr = true; if (sel != null) onUpdateSelection(null)
+          val m = getMode(); val alt = getIsAltScreen()
+          if (m == CURSOR || (m == AUTO && (alt || abs(rx) > abs(ry) * 1.35f))) {
+            cDr = true; hz = !alt && m == AUTO; onCursorDragStart()
+          }
+        } else if (!lpF && (now - t0) >= lpMs) { lpF = true; break }
+      }
+      if (dr && (d.x != 0f || d.y != 0f)) {
+        chg.consume()
+        if (cDr) onCursorDragDelta(d.x / density, if (hz) 0f else d.y / density, dt, hz)
+        else {
+          sAcc += d.y; val h = ch(); val st = (sAcc / h).toInt()
+          if (st != 0) { sAcc -= st * h; onScrollOffsetChange((getScrollOffset() + st).coerceIn(0, getScrollbackSize())) }
+        }
+      }
+    }
+    if (lpF) {
+      val c0 = cellAt(p0.x, p0.y); onStartSelectionAt(c0.row, c0.col)
+      var mv = false; var anc: CellPos? = null; var last: CellPos? = null
+      while (true) {
+        val p = nextPos(down.id) ?: break
+        if (!mv) { if (hypot(p.x - p0.x, p.y - p0.y) < slop) continue; mv = true }
+        val cur = cellAt(p.x, p.y)
+        val a = anc ?: (getSelection()?.takeIf { it != sel }?.let { if (cur < c0) it.end else it.start } ?: c0).also { anc = it }
+        if (cur != last) { last = cur; onUpdateSelection(TextSelection(a, cur)); onSelectionHaptic() }
+      }
+    } else if (cDr) {
+      val v = tr.calculateVelocity(); onCursorDragEnd(v.x / density, if (hz) 0f else v.y / density, hz)
+    } else if (!dr && !mu && !upC) {
+      if (sel != null) onUpdateSelection(null) else cellAt(p0.x, p0.y).let { onTapCell(it.row, it.col) }
+    }
+  }
 }
