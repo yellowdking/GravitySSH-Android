@@ -1,0 +1,106 @@
+package com.gravityssh.app.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class SSHKeyRecord(
+    @SerialName("id") val id: String = "",
+    @SerialName("name") val name: String = "",
+    @SerialName("keyType") val keyType: String = "ed25519",
+    @SerialName("fingerprint") val fingerprint: String = "",
+    @SerialName("publicKey") val publicKey: String = "",
+    @SerialName("privateKeyPem") val privateKeyPem: String = "",
+    @SerialName("passphrase") val passphrase: String = "",
+    @SerialName("comment") val comment: String = "",
+    @SerialName("createdAt") val createdAt: String = ""
+)
+
+@Serializable
+data class CommandRecord(
+    @SerialName("id") val id: String = "",
+    @SerialName("command") val command: String = "",
+    @SerialName("serverId") val serverId: String = "",
+    @SerialName("serverName") val serverName: String = "",
+    @SerialName("sessionId") val sessionId: String = "",
+    @SerialName("executedAt") val executedAt: String = ""
+)
+
+@Serializable
+data class CommandShortcut(
+    @SerialName("id") val id: String = "",
+    @SerialName("name") val name: String = "",
+    @SerialName("command") val command: String = "",
+    @SerialName("description") val description: String = "",
+    @SerialName("category") val category: String = "常用",
+    @SerialName("autoExecute") val autoExecute: Boolean = false,
+    @SerialName("pinned") val pinned: Boolean = false,
+    @SerialName("useCount") val useCount: Int = 0,
+    @SerialName("createdAt") val createdAt: String = "",
+    @SerialName("updatedAt") val updatedAt: String = ""
+)
+
+@Serializable
+data class BuiltinTemplate(
+    @SerialName("id") val id: String = "",
+    @SerialName("presetId") val presetId: String = "",
+    @SerialName("name") val name: String = "",
+    @SerialName("category") val category: String = "自定义",
+    @SerialName("description") val description: String = "",
+    @SerialName("safetyNote") val safetyNote: String = "",
+    @SerialName("command") val command: String = ""
+)
+
+@Serializable
+data class PresetLoadResult(
+    @SerialName("added") val added: Int = 0,
+    @SerialName("skipped") val skipped: Int = 0,
+    @SerialName("templates") val templates: List<BuiltinTemplate> = emptyList()
+)
+
+@Serializable
+data class AppSettings(
+    @SerialName("autocompleteEnabled") val autocompleteEnabled: Boolean = true,
+    @SerialName("autocompleteFromHistory") val autocompleteFromHistory: Boolean = true,
+    @SerialName("autocompleteFromShortcut") val autocompleteFromShortcut: Boolean = true,
+    @SerialName("autoOpenSftp") val autoOpenSftp: Boolean = false,
+    @SerialName("sftpPanelPosition") val sftpPanelPosition: String = "right",
+    @SerialName("terminalFontFamily") val terminalFontFamily: String = "monospace",
+    @SerialName("terminalFontSize") val terminalFontSize: Int = 13,
+    @SerialName("defaultKeepAliveSeconds") val defaultKeepAliveSeconds: Int = 30,
+    @SerialName("maxHistoryEntries") val maxHistoryEntries: Int = 2000,
+    @SerialName("recordCommands") val recordCommands: Boolean = true,
+    @SerialName("language") val language: String = "zh",
+    @SerialName("monitorBarEnabled") val monitorBarEnabled: Boolean = true,
+    @SerialName("sftpFollowTerminal") val sftpFollowTerminal: Boolean = true,
+    @SerialName("pasteGuardEnabled") val pasteGuardEnabled: Boolean = true,
+    @SerialName("keywordHighlightEnabled") val keywordHighlightEnabled: Boolean = true,
+    @SerialName("autoSwitchEnglishIme") val autoSwitchEnglishIme: Boolean = true,
+    @SerialName("checkUpdatesOnStartup") val checkUpdatesOnStartup: Boolean = true,
+    @SerialName("biometricLockEnabled") val biometricLockEnabled: Boolean = false,
+    @SerialName("syncRelayUrl") val syncRelayUrl: String = ""
+)
+
+@Serializable
+data class VaultData(
+    @SerialName("version") val version: Int = 2,
+    @SerialName("servers") val servers: List<ServerConfig> = emptyList(),
+    @SerialName("sshKeys") val sshKeys: List<SSHKeyRecord> = emptyList(),
+    @SerialName("shortcuts") val shortcuts: List<CommandShortcut> = emptyList(),
+    @SerialName("templates") val templates: List<BuiltinTemplate> = emptyList(),
+    @SerialName("history") val history: List<CommandRecord> = emptyList(),
+    @SerialName("settings") val settings: AppSettings = AppSettings()
+)
+
+data class VaultLockState(
+    val locked: Boolean = false,
+    val hasPassword: Boolean = false,
+    val biometricEnabled: Boolean = false,
+    val vaultPath: String = "",
+    val schemaVersion: Int = 2
+)
+
+data class VaultState(
+    val lockState: VaultLockState = VaultLockState(),
+    val data: VaultData = VaultData()
+)
