@@ -97,8 +97,7 @@ fun GravitySshRoot(viewModel: AppViewModel) {
                         onConnectAndOpenTerminal = { server ->
                             viewModel.openServerSession(server)
                             navigateTab(Routes.TERMINAL)
-                        },
-                        onOpenSync = { navController.navigate(Routes.SYNC) }
+                        }
                     )
                 }
                 composable(Routes.TERMINAL) {
