@@ -25,24 +25,22 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     val mgr = viewModel.container.sshSessionManager
 
     var fontSizeSp by remember(settings.terminalFontSize) { mutableFloatStateOf(settings.terminalFontSize.toFloat()) }
-    var ctrlActive by remember { mutableStateOf(false) }
-    var altActive by remember { mutableStateOf(false) }
+    var ctrlOn by remember { mutableStateOf(false) }
+    var altOn by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showSftp by remember { mutableStateOf(false) }
-    var quickDrawerTab by remember { mutableStateOf<Int?>(null) }
+    var drawerTab by remember { mutableStateOf<Int?>(null) }
     var pendingPaste by remember { mutableStateOf<Pair<String, PasteInspection>?>(null) }
     var scrollOffset by remember(activeId) { mutableIntStateOf(0) }
+    var dismissedLine by remember(activeId) { mutableStateOf<String?>(null) }
 
     val activeTab = tabs.find { it.sessionId == activeId } ?: tabs.firstOrNull()
     val controller = activeTab?.let { mgr.getTerminalController(it.sessionId) }
-    if (activeTab == null || controller == null) {
-        EmptyTerminalPlaceholder(onJumpToServers)
-        return
-    }
+    if (activeTab == null || controller == null) { EmptyTerminalPlaceholder(onJumpToServers); return }
 
     LaunchedEffect(activeTab.sessionId, controller) {
-        scrollOffset = 0
+        scrollOffset = 0; dismissedLine = null
         controller.setInputSender { seq -> mgr.sendInput(activeTab.sessionId, seq) }
     }
 
@@ -55,24 +53,23 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     val touchSens = remember(settings.touchCursorSensitivity) { TouchSensitivity.fromId(settings.touchCursorSensitivity) }
     val snapshot = remember(frameVer, scrollOffset, activeTab.sessionId) { controller.snapshot(scrollOffset) }
     val suggestions = remember(inputLine, vaultState.data.shortcuts, vaultState.data.history, settings) {
-        AutocompleteEngine.suggest(inputLine, vaultState.data.shortcuts, vaultState.data.history, settings, 8)
+        AutocompleteEngine.suggest(inputLine, vaultState.data.shortcuts, vaultState.data.history, settings, 3)
     }
 
     fun send(text: String) = mgr.sendInput(activeTab.sessionId, text)
     fun deliverPaste(text: String) = send(formatPastePayload(text, bracketedPaste))
+    val acState = FloatingAutocompleteState(!isAlt && dismissedLine != inputLine, suggestions, {
+        val e = AutocompleteEngine.computeCompletionInsert(inputLine, it.insertText)
+        send("\u007F".repeat(e.backspaces) + e.insertText)
+    }, { dismissedLine = inputLine })
 
     Column(Modifier.fillMaxSize().background(AgBg).imePadding()) {
         SessionTabsStrip(tabs, activeTab.sessionId, mgr::selectSession, mgr::closeSession)
         TerminalToolbarRow(
             activeTab.viaSummary, showSearch, touchMode, touchSens, isAlt,
             { viewModel.cycleTouchCursorMode() }, { viewModel.cycleTouchCursorSensitivity() },
-            { showSftp = true }, { quickDrawerTab = 0 }, { quickDrawerTab = 2 },
-            {
-                requestClipboardPaste(
-                    clipboard.getText()?.text.orEmpty(), settings.pasteGuardEnabled, bracketedPaste,
-                    viewModel::showToast, ::deliverPaste
-                ) { raw, insp -> pendingPaste = raw to insp }
-            },
+            { showSftp = true }, { drawerTab = 0 }, { drawerTab = 2 },
+            { requestClipboardPaste(clipboard.getText()?.text.orEmpty(), settings.pasteGuardEnabled, bracketedPaste, viewModel::showToast, ::deliverPaste) { r, i -> pendingPaste = r to i } },
             { showSearch = !showSearch; if (!showSearch) searchQuery = "" },
             { mgr.reconnectSession(activeTab.sessionId) }
         )
@@ -82,24 +79,16 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
 
         TerminalCanvas(
             snapshot, controller, touchMode, touchSens, settings.touchCursorFling, fontSizeSp, searchQuery, scrollOffset,
-            { scrollOffset = it }, { fontSizeSp = it }, { c, r -> mgr.resizeSession(activeTab.sessionId, c, r) },
+            acState, { scrollOffset = it }, { fontSizeSp = it }, { c, r -> mgr.resizeSession(activeTab.sessionId, c, r) },
             { raw ->
-                val out = applyTerminalModifiers(raw, ctrlActive, altActive)
-                ctrlActive = false; altActive = false; scrollOffset = 0; send(out)
+                val out = applyTerminalModifiers(raw, ctrlOn, altOn)
+                ctrlOn = false; altOn = false; scrollOffset = 0; send(out)
             },
-            {
-                clipboard.setText(AnnotatedString(controller.extractPlainText(scrollOffset)))
-                viewModel.showToast("已复制当前终端屏幕文本")
-            },
+            { clipboard.setText(AnnotatedString(controller.extractPlainText(scrollOffset))); viewModel.showToast("已复制终端屏幕文本") },
             Modifier.weight(1f)
         )
         TerminalBottomAccessory(
-            isAlt, isNano, suggestions, ctrlActive, altActive,
-            { item ->
-                val e = AutocompleteEngine.computeCompletionInsert(inputLine, item.insertText)
-                send("\u007F".repeat(e.backspaces) + e.insertText)
-            },
-            { ctrlActive = !ctrlActive }, { altActive = !altActive },
+            isAlt, isNano, ctrlOn, altOn, { ctrlOn = !ctrlOn }, { altOn = !altOn },
             { dir -> scrollOffset = 0; controller.sendArrow(dir, 1) },
             { ch -> scrollOffset = 0; send((ch.uppercaseChar().code - 64).toChar().toString()) },
             { scrollOffset = 0; send(it) }
@@ -107,8 +96,8 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     }
 
     TerminalOverlays(
-        viewModel, activeTab, vaultState.data, showSftp, quickDrawerTab, pendingPaste,
-        { showSftp = false }, { cmd, exec -> mgr.runScript(activeTab.sessionId, cmd, exec); quickDrawerTab = null },
-        { quickDrawerTab = null }, { deliverPaste(it); pendingPaste = null }, { pendingPaste = null }
+        viewModel, activeTab, vaultState.data, showSftp, drawerTab, pendingPaste,
+        { showSftp = false }, { cmd, exec -> mgr.runScript(activeTab.sessionId, cmd, exec); drawerTab = null },
+        { drawerTab = null }, { deliverPaste(it); pendingPaste = null }, { pendingPaste = null }
     )
 }
