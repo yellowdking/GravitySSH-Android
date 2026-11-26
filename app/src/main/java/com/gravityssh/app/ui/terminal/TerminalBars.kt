@@ -19,6 +19,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.model.SessionStatus
 import com.gravityssh.app.model.SessionTab
+import com.gravityssh.app.terminal.TouchCursorMode
+import com.gravityssh.app.terminal.TouchSensitivity
 import com.gravityssh.app.ui.theme.*
 
 @Composable
@@ -66,6 +68,11 @@ internal fun SessionTabsStrip(
 internal fun TerminalToolbarRow(
     viaSummary: String,
     showSearch: Boolean,
+    touchMode: TouchCursorMode,
+    touchSensitivity: TouchSensitivity,
+    isAltScreen: Boolean,
+    onCycleTouchMode: () -> Unit,
+    onCycleTouchSensitivity: () -> Unit,
     onOpenSftp: () -> Unit,
     onOpenShortcuts: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -73,24 +80,38 @@ internal fun TerminalToolbarRow(
     onToggleSearch: () -> Unit,
     onReconnect: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().background(AgSurface).padding(horizontal = 6.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onOpenSftp, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.FolderOpen, "SFTP", tint = AgCyan, modifier = Modifier.size(19.dp)) }
-            IconButton(onClick = onOpenShortcuts, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Bolt, "快捷命令与模板", tint = AgAccent, modifier = Modifier.size(19.dp)) }
-            IconButton(onClick = onOpenHistory, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.History, "命令历史", tint = AgMuted, modifier = Modifier.size(19.dp)) }
-            IconButton(onClick = onPaste, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.ContentPaste, "粘贴", tint = AgText, modifier = Modifier.size(18.dp)) }
-            IconButton(onClick = onToggleSearch, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Search, "搜索", tint = if (showSearch) AgCyan else AgMuted, modifier = Modifier.size(19.dp)) }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (viaSummary.isNotBlank()) {
-                Text(viaSummary, style = MaterialTheme.typography.labelSmall, color = AgMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.width(4.dp))
+    Column(modifier = Modifier.fillMaxWidth().background(AgSurface)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onOpenSftp, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.FolderOpen, "SFTP", tint = AgCyan, modifier = Modifier.size(19.dp)) }
+                IconButton(onClick = onOpenShortcuts, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.Bolt, "快捷命令与模板", tint = AgAccent, modifier = Modifier.size(19.dp)) }
+                IconButton(onClick = onOpenHistory, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.History, "命令历史", tint = AgMuted, modifier = Modifier.size(19.dp)) }
+                IconButton(onClick = onPaste, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.ContentPaste, "粘贴", tint = AgText, modifier = Modifier.size(18.dp)) }
+                IconButton(onClick = onToggleSearch, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.Search, "搜索", tint = if (showSearch) AgCyan else AgMuted, modifier = Modifier.size(19.dp)) }
             }
-            IconButton(onClick = onReconnect, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Refresh, "重连", tint = AgMuted, modifier = Modifier.size(19.dp)) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (viaSummary.isNotBlank()) {
+                    Text(viaSummary, style = MaterialTheme.typography.labelSmall, color = AgMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.width(4.dp))
+                }
+                IconButton(onClick = onReconnect, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.Refresh, "重连", tint = AgMuted, modifier = Modifier.size(19.dp)) }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TouchModeControlStrip(
+                mode = touchMode,
+                sensitivity = touchSensitivity,
+                isAltScreen = isAltScreen,
+                onCycleMode = onCycleTouchMode,
+                onCycleSensitivity = onCycleTouchSensitivity
+            )
         }
     }
 }
