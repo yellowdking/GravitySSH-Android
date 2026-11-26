@@ -26,10 +26,7 @@ class AnsiParser(
             State.CHARSET -> state = State.GROUND
             State.CSI -> handleCsi(ch)
             State.OSC -> handleOsc(ch)
-            State.OSC_ESC -> {
-                if (ch == '\\') finishOsc()
-                state = State.GROUND
-            }
+            State.OSC_ESC -> { if (ch == '\\') finishOsc(); state = State.GROUND }
         }
     }
 
@@ -55,7 +52,7 @@ class AnsiParser(
             'D' -> { buffer.lineFeed(); state = State.GROUND }
             'E' -> { buffer.carriageReturn(); buffer.lineFeed(); state = State.GROUND }
             'M' -> { buffer.reverseIndex(); state = State.GROUND }
-            'c' -> { buffer.style = TerminalStyle(); buffer.eraseDisplay(2); buffer.moveCursorTo(0, 0); state = State.GROUND }
+            'c' -> { buffer.resetModes(); buffer.style = TerminalStyle(); buffer.eraseDisplay(2); buffer.moveCursorTo(0, 0); state = State.GROUND }
             else -> state = State.GROUND
         }
     }
@@ -81,9 +78,8 @@ class AnsiParser(
         val raw = oscBuf.toString()
         val sep = raw.indexOf(';')
         if (sep <= 0) return
-        val cmd = raw.substring(0, sep)
         val arg = raw.substring(sep + 1)
-        when (cmd) {
+        when (raw.substring(0, sep)) {
             "0", "2" -> onTitleChanged(arg)
             "7" -> {
                 val path = arg.removePrefix("file://").substringAfter('/', "").let { "/$it" }
@@ -94,21 +90,16 @@ class AnsiParser(
 
     private fun executeCsi(rawParams: String, finalChar: Char) {
         val isPrivate = rawParams.startsWith("?")
-        val clean = rawParams.trimStart('?', '>', '!')
+        if (!isPrivate && (rawParams.startsWith(">") || rawParams.startsWith("=") || rawParams.startsWith("!"))) return
+        val clean = rawParams.trimStart('?', '>', '!', '=')
         val params = if (clean.isEmpty()) emptyList() else clean.split(';').map { it.toIntOrNull() ?: 0 }
-        fun p(idx: Int, def: Int = 1): Int = params.getOrNull(idx)?.takeIf { it > 0 } ?: def
-        fun p0(idx: Int): Int = params.getOrNull(idx) ?: 0
+        fun p(i: Int, def: Int = 1): Int = params.getOrNull(i)?.takeIf { it > 0 } ?: def
+        fun p0(i: Int): Int = params.getOrNull(i) ?: 0
 
         if (isPrivate) {
-            val enable = finalChar == 'h'
             if (finalChar == 'h' || finalChar == 'l') {
-                for (code in params) {
-                    when (code) {
-                        25 -> buffer.cursorVisible = enable
-                        47, 1047, 1049 -> buffer.setAltScreen(enable)
-                        2004 -> buffer.bracketedPaste = enable
-                    }
-                }
+                val enable = finalChar == 'h'
+                for (code in params) TerminalModes.applyPrivateMode(buffer, code, enable)
             }
             return
         }
