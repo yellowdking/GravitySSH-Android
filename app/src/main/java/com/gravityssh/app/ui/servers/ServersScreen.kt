@@ -21,8 +21,7 @@ import com.gravityssh.app.ui.theme.*
 @Composable
 fun ServersScreen(
     viewModel: AppViewModel,
-    onConnectAndOpenTerminal: (ServerConfig) -> Unit,
-    onOpenSync: () -> Unit
+    onConnectAndOpenTerminal: (ServerConfig) -> Unit
 ) {
     val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
     val servers = vaultState.data.servers
@@ -55,7 +54,6 @@ fun ServersScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onOpenSync) { Icon(Icons.Rounded.QrCode2, "多端同步", tint = AgCyan) }
                     if (lockState.hasPassword || lockState.biometricEnabled) {
                         IconButton(onClick = { viewModel.container.vaultRepository.lockNow() }) { Icon(Icons.Rounded.Lock, "锁定", tint = AgMuted) }
                     }
@@ -80,7 +78,7 @@ fun ServersScreen(
                 AgEmptyState(
                     icon = Icons.Rounded.Dns,
                     title = if (servers.isEmpty()) "还没有配置任何主机" else "没有匹配的主机",
-                    subtitle = if (servers.isEmpty()) "点击右下角新建主机，或通过顶部二维码从电脑端同步" else "尝试更改搜索关键字",
+                    subtitle = if (servers.isEmpty()) "点击右下角新建主机，或在设置中从电脑端同步" else "尝试更改搜索关键字",
                     actionLabel = if (servers.isEmpty()) "添加第一台主机" else null,
                     onAction = if (servers.isEmpty()) { { editingServer = ServerConfig(); showEditor = true } } else null
                 )
