@@ -19,6 +19,7 @@ import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgTextField
+import com.gravityssh.app.ui.saveSyncRelayUrl
 import com.gravityssh.app.ui.theme.*
 import com.gravityssh.app.ui.updateSettings
 
@@ -80,15 +81,12 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
             }
 
             AgCard {
-                Text("同步中继服务器 (Relay URL)", style = MaterialTheme.typography.titleMedium, color = AgText)
+                Text("同步中继服务器 (IP:端口)", style = MaterialTheme.typography.titleMedium, color = AgText)
                 Spacer(Modifier.height(6.dp))
-                AgTextField(relayUrlInput, { relayUrlInput = it }, "自定义中继地址（留空使用官方默认）", placeholder = SyncConfig.DEFAULT_RELAY_URL, mono = true)
+                AgTextField(relayUrlInput, { relayUrlInput = it }, "自定义中继地址（留空使用默认）", placeholder = "如 1.2.3.4:54843 或 ${SyncConfig.DEFAULT_RELAY_URL}", mono = true)
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
-                    onClick = {
-                        viewModel.updateSettings { it.copy(syncRelayUrl = relayUrlInput.trim()) }
-                        viewModel.showToast("已保存同步中继配置")
-                    },
+                    onClick = { viewModel.saveSyncRelayUrl(relayUrlInput) },
                     border = BorderStroke(1.dp, AgCyan),
                     shape = RoundedCornerShape(10.dp)
                 ) { Text("保存中继地址", color = AgCyan) }
