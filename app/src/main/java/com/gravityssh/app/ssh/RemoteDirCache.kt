@@ -28,6 +28,14 @@ internal class RemoteDirCache(
         return item.entries
     }
 
+    fun peekCached(
+        sessionId: String,
+        dirPath: String,
+        homeDir: String = "/",
+        showHidden: Boolean = true
+    ): List<SFTPFileEntry>? =
+        getCached(sessionId, normalizeDir(dirPath, homeDir))?.let { filterHidden(it, showHidden) }
+
     fun put(sessionId: String, dirPath: String, entries: List<SFTPFileEntry>) {
         val k = cacheKey(sessionId, dirPath)
         val now = nowMs()
@@ -64,7 +72,8 @@ internal class RemoteDirCache(
                     val a = info.attributes
                     SFTPFileEntry(
                         info.name, info.path, info.isDirectory,
-                        a.type == FileMode.Type.SYMLINK, a.size, "", "", a.mtime
+                        a.type == FileMode.Type.SYMLINK, a.size,
+                        SftpDeleteOps.formatPermissions(a.mode.mask), "", a.mtime
                     )
                 }
                 .sortedWith(compareByDescending<SFTPFileEntry> { it.isDir }.thenBy { it.name.lowercase() })
