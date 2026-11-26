@@ -1,15 +1,17 @@
 package com.gravityssh.app.ui.terminal
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -22,50 +24,37 @@ import kotlin.math.roundToInt
 private val HIDE_DESC = setOf("dir", "file", "history", "history_local")
 
 data class FloatingAutocompleteState(
-  val visible: Boolean,
-  val suggestions: List<CompletionItem>,
-  val onPick: (CompletionItem) -> Unit,
-  val onDismiss: () -> Unit,
-  val activePrefix: String = "",
-  val inputLine: String = ""
+  val visible: Boolean, val suggestions: List<CompletionItem>,
+  val onPick: (CompletionItem) -> Unit, val onDismiss: () -> Unit,
+  val activePrefix: String = "", val inputLine: String = ""
 )
 
 @Composable
 fun FloatingAutocompletePopup(
-  state: FloatingAutocompleteState,
-  cursorRow: Int,
-  cursorCol: Int,
-  cellW: Float,
-  cellH: Float,
-  canvasSize: IntSize,
-  density: Float,
-  modifier: Modifier = Modifier
+  state: FloatingAutocompleteState, cursorRow: Int, cursorCol: Int,
+  cellW: Float, cellH: Float, canvasSize: IntSize, density: Float, modifier: Modifier = Modifier
 ) {
   if (!state.visible) return
   val items = state.suggestions.take(3)
   if (items.isEmpty() || canvasSize.width <= 0 || canvasSize.height <= 0) return
 
-  val popH = (24f + items.size * 34f + 8f) * density
+  val haptic = LocalHapticFeedback.current
+  val popH = (24f + items.size * 42f + 8f) * density
   val popW = (276f * density).coerceAtMost((canvasSize.width - 16f * density).coerceAtLeast(160f * density))
-  val gap = 6f * density; val margin = 8f * density
-  val curTop = TERM_PAD_Y + cursorRow * cellH; val curLeft = TERM_PAD_X + cursorCol * cellW
-  val rawY = if (cursorRow > 2 && curTop - popH - gap >= margin) curTop - popH - gap else curTop + cellH + gap
-  val clampedY = rawY.coerceIn(margin, (canvasSize.height - popH - margin).coerceAtLeast(margin))
-  val clampedX = (curLeft - 12f * density).coerceIn(margin, (canvasSize.width - popW - margin).coerceAtLeast(margin))
+  val gap = 6f * density; val m = 8f * density
+  val cTop = TERM_PAD_Y + cursorRow * cellH; val cLeft = TERM_PAD_X + cursorCol * cellW
+  val rawY = if (cursorRow > 2 && cTop - popH - gap >= m) cTop - popH - gap else cTop + cellH + gap
+  val cY = rawY.coerceIn(m, (canvasSize.height - popH - m).coerceAtLeast(m))
+  val cX = (cLeft - 12f * density).coerceIn(m, (canvasSize.width - popW - m).coerceAtLeast(m))
+  val bs = RoundedCornerShape(5.dp)
 
   Surface(
-    shape = RoundedCornerShape(10.dp),
-    color = AgPanel.copy(alpha = 0.95f),
-    border = BorderStroke(1.dp, AgBorderLight),
-    shadowElevation = 6.dp,
-    modifier = modifier.offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }.widthIn(min = 190.dp, max = 284.dp)
+    shape = RoundedCornerShape(10.dp), color = AgPanel.copy(alpha = 0.95f),
+    border = BorderStroke(1.dp, AgBorderLight), shadowElevation = 6.dp,
+    modifier = modifier.offset { IntOffset(cX.roundToInt(), cY.roundToInt()) }.widthIn(min = 190.dp, max = 284.dp)
   ) {
     Column(Modifier.fillMaxWidth()) {
-      Row(
-        Modifier.fillMaxWidth().height(24.dp).padding(start = 9.dp, end = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-      ) {
+      Row(Modifier.fillMaxWidth().height(24.dp).padding(start = 9.dp, end = 2.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
         Text("智能补全", color = AgMuted, fontSize = 10.sp, fontWeight = FontWeight.Medium)
         IconButton(onClick = state.onDismiss, modifier = Modifier.size(22.dp)) {
           Icon(Icons.Rounded.Close, "关闭补全", tint = AgMuted, modifier = Modifier.size(13.dp))
@@ -83,30 +72,30 @@ fun FloatingAutocompletePopup(
           "history" -> "历史" to AgMuted
           else -> item.category.ifBlank { "命令" } to AgAccent
         }
-        val showDesc = item.source !in HIDE_DESC && item.description.isNotBlank() && item.description != lbl
+        val showD = item.source !in HIDE_DESC && item.description.isNotBlank() && item.description != lbl
         val pfx = when {
           state.inputLine.isBlank() -> state.activePrefix
           (item.source == "history" || item.source == "history_local") && fullIn.isNotEmpty() && item.command.startsWith(fullIn, true) -> fullIn
           else -> AutocompleteParser.activeTokenPrefix(state.inputLine, item.source)
         }
-        val cmdText = buildAnnotatedString {
+        val cmd = buildAnnotatedString {
           if (pfx.isNotEmpty() && item.command.startsWith(pfx, true)) {
             val n = pfx.length.coerceAtMost(item.command.length)
             withStyle(SpanStyle(color = AgCyan, fontWeight = FontWeight.Bold)) { append(item.command.take(n)) }
             withStyle(SpanStyle(color = AgText)) { append(item.command.drop(n)) }
-          } else {
-            withStyle(SpanStyle(color = AgText)) { append(item.command) }
-          }
+          } else withStyle(SpanStyle(color = AgText)) { append(item.command) }
         }
-        Row(
-          Modifier.fillMaxWidth().height(34.dp).clickable { state.onPick(item) }.padding(horizontal = 9.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(6.dp)
+        Surface(
+          onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); state.onPick(item) },
+          color = Color.Transparent,
+          modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp)
         ) {
-          Text(cmdText, fontFamily = MonoFontFamily, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-          if (showDesc) Text(item.description, color = AgMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 76.dp))
-          Surface(shape = RoundedCornerShape(5.dp), color = clr.copy(alpha = 0.16f), border = BorderStroke(0.5.dp, clr.copy(alpha = 0.45f))) {
-            Text(lbl, color = clr, fontSize = 9.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
+          Row(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 6.dp), Arrangement.spacedBy(6.dp), Alignment.CenterVertically) {
+            Text(cmd, fontFamily = MonoFontFamily, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (showD) Text(item.description, color = AgMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 76.dp))
+            Box(Modifier.clip(bs).background(clr.copy(alpha = 0.16f)).border(0.5.dp, clr.copy(alpha = 0.45f), bs).padding(horizontal = 5.dp, vertical = 2.dp)) {
+              Text(lbl, color = clr, fontSize = 9.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
           }
         }
       }
