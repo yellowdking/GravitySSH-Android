@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gravityssh.app.model.*
 import com.gravityssh.app.terminal.*
 import com.gravityssh.app.ui.*
 import com.gravityssh.app.ui.theme.*
@@ -17,88 +18,92 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
   val vault by viewModel.vaultState.collectAsStateWithLifecycle()
   val tabs by viewModel.sessionTabs.collectAsStateWithLifecycle()
   val activeId by viewModel.activeSessionId.collectAsStateWithLifecycle()
-  val cfg = vault.data.settings
-  val clipboard = LocalClipboardManager.current
-  val mgr = viewModel.container.sshSessionManager
+  val cfg = vault.data.settings; val clip = LocalClipboardManager.current; val mgr = viewModel.container.sshSessionManager
 
   var fontSp by remember(cfg.terminalFontSize) { mutableFloatStateOf(cfg.terminalFontSize.toFloat()) }
-  var ctrlOn by remember { mutableStateOf(false) }
-  var altOn by remember { mutableStateOf(false) }
-  var showMoreKeys by remember { mutableStateOf(false) }
-  var showSearch by remember { mutableStateOf(false) }
-  var searchQuery by remember { mutableStateOf("") }
-  var showSftp by remember { mutableStateOf(false) }
-  var drawerTab by remember { mutableStateOf<Int?>(null) }
-  var pendingPaste by remember { mutableStateOf<Pair<String, PasteInspection>?>(null) }
-  var copyPayload by remember(activeId) { mutableStateOf<Pair<String, String>?>(null) }
-  var scrollOffset by remember(activeId) { mutableIntStateOf(0) }
-  var dismissedLine by remember(activeId) { mutableStateOf<String?>(null) }
+  var ctrlOn by remember { mutableStateOf(false) }; var altOn by remember { mutableStateOf(false) }
+  var moreKeys by remember { mutableStateOf(false) }; var showSrch by remember { mutableStateOf(false) }
+  var srchQ by remember { mutableStateOf("") }; var showSftp by remember { mutableStateOf(false) }
+  var dTab by remember { mutableStateOf<Int?>(null) }
+  var paste by remember { mutableStateOf<Pair<String, PasteInspection>?>(null) }
+  var sel by remember(activeId) { mutableStateOf<TextSelection?>(null) }
+  var scrollOff by remember(activeId) { mutableIntStateOf(0) }
+  var dismissed by remember(activeId) { mutableStateOf<String?>(null) }
 
   val tab = tabs.find { it.sessionId == activeId } ?: tabs.firstOrNull()
   val ctrl = tab?.let { mgr.getTerminalController(it.sessionId) }
   if (tab == null || ctrl == null) { EmptyTerminalPlaceholder(onJumpToServers); return }
+  val sid = tab.sessionId
 
-  LaunchedEffect(tab.sessionId, ctrl) {
-    scrollOffset = 0; dismissedLine = null
-    ctrl.setInputSender { seq -> mgr.sendInput(tab.sessionId, seq) }
+  LaunchedEffect(sid, ctrl) {
+    scrollOff = 0; dismissed = null; sel = null
+    ctrl.setInputSender { mgr.sendInput(sid, it) }
   }
 
-  val frameVer by ctrl.frameVersion.collectAsStateWithLifecycle()
-  val inputLine by ctrl.currentInputLine.collectAsStateWithLifecycle()
-  val bracketed by ctrl.bracketedPaste.collectAsStateWithLifecycle()
+  val fVer by ctrl.frameVersion.collectAsStateWithLifecycle()
+  val inLine by ctrl.currentInputLine.collectAsStateWithLifecycle()
+  val brkt by ctrl.bracketedPaste.collectAsStateWithLifecycle()
   val isAlt by ctrl.alternateScreen.collectAsStateWithLifecycle()
   val isNano by ctrl.nanoDetected.collectAsStateWithLifecycle()
-  val touchMode = remember(cfg.touchCursorMode) { TouchCursorMode.fromId(cfg.touchCursorMode) }
-  val touchSens = remember(cfg.touchCursorSensitivity) { TouchSensitivity.fromId(cfg.touchCursorSensitivity) }
-  val snapshot = remember(frameVer, scrollOffset, tab.sessionId) { ctrl.snapshot(scrollOffset) }
-  val suggestions = remember(inputLine, vault.data.shortcuts, vault.data.history, cfg) {
-    AutocompleteEngine.suggest(inputLine, vault.data.shortcuts, vault.data.history, cfg, 3)
+  LaunchedEffect(isAlt) { sel = null }
+
+  val pq = remember(inLine, tab.currentDir) { AutocompleteEngine.resolvePathQuery(inLine, tab.currentDir) }
+  val hidden = pq?.namePrefix?.startsWith(".") == true
+  var entries by remember(sid) { mutableStateOf<List<SFTPFileEntry>>(emptyList()) }
+  LaunchedEffect(sid, tab.currentDir, tab.status, pq?.dirToList, hidden, isAlt) {
+    if (!isAlt && tab.status == SessionStatus.CONNECTED) {
+      entries = mgr.listDirForAutocomplete(sid, pq?.dirToList ?: tab.currentDir.ifBlank { "/" }, hidden)
+    }
   }
 
-  fun send(text: String) = mgr.sendInput(tab.sessionId, text)
-  fun deliverPaste(text: String) = send(formatPastePayload(text, bracketed))
-  val acState = FloatingAutocompleteState(!isAlt && dismissedLine != inputLine, suggestions, {
-    val e = AutocompleteEngine.computeCompletionInsert(inputLine, it.insertText)
+  val tMode = remember(cfg.touchCursorMode) { TouchCursorMode.fromId(cfg.touchCursorMode) }
+  val tSens = remember(cfg.touchCursorSensitivity) { TouchSensitivity.fromId(cfg.touchCursorSensitivity) }
+  val snap = remember(fVer, scrollOff, sid) { ctrl.snapshot(scrollOff) }
+  val suggs = remember(inLine, vault.data.history, cfg, entries, tab.currentDir) {
+    AutocompleteEngine.suggest(input = inLine, history = vault.data.history, settings = cfg, limit = 3, remoteEntries = entries, currentDir = tab.currentDir)
+  }
+
+  fun send(text: String) { if (sel != null) sel = null; mgr.sendInput(sid, text) }
+  fun deliverPaste(text: String) = send(formatPastePayload(text, brkt))
+  val acState = FloatingAutocompleteState(!isAlt && dismissed != inLine, suggs, {
+    val e = AutocompleteEngine.computeCompletionInsert(inLine, it.insertText)
     send("\u007F".repeat(e.backspaces) + e.insertText)
-  }, { dismissedLine = inputLine })
+  }, { dismissed = inLine })
 
   Column(Modifier.fillMaxSize().background(AgBg).imePadding()) {
-    SessionTabsStrip(tabs, tab.sessionId, mgr::selectSession, mgr::closeSession)
+    SessionTabsStrip(tabs, sid, mgr::selectSession, mgr::closeSession)
     TerminalToolbarRow(
-      tab.viaSummary, showSearch, touchMode, touchSens, isAlt,
+      tab.viaSummary, showSrch, tMode, tSens, isAlt,
       { viewModel.cycleTouchCursorMode() }, { viewModel.cycleTouchCursorSensitivity() },
-      { showSftp = true }, { drawerTab = 0 }, { drawerTab = 2 },
-      { requestClipboardPaste(clipboard.getText()?.text.orEmpty(), cfg.pasteGuardEnabled, bracketed, viewModel::showToast, ::deliverPaste) { r, i -> pendingPaste = r to i } },
-      { showSearch = !showSearch; if (!showSearch) searchQuery = "" },
-      { mgr.reconnectSession(tab.sessionId) },
-      showMoreKeys, ctrlOn, altOn,
-      { showMoreKeys = !showMoreKeys }, { ctrlOn = !ctrlOn }, { altOn = !altOn },
-      { scrollOffset = 0; send(it) }
+      { showSftp = true }, { dTab = 0 }, { dTab = 2 },
+      { requestClipboardPaste(clip.getText()?.text.orEmpty(), cfg.pasteGuardEnabled, brkt, viewModel::showToast, ::deliverPaste) { r, i -> paste = r to i } },
+      { showSrch = !showSrch; if (!showSrch) srchQ = "" }, { mgr.reconnectSession(sid) },
+      moreKeys, ctrlOn, altOn, { moreKeys = !moreKeys }, { ctrlOn = !ctrlOn }, { altOn = !altOn },
+      { scrollOff = 0; send(it) }
     )
-    if (showSearch) TerminalSearchStrip(searchQuery) { searchQuery = it }
+    if (showSrch) TerminalSearchStrip(srchQ) { srchQ = it }
     if (cfg.monitorBarEnabled && tab.metrics != null) MonitorBar(tab.metrics)
     HorizontalDivider(color = AgBorder)
 
     TerminalCanvas(
-      snapshot, ctrl, touchMode, touchSens, cfg.touchCursorFling, fontSp, searchQuery, scrollOffset,
-      acState, { scrollOffset = it }, { fontSp = it }, { c, r -> mgr.resizeSession(tab.sessionId, c, r) },
-      { raw -> val out = applyTerminalModifiers(raw, ctrlOn, altOn); ctrlOn = false; altOn = false; scrollOffset = 0; send(out) },
-      { row, _ -> copyPayload = extractSnapshotLine(snapshot, row) to ctrl.extractPlainText(scrollOffset) },
+      snap, ctrl, tMode, tSens, cfg.touchCursorFling, fontSp, srchQ, scrollOff,
+      acState, sel, { scrollOff = it }, { fontSp = it }, { c, r -> mgr.resizeSession(sid, c, r) },
+      { raw -> val out = applyTerminalModifiers(raw, ctrlOn, altOn); ctrlOn = false; altOn = false; scrollOff = 0; send(out) },
+      { sel = it },
+      { t -> if (t.isNotEmpty()) { clip.setText(AnnotatedString(t)); viewModel.showToast("已复制") } else viewModel.showToast("选中内容为空") },
       Modifier.weight(1f)
     )
     TerminalBottomAccessory(
       isAlt, isNano,
-      { dir -> scrollOffset = 0; ctrl.sendArrow(dir, 1) },
-      { ch -> scrollOffset = 0; send((ch.uppercaseChar().code - 64).toChar().toString()) },
-      { scrollOffset = 0; send(it) }
+      { dir -> scrollOff = 0; sel = null; ctrl.sendArrow(dir, 1) },
+      { ch -> scrollOff = 0; send((ch.uppercaseChar().code - 64).toChar().toString()) },
+      { scrollOff = 0; send(it) }
     )
   }
 
   TerminalOverlays(
-    viewModel, tab, vault.data, showSftp, drawerTab, pendingPaste, copyPayload,
-    { showSftp = false }, { cmd, exec -> mgr.runScript(tab.sessionId, cmd, exec); drawerTab = null },
-    { drawerTab = null }, { deliverPaste(it); pendingPaste = null }, { pendingPaste = null },
-    { text, msg -> clipboard.setText(AnnotatedString(text)); viewModel.showToast(msg); copyPayload = null },
-    { copyPayload = null }
+    viewModel, tab, vault.data, showSftp, dTab, paste,
+    { showSftp = false }, { cmd, exec -> mgr.runScript(sid, cmd, exec); dTab = null },
+    { dTab = null }, { deliverPaste(it); paste = null }, { paste = null }
   )
 }
