@@ -115,3 +115,25 @@ fun AppViewModel.updateSettings(transform: (AppSettings) -> AppSettings) {
     runCatching { container.vaultRepository.updateSettings(transform) }
         .onFailure { showToast("更新设置失败: ${it.message}") }
 }
+
+fun AppViewModel.cycleTouchCursorMode() {
+    val cur = vaultState.value.data.settings.touchCursorMode.lowercase()
+    val (next, label) = when (cur) {
+        "auto" -> "cursor" to "光标"
+        "cursor" -> "scroll" to "滚屏"
+        else -> "auto" to "自动"
+    }
+    updateSettings { it.copy(touchCursorMode = next) }
+    showToast("触控模式：$label")
+}
+
+fun AppViewModel.cycleTouchCursorSensitivity() {
+    val cur = vaultState.value.data.settings.touchCursorSensitivity.lowercase()
+    val (next, label) = when (cur) {
+        "precise" -> "balanced" to "标准"
+        "balanced" -> "fast" to "疾速"
+        else -> "precise" to "精细"
+    }
+    updateSettings { it.copy(touchCursorSensitivity = next) }
+    showToast("光标灵敏度：$label")
+}
