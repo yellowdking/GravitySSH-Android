@@ -80,12 +80,14 @@ class KnownHostsManager(
 
     private fun keyFor(host: String, port: Int): String = "${host.trim().lowercase()}:$port"
 
-    private fun load() = synchronized(lock) {
-        if (!storageFile.exists()) return
-        runCatching {
-            val list = json.decodeFromString<List<KnownHostEntry>>(storageFile.readText(Charsets.UTF_8))
-            entries.clear()
-            list.forEach { entries[it.hostPort] = it }
+    private fun load() {
+        synchronized(lock) {
+            if (!storageFile.exists()) return
+            runCatching {
+                val list = json.decodeFromString<List<KnownHostEntry>>(storageFile.readText(Charsets.UTF_8))
+                entries.clear()
+                list.forEach { entries[it.hostPort] = it }
+            }
         }
     }
 
