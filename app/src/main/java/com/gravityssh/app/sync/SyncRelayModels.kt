@@ -47,12 +47,7 @@ internal object SyncTlsFactory {
             .tlsVersions(TlsVersion.TLS_1_3)
             .build()
 
-    fun buildStandardClient(): OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .connectionSpecs(listOf(tls13Spec()))
-        .build()
+    fun buildStandardClient(): OkHttpClient = baseBuilder().build()
 
     fun buildPinnedClient(pinnedSpkiSha256: String): OkHttpClient {
         val expectedBytes = pinnedSpkiSha256.lowercase().toByteArray(Charsets.UTF_8)
@@ -75,13 +70,35 @@ internal object SyncTlsFactory {
         sslContext.init(null, arrayOf(trustManager), SecureRandom())
         val expectedHost = SyncConfig.DEFAULT_RELAY_URL.toHttpUrl().host
 
-        return OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
+        return baseBuilder()
             .sslSocketFactory(sslContext.socketFactory, trustManager)
             .hostnameVerifier { hostname, _ -> hostname == expectedHost }
-            .connectionSpecs(listOf(tls13Spec()))
             .build()
     }
+
+    fun buildSelfSignedIpClient(): OkHttpClient {
+        val trustManager = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
+                if (chain.isEmpty()) throw CertificateException("Empty server certificate chain")
+                chain[0].checkValidity()
+            }
+
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        }
+
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, arrayOf(trustManager), SecureRandom())
+
+        return baseBuilder()
+            .sslSocketFactory(sslContext.socketFactory, trustManager)
+            .hostnameVerifier { hostname, _ -> SyncConfig.isRawIpHost(hostname) }
+            .build()
+    }
+
+    private fun baseBuilder(): OkHttpClient.Builder = OkHttpClient.Builder()
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
+        .connectionSpecs(listOf(tls13Spec()))
 }
