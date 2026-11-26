@@ -106,4 +106,21 @@ class TerminalAndGuardTest {
         assertEquals(50.0, m2.netRxKbps, 0.5)
         assertEquals(100.0, m2.netTxKbps, 0.5)
     }
+
+    @Test
+    fun longPressRowAndScreenCopyExtraction() {
+        val ctrl = TerminalSessionController("s2", initialCols = 40, initialRows = 6, keywordHighlightEnabled = { false })
+        ctrl.onRemoteOutput("\u001B[32mroot@srv\u001B[0m:~# ls -la   \r\napp.log\r\n\u001B[33mWARN\u001B[0m disk 90%")
+
+        val snap = ctrl.snapshot(0)
+        fun rowText(row: Int): String =
+            snap.lines.getOrNull(row)?.let { cells -> String(CharArray(cells.size) { cells[it].ch }).trimEnd() }.orEmpty()
+
+        assertEquals("root@srv:~# ls -la", rowText(0))
+        assertEquals("app.log", rowText(1))
+        assertEquals("WARN disk 90%", rowText(2))
+        assertEquals("", rowText(3))
+        assertEquals("", rowText(99))
+        assertEquals("root@srv:~# ls -la\napp.log\nWARN disk 90%", ctrl.extractPlainText(0))
+    }
 }
