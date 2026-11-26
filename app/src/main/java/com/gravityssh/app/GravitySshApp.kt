@@ -1,0 +1,59 @@
+package com.gravityssh.app
+
+import android.app.Application
+import android.content.Context
+import com.gravityssh.app.ssh.KeyDeployer
+import com.gravityssh.app.ssh.SftpService
+import com.gravityssh.app.ssh.SshConnector
+import com.gravityssh.app.ssh.SshSessionManager
+import com.gravityssh.app.sync.SyncRelayClient
+import com.gravityssh.app.sync.SyncService
+import com.gravityssh.app.terminal.UpdateChecker
+import com.gravityssh.app.vault.KnownHostsManager
+import com.gravityssh.app.vault.VaultCrypto
+import com.gravityssh.app.vault.VaultRepository
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import java.io.File
+import java.security.Security
+
+class AppContainer(context: Context) {
+    private val appContext = context.applicationContext
+    private val configDir = File(appContext.filesDir, "config")
+
+    val vaultRepository = VaultRepository(File(configDir, "vault.gsv"), VaultCrypto())
+    val knownHostsManager = KnownHostsManager(File(configDir, "known_hosts.json"))
+    val sshConnector = SshConnector(knownHostsManager)
+    val keyDeployer = KeyDeployer(sshConnector)
+    val sshSessionManager = SshSessionManager(appContext, vaultRepository, sshConnector)
+    val sftpService = SftpService(sshSessionManager)
+    val syncRelayClient = SyncRelayClient()
+    val syncService = SyncService(vaultRepository, syncRelayClient)
+    val updateChecker = UpdateChecker(BuildConfig.APP_VERSION)
+
+    init {
+        vaultRepository.open()
+    }
+}
+
+class GravitySshApp : Application() {
+    lateinit var container: AppContainer
+        private set
+
+    override fun onCreate() {
+        super.onCreate()
+        registerFullBouncyCastle()
+        container = AppContainer(this)
+    }
+
+    private fun registerFullBouncyCastle() {
+        runCatching {
+            Security.removeProvider("BC")
+            Security.addProvider(BouncyCastleProvider())
+        }
+    }
+
+    companion object {
+        fun from(context: Context): AppContainer =
+            (context.applicationContext as GravitySshApp).container
+    }
+}
