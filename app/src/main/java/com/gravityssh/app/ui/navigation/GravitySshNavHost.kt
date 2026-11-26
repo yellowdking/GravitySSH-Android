@@ -2,7 +2,10 @@ package com.gravityssh.app.ui.navigation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -13,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -64,6 +68,9 @@ fun GravitySshRoot(viewModel: AppViewModel) {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Routes.SERVERS
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    val hideBottomBar = currentRoute == Routes.SYNC || (currentRoute == Routes.TERMINAL && imeVisible)
     val activeCount = tabs.count {
         it.status == SessionStatus.CONNECTED || it.status == SessionStatus.CONNECTING
     }
@@ -84,12 +91,18 @@ fun GravitySshRoot(viewModel: AppViewModel) {
             }
         },
         bottomBar = {
-            if (currentRoute != Routes.SYNC) {
+            if (!hideBottomBar) {
                 GravityBottomBar(currentRoute = currentRoute, activeSessionCount = activeCount, onSelect = ::navigateTab)
             }
         }
     ) { innerPadding ->
-        Box(modifier = Modifier.fillMaxSize().background(AgBg).padding(innerPadding)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(AgBg)
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+        ) {
             NavHost(navController = navController, startDestination = Routes.SERVERS) {
                 composable(Routes.SERVERS) {
                     ServersScreen(
