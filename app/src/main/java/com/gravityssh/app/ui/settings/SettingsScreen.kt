@@ -94,6 +94,7 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
                 ) { Text("保存中继地址", color = AgCyan) }
             }
 
+            SettingsTouchCursorCard(viewModel = viewModel)
             SettingsSecuritySection(viewModel = viewModel)
             SettingsUpdateCard(viewModel = viewModel)
             Spacer(Modifier.height(20.dp))
