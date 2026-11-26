@@ -23,11 +23,6 @@ internal fun formatPastePayload(text: String, bracketedPaste: Boolean): String {
   return if (bracketedPaste) "\u001B[200~$clean\u001B[201~" else clean.replace("\n", "\r")
 }
 
-internal fun extractSnapshotLine(snapshot: TerminalSnapshot, row: Int): String =
-  snapshot.lines.getOrNull(row)
-    ?.let { cells -> buildString(cells.size) { cells.forEach { if (it.ch != '\u0000') append(it.ch) } }.trimEnd() }
-    .orEmpty()
-
 internal fun requestClipboardPaste(
   clip: String,
   guardEnabled: Boolean,
@@ -81,21 +76,15 @@ internal fun TerminalOverlays(
   showSftp: Boolean,
   quickDrawerTab: Int?,
   pendingPaste: Pair<String, PasteInspection>?,
-  copyPayload: Pair<String, String>?,
   onDismissSftp: () -> Unit,
   onRunScript: (String, Boolean) -> Unit,
   onDismissDrawer: () -> Unit,
   onConfirmPaste: (String) -> Unit,
-  onDismissPaste: () -> Unit,
-  onCopyText: (String, String) -> Unit,
-  onDismissCopy: () -> Unit
+  onDismissPaste: () -> Unit
 ) {
   if (showSftp) SftpSheet(viewModel = viewModel, session = activeTab, onDismiss = onDismissSftp)
   quickDrawerTab?.let { startTab ->
     TerminalQuickDrawer(startTab, vaultData.shortcuts, vaultData.templates, vaultData.history, onRunScript, onDismissDrawer)
   }
   pendingPaste?.let { (raw, insp) -> PasteGuardDialog(raw, insp, onConfirmPaste, onDismissPaste) }
-  copyPayload?.let { (pressedLine, screenText) ->
-    TerminalCopyDialog(pressedLine, screenText, onCopyText, onDismissCopy)
-  }
 }
