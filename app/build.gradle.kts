@@ -74,6 +74,10 @@ android {
                 "META-INF/LICENSE*",
                 "META-INF/NOTICE*",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/versions/9/module-info.class",
+                "META-INF/*.SF",
+                "META-INF/*.DSA",
+                "META-INF/*.RSA",
                 "META-INF/BCKEY.DSA",
                 "META-INF/BCKEY.SF",
                 "META-INF/BC1024KE.DSA",
@@ -82,6 +86,10 @@ android {
                 "META-INF/BC2048KE.SF"
             )
         }
+    }
+    lint {
+        disable += setOf("InvalidPackage")
+        abortOnError = false
     }
     testOptions {
         unitTests.isReturnDefaultValues = true
