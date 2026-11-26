@@ -1,14 +1,17 @@
 package com.gravityssh.app.ui.terminal
 
 import android.graphics.Paint
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import com.gravityssh.app.terminal.TerminalColors
 import com.gravityssh.app.terminal.TerminalSnapshot
 import com.gravityssh.app.ui.theme.AgAccentLight
+import com.gravityssh.app.ui.theme.AgCyan
 import com.gravityssh.app.ui.theme.AgWarning
 
 internal fun DrawScope.drawTerminalSnapshot(
@@ -19,10 +22,11 @@ internal fun DrawScope.drawTerminalSnapshot(
     cellH: Float,
     baselineOffset: Float,
     scrollOffset: Int,
-    qLower: String
+    qLower: String,
+    tapIndicatorCell: Pair<Int, Int>? = null
 ) {
-    val padX = 12f
-    val padY = 8f
+    val padX = TERM_PAD_X
+    val padY = TERM_PAD_Y
     val nc = drawContext.canvas.nativeCanvas
     val highlightColor = AgWarning.copy(alpha = 0.35f)
 
@@ -58,6 +62,15 @@ internal fun DrawScope.drawTerminalSnapshot(
                 drawRect(highlightColor, Offset(padX + idx * cellW, top), Size(qLower.length * cellW, cellH))
                 idx = rowTextLower.indexOf(qLower, idx + qLower.length)
             }
+        }
+    }
+
+    tapIndicatorCell?.let { (tRow, tCol) ->
+        if (tRow in 0 until snapshot.rows && tCol in 0 until snapshot.cols) {
+            val tl = Offset(padX + tCol * cellW - 2f, padY + tRow * cellH - 1f)
+            val sz = Size(cellW + 4f, cellH + 2f)
+            drawRoundRect(AgCyan.copy(alpha = 0.24f), tl, sz, CornerRadius(4f, 4f))
+            drawRoundRect(AgCyan.copy(alpha = 0.9f), tl, sz, CornerRadius(4f, 4f), style = Stroke(width = 2f))
         }
     }
 
