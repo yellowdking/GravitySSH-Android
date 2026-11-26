@@ -8,7 +8,7 @@ object SubcommandData {
     w("cd ls ll la nano vim vi nvim cat less more head tail rm cp mv chmod chown mkdir rmdir pushd tree touch tar unzip gunzip zip gzip zcat 7z rsync grep sed awk find stat file du sh bash zsh python python3 node source .")
   val DIR_ONLY_CMDS: Set<String> = w("cd rmdir pushd tree")
   val SUBCMD_ROOTS: Set<String> =
-    w("docker systemctl journalctl apt apt-get apk dnf yum git kubectl pm2 tmux nginx ufw firewall-cmd ss ip curl ps df kill")
+    w("docker systemctl journalctl apt apt-get apk dnf yum git kubectl pm2 tmux nginx ufw firewall-cmd ss ip curl ps df free kill")
   val FILE_FLAGS: Set<String> = w("-f --file -c --config -i -o --env-file cp add apply")
 
   private fun s(spec: String): List<SubcmdCandidate> = spec.split(';').map {
@@ -22,9 +22,9 @@ object SubcommandData {
 
   val rootCommands: List<Pair<String, String>> = pairs(
     "docker^容器;systemctl^服务;journalctl^日志;apt^APT;apt-get^APT;apk^APK;dnf^DNF;yum^YUM;git^Git;kubectl^K8s;" +
-      "pm2^PM2;tmux^Tmux;nginx^Nginx;ufw^防火墙;firewall-cmd^防火墙;ss^端口;ip^网络;curl^HTTP;tar^归档;" +
+      "pm2^PM2;tmux^Tmux;nginx^Nginx;ufw^防火墙;free^内存;firewall-cmd^防火墙;ss^端口;ip^网络;curl^HTTP;tar^归档;" +
       "rsync^同步;chmod^权限;find^查找;grep^搜索;ls^目录;df^磁盘;du^大小;ps^进程;cd^切目录;cat^查看;nano^编辑;" +
-      "vim^Vim;less^分页;tail^日志;head^头部;rm^删除;cp^复制;mv^移动;mkdir^建目录;chown^属主;free^内存;" +
+      "vim^Vim;less^分页;tail^日志;head^头部;rm^删除;cp^复制;mv^移动;mkdir^建目录;chown^属主;" +
       "htop^监控;kill^终止;unzip^解压;make^构建;npm^NPM;node^Node;python3^Python;go^Go"
   )
 
@@ -56,7 +56,8 @@ object SubcommandData {
     "ls" to s("-la^全详细;-lh^可读;-lt^按时间"),
     "df" to s("-h^可读;-Th^含类型"),
     "du" to s("-sh *^当前大小;-h --max-depth=1^一级汇总"),
-    "ps" to s("aux^全部进程;aux | grep ^搜进程;-ef^完整")
+    "ps" to s("aux^全部进程;aux | grep ^搜进程;-ef^完整"),
+    "free" to s("-h^人类可读;-m^MB显示;-g^GB显示;-h -s 2^每2秒刷新")
   )
 
   val l2: Map<String, List<SubcmdCandidate>> = mapOf(
