@@ -28,7 +28,8 @@ internal suspend fun PointerInputScope.detectTerminalTouchGestures(
 ) {
   val vc = viewConfiguration; val slop = vc.touchSlop; val lpMs = vc.longPressTimeoutMillis
   val px = TERM_PAD_X; val py = TERM_PAD_Y
-  fun cw() = getCellW().coerceAtLeast(6f); fun ch() = getCellH().coerceAtLeast(10f)
+  fun cw() = getCellW().coerceAtLeast(6f)
+  fun ch() = getCellH().coerceAtLeast(10f)
   fun lim(s: Int, p: Float, u: Float) = if (s > 0) (floor((s - p * 2f) / u).toInt() - 1).coerceAtLeast(0) else Int.MAX_VALUE
   fun cellAt(x: Float, y: Float): CellPos {
     val w = cw(); val h = ch()
