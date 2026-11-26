@@ -1,6 +1,12 @@
 package com.gravityssh.app.terminal
 
 internal object TerminalBufferEdit {
+    fun writeCell(grid: Array<Array<TerminalCell>>, r: Int, c: Int, rows: Int, cols: Int, ch: Char, s: TerminalStyle) {
+        if (r in 0 until rows && c in 0 until cols) {
+            grid[r][c] = TerminalCell(ch, s.fg, s.bg, s.bold, s.dim, s.underline, s.inverse)
+        }
+    }
+
     fun scrollUp(
         grid: Array<Array<TerminalCell>>, scrollback: ArrayDeque<Array<TerminalCell>>,
         topMargin: Int, bottomMargin: Int, cols: Int, rows: Int,
