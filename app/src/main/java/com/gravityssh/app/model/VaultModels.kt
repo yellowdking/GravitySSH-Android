@@ -78,7 +78,10 @@ data class AppSettings(
     @SerialName("autoSwitchEnglishIme") val autoSwitchEnglishIme: Boolean = true,
     @SerialName("checkUpdatesOnStartup") val checkUpdatesOnStartup: Boolean = true,
     @SerialName("biometricLockEnabled") val biometricLockEnabled: Boolean = false,
-    @SerialName("syncRelayUrl") val syncRelayUrl: String = ""
+    @SerialName("syncRelayUrl") val syncRelayUrl: String = "",
+    @SerialName("touchCursorMode") val touchCursorMode: String = "auto",
+    @SerialName("touchCursorSensitivity") val touchCursorSensitivity: String = "balanced",
+    @SerialName("touchCursorFling") val touchCursorFling: Boolean = true
 )
 
 @Serializable
