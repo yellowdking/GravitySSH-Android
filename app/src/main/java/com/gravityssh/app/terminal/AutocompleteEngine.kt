@@ -86,13 +86,13 @@ object AutocompleteEngine {
    for (h in Ctx.rankHistory(p,input,currentServerId,history,limit+4)) put(h.command,h.description,h.category,h.source,h.insertText,h.score)
   }
 
-  if (!p.endsWithSpace&&p.effective.size==1&&pq==null&&p.effective[0].length>=2) {
+  if (!p.endsWithSpace&&p.effective.size==1&&pq==null&&p.effective[0].isNotEmpty()) {
    val q1=p.effective[0].lowercase()
    Ctx.folderRootSuggestions(q1,sig).forEachIndexed {i,c->
     put(c.tokenText,c.description,c.tokenText.substringBefore(' '),"builtin",p.tokPrefix+c.tokenText+if (c.appendSpace) " " else "",(470-i*10).coerceIn(440,470))
    }
    for ((cmd,desc) in Cat.rootCommands) if (cmd.startsWith(q1)&&cmd!=q1) put(cmd,desc,cmd,"builtin","${p.tokPrefix}$cmd ",(340-(cmd.length-q1.length).coerceAtMost(40)).coerceIn(240,340))
-   for (b in BuiltinCommands.all) {
+   if (q1.length>=2) for (b in BuiltinCommands.all) {
     val bl=b.command.trimEnd().lowercase()
     if (bl.startsWith(q1)&&bl!=q1) put(b.command.trimEnd(),b.description,b.category,"builtin",p.tokPrefix+b.command,(280-(bl.length-q1.length).coerceAtMost(40)).coerceIn(240,340))
    }
