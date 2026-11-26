@@ -1,0 +1,106 @@
+package com.gravityssh.app.ui.tools
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import com.gravityssh.app.model.BuiltinTemplate
+import com.gravityssh.app.model.CommandShortcut
+import com.gravityssh.app.ui.components.AgTextField
+import com.gravityssh.app.ui.theme.AgAccent
+import com.gravityssh.app.ui.theme.AgMuted
+import com.gravityssh.app.ui.theme.AgPanel
+import com.gravityssh.app.ui.theme.AgText
+
+@Composable
+fun ShortcutEditorDialog(
+    initial: CommandShortcut,
+    onSave: (CommandShortcut) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var draft by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AgPanel,
+        title = { Text(if (initial.id.isBlank()) "新建快捷命令" else "编辑快捷命令", color = AgText) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AgTextField(draft.name, { draft = draft.copy(name = it) }, "名称")
+                AgTextField(draft.category, { draft = draft.copy(category = it) }, "分类", placeholder = "常用 / Docker / 系统")
+                AgTextField(draft.command, { draft = draft.copy(command = it) }, "命令脚本（支持多行）", mono = true, singleLine = false, maxLines = 6)
+                AgTextField(draft.description, { draft = draft.copy(description = it) }, "说明（可选）")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("点击后自动回车执行", style = MaterialTheme.typography.bodyMedium, color = AgText)
+                    Switch(checked = draft.autoExecute, onCheckedChange = { draft = draft.copy(autoExecute = it) })
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(draft) },
+                enabled = draft.name.isNotBlank() && draft.command.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
+            ) { Text("保存", color = Color.White) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = AgMuted) } }
+    )
+}
+
+@Composable
+fun TemplateEditorDialog(
+    initial: BuiltinTemplate,
+    onSave: (BuiltinTemplate) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var draft by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AgPanel,
+        title = { Text(if (initial.id.isBlank()) "新建运维模板" else "编辑运维模板", color = AgText) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AgTextField(draft.name, { draft = draft.copy(name = it) }, "模板名称")
+                AgTextField(draft.category, { draft = draft.copy(category = it) }, "分类", placeholder = "网络 / 系统 / 容器")
+                AgTextField(draft.description, { draft = draft.copy(description = it) }, "用途说明")
+                AgTextField(draft.safetyNote, { draft = draft.copy(safetyNote = it) }, "风险提示（可选）")
+                AgTextField(draft.command, { draft = draft.copy(command = it) }, "运维脚本", mono = true, singleLine = false, maxLines = 7)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(draft) },
+                enabled = draft.name.isNotBlank() && draft.command.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
+            ) { Text("保存", color = Color.White) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = AgMuted) } }
+    )
+}
