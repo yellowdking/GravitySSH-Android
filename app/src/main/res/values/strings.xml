@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GravitySSH</string>
+    <string name="nav_servers">主机</string>
+    <string name="nav_terminal">终端</string>
+    <string name="nav_keys">密钥</string>
+    <string name="nav_tools">效率</string>
+    <string name="nav_settings">设置</string>
+    <string name="sync_title">多端安全同步</string>
+    <string name="vault_locked_title">保险库已锁定</string>
+    <string name="vault_locked_subtitle">输入主密码或使用生物识别解锁 GravitySSH 加密保险库</string>
+    <string name="notification_channel_name">SSH 会话保活</string>
+    <string name="notification_channel_desc">保持后台 SSH 终端连接不断开</string>
+</resources>

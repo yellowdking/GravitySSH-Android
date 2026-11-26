@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ag_bg">#0B0D12</color>
+    <color name="ag_surface">#10131A</color>
+    <color name="ag_accent">#6366F1</color>
+</resources>
