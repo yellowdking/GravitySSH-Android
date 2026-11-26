@@ -30,23 +30,25 @@ fun TerminalCanvas(
   searchQuery: String,
   scrollOffset: Int,
   autocomplete: FloatingAutocompleteState,
+  selection: TextSelection?,
   onScrollOffsetChange: (Int) -> Unit,
   onFontSizeChange: (Float) -> Unit,
   onResize: (cols: Int, rows: Int) -> Unit,
   onImeInput: (String) -> Unit,
-  onLongPressCopy: (row: Int, col: Int) -> Unit,
+  onSelectionChange: (TextSelection?) -> Unit,
+  onCopySelection: (String) -> Unit,
   modifier: Modifier = Modifier
 ) {
-  val density = LocalDensity.current
+  val density = LocalDensity.current; val d = density.density
   val haptic = LocalHapticFeedback.current
   val keyboard = LocalSoftwareKeyboardController.current
   val scope = rememberCoroutineScope()
-  val focusRequester = remember { FocusRequester() }
-  val touchState = remember { TerminalTouchState(scope, haptic, TouchCursorEngine(touchSensitivity)) }
+  val focusReq = remember { FocusRequester() }
+  val ts = remember { TerminalTouchState(scope, haptic, TouchCursorEngine(touchSensitivity)) }
 
-  LaunchedEffect(touchSensitivity) { touchState.engine.sensitivity = touchSensitivity }
-  LaunchedEffect(touchMode, controller.sessionId) { touchState.cancelFling() }
-  DisposableEffect(Unit) { onDispose { touchState.dispose() } }
+  LaunchedEffect(touchSensitivity) { ts.engine.sensitivity = touchSensitivity }
+  LaunchedEffect(touchMode, controller.sessionId) { ts.cancelFling() }
+  DisposableEffect(Unit) { onDispose { ts.dispose() } }
 
   var canvasSize by remember { mutableStateOf(IntSize.Zero) }
   var lastCols by remember(controller.sessionId) { mutableIntStateOf(0) }
@@ -68,48 +70,54 @@ fun TerminalCanvas(
     }
   }
 
-  val curMode by rememberUpdatedState(touchMode)
-  val curFling by rememberUpdatedState(touchFlingEnabled)
-  val curFont by rememberUpdatedState(fontSizeSp)
-  val curScroll by rememberUpdatedState(scrollOffset)
-  val curScrollback by rememberUpdatedState(snapshot.scrollbackSize)
-  val curCellW by rememberUpdatedState(cellW)
-  val curCellH by rememberUpdatedState(cellH)
-  val curCtrl by rememberUpdatedState(controller)
-  val curOnLongPress by rememberUpdatedState(onLongPressCopy)
+  val sSnap by rememberUpdatedState(snapshot)
+  val sSel by rememberUpdatedState(selection)
+  val sMode by rememberUpdatedState(touchMode)
+  val sFling by rememberUpdatedState(touchFlingEnabled)
+  val sFont by rememberUpdatedState(fontSizeSp)
+  val sScroll by rememberUpdatedState(scrollOffset)
+  val sCW by rememberUpdatedState(cellW)
+  val sCH by rememberUpdatedState(cellH)
+  val sCtrl by rememberUpdatedState(controller)
+  val sOnSel by rememberUpdatedState(onSelectionChange)
+  val sOnFont by rememberUpdatedState(onFontSizeChange)
+  val sOnScroll by rememberUpdatedState(onScrollOffsetChange)
   val qLower = remember(searchQuery) { searchQuery.trim().lowercase() }
 
   Box(
     modifier = modifier.fillMaxSize().background(AgBg).onSizeChanged { canvasSize = it }
       .pointerInput(Unit) {
         detectTerminalTouchGestures(
-          density.density, { curMode }, { curCtrl.isAlternateScreen() },
-          { curCellW }, { curCellH }, { curFont }, { curScroll }, { curScrollback },
-          { touchState.cancelFling() },
-          { row, col ->
-            touchState.handleTapCell(row, col, curMode, curCtrl)
-            runCatching { focusRequester.requestFocus() }; keyboard?.show()
-          },
-          { row, col -> haptic.performHapticFeedback(HapticFeedbackType.LongPress); curOnLongPress(row, col) },
-          onFontSizeChange, onScrollOffsetChange,
-          { touchState.handleDragStart() },
-          { dx, dy, dt, _ -> touchState.handleDragDelta(dx, dy, dt, curCellW / density.density, curCellH / density.density, curCtrl) },
-          { vx, vy, _ -> touchState.handleDragEnd(vx, vy, curCellW / density.density, curCellH / density.density, curFling, curCtrl) }
+          d, { sMode }, { sCtrl.isAlternateScreen() }, { sCW }, { sCH }, { sFont }, { sScroll }, { sSnap.scrollbackSize },
+          { ts.cancelFling() },
+          { r, c -> ts.handleTapCell(r, c, sMode, sCtrl); runCatching { focusReq.requestFocus() }; keyboard?.show() },
+          { sSel },
+          { r, c -> haptic.performHapticFeedback(HapticFeedbackType.LongPress); sOnSel(TerminalSelectionHelper.selectWordAt(sSnap, r, c)) },
+          { sOnSel(it) },
+          { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
+          { sOnFont(it) }, { sOnScroll(it) },
+          { ts.handleDragStart() },
+          { dx, dy, dt, _ -> ts.handleDragDelta(dx, dy, dt, sCW / d, sCH / d, sCtrl) },
+          { vx, vy, _ -> ts.handleDragEnd(vx, vy, sCW / d, sCH / d, sFling, sCtrl) }
         )
       }
   ) {
-    TerminalImeSink(focusRequester, onImeInput)
+    TerminalImeSink(focusReq, onImeInput)
     Canvas(Modifier.fillMaxSize()) {
-      drawTerminalSnapshot(snapshot, paint, boldPaint, cellW, cellH, baseline, scrollOffset, qLower, touchState.tapCell)
+      drawTerminalSnapshot(snapshot, paint, boldPaint, cellW, cellH, baseline, scrollOffset, qLower, ts.tapCell, selection)
     }
-    if (scrollOffset == 0) {
-      FloatingAutocompletePopup(autocomplete, snapshot.cursorRow, snapshot.cursorCol, cellW, cellH, canvasSize, density.density)
+    if (scrollOffset == 0 && selection == null) {
+      FloatingAutocompletePopup(autocomplete, snapshot.cursorRow, snapshot.cursorCol, cellW, cellH, canvasSize, d)
     }
-    TouchVelocityBadge(
-      visible = touchState.dragBadge != null,
-      zoneLabel = touchState.dragBadge?.zoneLabel ?: "标准",
-      gain = touchState.dragBadge?.gain ?: 1.0f,
-      modifier = Modifier.align(Alignment.TopEnd).padding(10.dp)
-    )
+    selection?.let { sel ->
+      SelectionActionToolbar(
+        sel, cellW, cellH, canvasSize, d,
+        { onCopySelection(TerminalSelectionHelper.extractText(sSnap, sel)); onSelectionChange(null) },
+        { onSelectionChange(TerminalSelectionHelper.selectLine(sSnap, sel.start.row)) },
+        { onSelectionChange(TerminalSelectionHelper.selectAllVisible(sSnap)) },
+        { onSelectionChange(null) }
+      )
+    }
+    TouchVelocityBadge(ts.dragBadge != null, ts.dragBadge?.zoneLabel ?: "标准", ts.dragBadge?.gain ?: 1f, Modifier.align(Alignment.TopEnd).padding(10.dp))
   }
 }
