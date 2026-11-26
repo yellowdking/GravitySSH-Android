@@ -29,7 +29,7 @@ fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = AgText)
                     }
                 },
-                title = { Text("多端安全同步", style = MaterialTheme.typography.titleLarge, color = AgText) },
+                title = { Text("多端同步", style = MaterialTheme.typography.titleLarge, color = AgText) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AgSurface)
             )
         }
