@@ -3,11 +3,7 @@ package com.gravityssh.app.ui.terminal
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -21,18 +17,13 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.gravityssh.app.ui.theme.AgAccent
-import com.gravityssh.app.ui.theme.AgBorder
-import com.gravityssh.app.ui.theme.AgCyan
-import com.gravityssh.app.ui.theme.AgElevated
-import com.gravityssh.app.ui.theme.AgPanel
-import com.gravityssh.app.ui.theme.AgSurface
-import com.gravityssh.app.ui.theme.AgText
-import com.gravityssh.app.ui.theme.MonoFontFamily
+import com.gravityssh.app.terminal.CursorDir
+import com.gravityssh.app.ui.theme.*
 
 private data class ExtraKeySpec(
     val label: String,
     val sequence: String = "",
+    val arrowDir: CursorDir? = null,
     val isStickyCtrl: Boolean = false,
     val isStickyAlt: Boolean = false,
     val accent: Boolean = false
@@ -43,10 +34,10 @@ private val EXTRA_KEYS = listOf(
     ExtraKeySpec("TAB", "\t"),
     ExtraKeySpec("CTRL", isStickyCtrl = true),
     ExtraKeySpec("ALT", isStickyAlt = true),
-    ExtraKeySpec("↑", "\u001B[A"),
-    ExtraKeySpec("↓", "\u001B[B"),
-    ExtraKeySpec("←", "\u001B[D"),
-    ExtraKeySpec("→", "\u001B[C"),
+    ExtraKeySpec("↑", "\u001B[A", arrowDir = CursorDir.UP),
+    ExtraKeySpec("↓", "\u001B[B", arrowDir = CursorDir.DOWN),
+    ExtraKeySpec("←", "\u001B[D", arrowDir = CursorDir.LEFT),
+    ExtraKeySpec("→", "\u001B[C", arrowDir = CursorDir.RIGHT),
     ExtraKeySpec("^C", "\u0003", accent = true),
     ExtraKeySpec("^D", "\u0004"),
     ExtraKeySpec("^L", "\u000C"),
@@ -64,6 +55,7 @@ fun ExtraKeysBar(
     altActive: Boolean,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
+    onSendArrow: ((CursorDir) -> Unit)? = null,
     onSendSequence: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -100,6 +92,7 @@ fun ExtraKeysBar(
                     when {
                         key.isStickyCtrl -> onToggleCtrl()
                         key.isStickyAlt -> onToggleAlt()
+                        key.arrowDir != null && onSendArrow != null -> onSendArrow(key.arrowDir)
                         else -> onSendSequence(key.sequence)
                     }
                 },
@@ -108,10 +101,7 @@ fun ExtraKeysBar(
                 border = BorderStroke(1.dp, borderColor),
                 modifier = Modifier.height(34.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(modifier = Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = key.label,
                         color = textColor,
@@ -125,9 +115,6 @@ fun ExtraKeysBar(
     }
 }
 
-/**
- * Applies sticky CTRL or ALT modifier to a typed character.
- */
 fun applyTerminalModifiers(input: String, ctrl: Boolean, alt: Boolean): String {
     if ((!ctrl && !alt) || input.isEmpty()) return input
     if (input.length == 1) {
