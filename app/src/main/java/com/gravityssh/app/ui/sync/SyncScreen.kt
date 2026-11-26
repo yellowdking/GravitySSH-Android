@@ -48,6 +48,8 @@ fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                SyncRelayCard(viewModel = viewModel)
+
                 AgCard(borderColor = AgCyan.copy(alpha = 0.35f)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(Icons.Rounded.Shield, contentDescription = null, tint = AgCyan, modifier = Modifier.size(18.dp))
