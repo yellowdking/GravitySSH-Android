@@ -6,7 +6,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -15,9 +20,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -65,30 +76,111 @@ fun GravitySshRoot(viewModel: AppViewModel) {
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = 0)
     val snackbarHostState = remember { SnackbarHostState() }
+    var bottomBarHeightDp by remember { mutableStateOf(0.dp) }
 
-    LaunchedEffect(Unit) {
-        viewModel.toastEvents.collect { msg -> snackbarHostState.showSnackbar(msg) }
+    LaunchedEffect(viewModel) {
+        viewModel.toastEvents.collect { msg ->
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(msg)
+        }
     }
 
-    if (lockState.locked) {
-        VaultLockScreen(
-            lockState = lockState,
-            onUnlockPassword = { pw, done -> viewModel.unlockVault(pw, done) },
-            onUnlockBiometric = { done -> viewModel.unlockVaultWithBiometric(done) },
-            onResetCorruptedVault = { done -> viewModel.resetCorruptedVault(done) }
+    LaunchedEffect(lockState.initialized, lockState.locked) {
+        if (!lockState.initialized || lockState.locked) {
+            bottomBarHeightDp = 0.dp
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(AgBg)) {
+        when {
+            !lockState.initialized -> {
+                VaultSplashLoadingScreen()
+            }
+            lockState.locked -> {
+                VaultLockScreen(
+                    lockState = lockState,
+                    masterKeyProvider = viewModel.container.vaultRepository.masterKeyProvider,
+                    onUnlockPassword = { pw, done -> viewModel.unlockVault(pw, done) },
+                    onUnlockBiometric = { done -> viewModel.unlockVaultWithBiometric(done) },
+                    onResetCorruptedVault = { done -> viewModel.resetCorruptedVault(done) }
+                )
+            }
+            else -> {
+                GravityUnlockedContent(
+                    viewModel = viewModel,
+                    activeCount = activeCount,
+                    onBottomBarHeightChange = { bottomBarHeightDp = it }
+                )
+            }
+        }
+
+        val snackbarModifier = if (bottomBarHeightDp > 0.dp) {
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = bottomBarHeightDp)
+        } else {
+            Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .imePadding()
+        }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = snackbarModifier
+        ) { data ->
+            Snackbar(
+                snackbarData = data,
+                containerColor = AgElevated,
+                contentColor = AgText,
+                actionColor = AgAccent
+            )
+        }
+    }
+}
+
+@Composable
+private fun VaultSplashLoadingScreen() {
+    Box(
+        modifier = Modifier.fillMaxSize().background(AgBg),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(32.dp),
+            strokeWidth = 2.5.dp,
+            color = AgAccent
         )
-        return
     }
+}
 
+@Composable
+private fun GravityUnlockedContent(
+    viewModel: AppViewModel,
+    activeCount: Int,
+    onBottomBarHeightChange: (Dp) -> Unit
+) {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Routes.SERVERS
     val density = LocalDensity.current
     val imeInsets = WindowInsets.ime
-    val imeVisible by remember(density, imeInsets) {
-        derivedStateOf { imeInsets.getBottom(density) > 0 }
+    val navInsets = WindowInsets.navigationBars
+    // Hide terminal bottom bar only once IME rises past the bottom bar height to avoid a downward jump.
+    val imeCoversBottomBar by remember(density, imeInsets, navInsets) {
+        val barHeightPx = with(density) { 80.dp.roundToPx() }
+        derivedStateOf {
+            val imeBottom = imeInsets.getBottom(density)
+            val threshold = navInsets.getBottom(density) + barHeightPx
+            imeBottom >= threshold
+        }
     }
-    val hideBottomBar = currentRoute == Routes.SYNC || currentRoute == Routes.KEYS || currentRoute == Routes.TOOLS || (currentRoute == Routes.TERMINAL && imeVisible)
+    val hideBottomBar = currentRoute == Routes.SYNC ||
+        currentRoute == Routes.KEYS ||
+        currentRoute == Routes.TOOLS ||
+        (currentRoute == Routes.TERMINAL && imeCoversBottomBar)
+
+    LaunchedEffect(hideBottomBar) {
+        if (hideBottomBar) onBottomBarHeightChange(0.dp)
+    }
 
     fun navigateTab(route: String) {
         if (currentRoute == route || navController.currentDestination?.route == route) return
@@ -101,14 +193,19 @@ fun GravitySshRoot(viewModel: AppViewModel) {
 
     Scaffold(
         containerColor = AgBg,
-        snackbarHost = {
-            SnackbarHost(snackbarHostState) { data ->
-                Snackbar(snackbarData = data, containerColor = AgElevated, contentColor = AgText, actionColor = AgAccent)
-            }
-        },
         bottomBar = {
             if (!hideBottomBar) {
-                GravityBottomBar(currentRoute = currentRoute, activeSessionCount = activeCount, onSelect = ::navigateTab)
+                Box(
+                    modifier = Modifier.onSizeChanged { size ->
+                        onBottomBarHeightChange(with(density) { size.height.toDp() })
+                    }
+                ) {
+                    GravityBottomBar(
+                        currentRoute = currentRoute,
+                        activeSessionCount = activeCount,
+                        onSelect = ::navigateTab
+                    )
+                }
             }
         }
     ) { innerPadding ->

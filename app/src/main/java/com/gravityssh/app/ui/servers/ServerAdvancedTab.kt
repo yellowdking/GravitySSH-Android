@@ -30,7 +30,7 @@ fun ServerAdvancedTab(
         AgTextField(
             timeoutText,
             onTimeoutTextChange,
-            "连接超时 (秒)",
+            "连接超时 (3-120秒)",
             placeholder = "15",
             mono = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -39,7 +39,7 @@ fun ServerAdvancedTab(
         AgTextField(
             keepAliveText,
             onKeepAliveTextChange,
-            "心跳间隔 (秒)",
+            "心跳间隔 (0-600秒)",
             placeholder = "30",
             mono = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
