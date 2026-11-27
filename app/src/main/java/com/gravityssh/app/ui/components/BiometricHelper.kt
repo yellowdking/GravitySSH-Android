@@ -2,24 +2,34 @@ package com.gravityssh.app.ui.components
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.os.Build
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 
 object BiometricHelper {
-    private const val ALLOWED_AUTHENTICATORS =
+    private const val API30_AUTHENTICATORS =
+        BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    private const val API28_AUTHENTICATORS =
+        BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    private const val LEGACY_AUTHENTICATORS =
         BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
 
     fun canAuthenticate(context: Context): Boolean {
         val bm = BiometricManager.from(context)
-        return bm.canAuthenticate(ALLOWED_AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
+        val authenticators = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> API30_AUTHENTICATORS
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> API28_AUTHENTICATORS
+            else -> LEGACY_AUTHENTICATORS
+        }
+        return bm.canAuthenticate(authenticators) == BiometricManager.BIOMETRIC_SUCCESS
     }
 
     fun authenticate(
         context: Context,
         title: String = "解锁 GravitySSH 保险库",
-        subtitle: String = "请验证指纹或人脸",
+        subtitle: String = "请验证指纹、人脸或设备锁屏凭据",
         negativeButtonText: String = "使用密码",
         onSuccess: () -> Unit,
         onError: (String) -> Unit
@@ -43,14 +53,29 @@ object BiometricHelper {
                 }
             }
         }
-        val prompt = BiometricPrompt(activity, executor, callback)
-        val info = BiometricPrompt.PromptInfo.Builder()
-            .setTitle(title)
-            .setSubtitle(subtitle)
-            .setAllowedAuthenticators(ALLOWED_AUTHENTICATORS)
-            .setNegativeButtonText(negativeButtonText)
-            .build()
-        prompt.authenticate(info)
+        try {
+            val prompt = BiometricPrompt(activity, executor, callback)
+            val builder = BiometricPrompt.PromptInfo.Builder()
+                .setTitle(title)
+                .setSubtitle(subtitle)
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                    // DEVICE_CREDENTIAL requires omitting setNegativeButtonText on API 30+
+                    builder.setAllowedAuthenticators(API30_AUTHENTICATORS)
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> {
+                    @Suppress("DEPRECATION")
+                    builder.setDeviceCredentialAllowed(true)
+                }
+                else -> {
+                    builder.setAllowedAuthenticators(LEGACY_AUTHENTICATORS)
+                        .setNegativeButtonText(negativeButtonText)
+                }
+            }
+            prompt.authenticate(builder.build())
+        } catch (e: Exception) {
+            onError(e.message ?: "无法启动生物识别验证")
+        }
     }
 
     private fun Context.findFragmentActivity(): FragmentActivity? {

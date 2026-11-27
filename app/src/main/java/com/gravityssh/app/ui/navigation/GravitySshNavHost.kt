@@ -91,6 +91,7 @@ fun GravitySshRoot(viewModel: AppViewModel) {
     val hideBottomBar = currentRoute == Routes.SYNC || currentRoute == Routes.KEYS || currentRoute == Routes.TOOLS || (currentRoute == Routes.TERMINAL && imeVisible)
 
     fun navigateTab(route: String) {
+        if (currentRoute == route || navController.currentDestination?.route == route) return
         navController.navigate(route) {
             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
             launchSingleTop = true
@@ -132,13 +133,16 @@ fun GravitySshRoot(viewModel: AppViewModel) {
                     TerminalWorkspaceScreen(viewModel = viewModel, onJumpToServers = { navigateTab(Routes.SERVERS) })
                 }
                 composable(Routes.KEYS) {
-                    KeyVaultScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    KeyVaultScreen(viewModel = viewModel, onBack = { navController.popBackStack(Routes.KEYS, inclusive = true) })
                 }
                 composable(Routes.TOOLS) {
                     ToolsScreen(
                         viewModel = viewModel,
-                        onJumpToTerminal = { navigateTab(Routes.TERMINAL) },
-                        onBack = { navController.popBackStack() }
+                        onJumpToTerminal = {
+                            navController.popBackStack(Routes.TOOLS, inclusive = true)
+                            navigateTab(Routes.TERMINAL)
+                        },
+                        onBack = { navController.popBackStack(Routes.TOOLS, inclusive = true) }
                     )
                 }
                 composable(Routes.SETTINGS) {
@@ -150,7 +154,7 @@ fun GravitySshRoot(viewModel: AppViewModel) {
                     )
                 }
                 composable(Routes.SYNC) {
-                    SyncScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    SyncScreen(viewModel = viewModel, onBack = { navController.popBackStack(Routes.SYNC, inclusive = true) })
                 }
             }
         }
