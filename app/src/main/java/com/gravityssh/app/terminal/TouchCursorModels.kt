@@ -18,11 +18,11 @@ enum class TouchCursorMode(
     companion object {
         fun fromId(id: String): TouchCursorMode {
             val normalized = id.trim().lowercase()
-            return values().firstOrNull { it.id == normalized } ?: AUTO
+            return entries.firstOrNull { it.id == normalized } ?: AUTO
         }
 
         fun next(current: TouchCursorMode): TouchCursorMode {
-            val all = values()
+            val all = entries
             return all[(current.ordinal + 1) % all.size]
         }
     }
@@ -41,11 +41,11 @@ enum class TouchSensitivity(
     companion object {
         fun fromId(id: String): TouchSensitivity {
             val normalized = id.trim().lowercase()
-            return values().firstOrNull { it.id == normalized } ?: BALANCED
+            return entries.firstOrNull { it.id == normalized } ?: BALANCED
         }
 
         fun next(current: TouchSensitivity): TouchSensitivity {
-            val all = values()
+            val all = entries
             return all[(current.ordinal + 1) % all.size]
         }
     }

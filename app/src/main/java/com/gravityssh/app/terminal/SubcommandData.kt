@@ -32,11 +32,11 @@ object SubcommandData {
   private val dnfL = s("update -y^更新;install -y ^安装;remove -y ^卸载;search ^搜索")
 
   val l1: Map<String, List<SubcmdCandidate>> = mapOf(
-    "docker" to s("ps -a^全部容器;compose ^编排;logs -f --tail 100 ^实时日志;exec -it ^进容器;images^镜像;restart ^重启;pull ^拉镜像;stats^监控;rm -f ^删容器;inspect ^详情;network ls^网络;volume ls^数据卷;system prune -af^清理"),
+    "docker" to s("ps -a^全部容器;compose ^编排;logs -f --tail 100 ^实时日志;ps^运行容器;exec -it ^进容器;images^镜像;restart ^重启;pull ^拉镜像;stats --no-stream^资源快照;rm -f ^删容器;inspect ^详情;network ls^网络;volume ls^数据卷;system prune -af^清理"),
     "systemctl" to s("status ^状态;restart ^重启;reload ^重载;start ^启动;stop ^停止;enable --now ^自启;disable ^禁自启;daemon-reload^重载单元;list-units --failed^失败项"),
     "journalctl" to s("-u ^服务日志;-xe --no-pager^错误日志;-f^实时日志;--since \"1 hour ago\"^近1h"),
     "apt" to aptL, "apt-get" to aptL,
-    "apk" to s("update^刷索引;upgrade^升级;add --no-cache ^安装;del ^卸载;search ^搜索;info^包信息"),
+    "apk" to s("update^刷索引;upgrade^升级;update && apk upgrade^更新升级;add --no-cache ^安装;del ^卸载;search ^搜索;info^包信息"),
     "dnf" to dnfL, "yum" to dnfL,
     "git" to s("status^状态;pull --rebase^拉取变基;push^推送;log --oneline -20^近20提交;diff^变更;checkout ^切分支;branch -a^分支;add .^暂存全部;commit -m \"\"^提交;stash^暂存"),
     "kubectl" to s("get pods -A^全部Pod;get svc -A^全部Svc;get nodes^节点;logs -f --tail=100 ^日志;describe pod ^详情;apply -f ^应用;exec -it ^进容器"),
@@ -54,6 +54,7 @@ object SubcommandData {
     "find" to s(". -name ^按名找;. -type f ^找文件;. -mtime -1^近24h"),
     "grep" to s("-rn ^递归行号;-i ^忽略大小写;-E ^正则"),
     "ls" to s("-la^全详细;-lh^可读;-lt^按时间"),
+    "tail" to s("-f -n 100 ^实时日志;-n 50 ^末尾50行"),
     "df" to s("-h^可读;-Th^含类型"),
     "du" to s("-sh *^当前大小;-h --max-depth=1^一级汇总"),
     "ps" to s("aux^全部进程;aux | grep ^搜进程;-ef^完整"),
@@ -61,7 +62,7 @@ object SubcommandData {
   )
 
   val l2: Map<String, List<SubcmdCandidate>> = mapOf(
-    "docker compose" to s("up -d^后台启动;down^停止移除;pull^拉镜像;logs -f --tail 100^实时日志;restart^重启;ps^状态;build^构建;exec ^进服务;up -d --force-recreate^强制重建"),
+    "docker compose" to s("up -d^后台启动;down^停止移除;pull^拉镜像;logs -f --tail 100^实时日志;restart^重启;ps^状态;build^构建;exec ^进服务;up -d --force-recreate^强制重建;pull && docker compose up -d^拉取滚动更新"),
     "docker system" to s("prune -af^清理资源;df^磁盘占用"),
     "docker network" to s("ls^网络列表;inspect ^网络详情"),
     "docker volume" to s("ls^卷列表;prune^清理卷"),
