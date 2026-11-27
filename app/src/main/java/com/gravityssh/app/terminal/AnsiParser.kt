@@ -9,6 +9,9 @@ class AnsiParser(
 
     private var state = State.GROUND
     private val csiBuf = StringBuilder(32)
+    private val csiIntermediates = StringBuilder(8)
+    private var csiPrivatePrefix: Char = '\u0000'
+    private var csiInvalid = false
     private val oscBuf = StringBuilder(128)
     private val csiParams = IntArray(32)
     private var csiParamCount = 0
@@ -24,6 +27,9 @@ class AnsiParser(
     fun reset() {
         state = State.GROUND
         csiBuf.setLength(0)
+        csiIntermediates.setLength(0)
+        csiPrivatePrefix = '\u0000'
+        csiInvalid = false
         oscBuf.setLength(0)
         csiParamCount = 0
         lastPrintedCodePoint = 0
@@ -33,6 +39,17 @@ class AnsiParser(
         g1DecGraphics = false
         useG1 = false
         pendingReplies = null
+    }
+
+    internal fun pendingEscapePrefix(): String = when (state) {
+        State.ESC -> "\u001B"
+        State.CSI -> buildString {
+            append("\u001B[")
+            if (csiPrivatePrefix != '\u0000') append(csiPrivatePrefix)
+            append(csiBuf)
+            append(csiIntermediates)
+        }
+        else -> ""
     }
 
     fun feed(text: String) {
@@ -145,7 +162,13 @@ class AnsiParser(
 
     private fun handleEsc(ch: Char) {
         when (ch) {
-            '[' -> { csiBuf.setLength(0); state = State.CSI }
+            '[' -> {
+                csiBuf.setLength(0)
+                csiIntermediates.setLength(0)
+                csiPrivatePrefix = '\u0000'
+                csiInvalid = false
+                state = State.CSI
+            }
             ']' -> { oscBuf.setLength(0); state = State.OSC }
             'P', '_', '^', 'X' -> state = State.STR_SKIP
             '(' -> { charsetSlot = 0; state = State.CHARSET }
@@ -181,15 +204,36 @@ class AnsiParser(
     }
 
     private fun handleCsi(ch: Char) {
+        val code = ch.code
         when {
             ch == '\u001B' -> state = State.ESC
             ch == '\u0018' || ch == '\u001A' -> state = State.GROUND
-            ch.code < 0x20 -> handleGround(ch.code)
-            ch.code in 0x40..0x7E -> {
+            code < 0x20 -> handleGround(code)
+            code == 0x7F -> Unit
+            code in 0x40..0x7E -> {
                 executeCsi(ch)
                 state = State.GROUND
             }
-            else -> if (csiBuf.length < 128) csiBuf.append(ch)
+            code in 0x20..0x2F -> {
+                if (csiIntermediates.length < 8) csiIntermediates.append(ch) else csiInvalid = true
+            }
+            code in 0x3C..0x3F -> {
+                if (csiPrivatePrefix == '\u0000' && csiBuf.isEmpty() && csiIntermediates.isEmpty()) {
+                    csiPrivatePrefix = ch
+                } else {
+                    csiInvalid = true
+                }
+            }
+            code in 0x30..0x3B -> {
+                if (csiIntermediates.isNotEmpty()) {
+                    csiInvalid = true
+                } else if (csiBuf.length < 128) {
+                    csiBuf.append(ch)
+                } else {
+                    csiInvalid = true
+                }
+            }
+            else -> csiInvalid = true
         }
     }
 
@@ -221,22 +265,20 @@ class AnsiParser(
     }
 
     private fun executeCsi(finalChar: Char) {
-        val len = csiBuf.length
-        val first = if (len > 0) csiBuf[0] else '\u0000'
-        val isPrivate = first == '?'
-        if (!isPrivate && (first == '>' || first == '=' || first == '!')) return
+        if (csiInvalid) return
+        if (csiIntermediates.isNotEmpty()) {
+            executeCsiWithIntermediates(finalChar)
+            return
+        }
+        val isPrivate = csiPrivatePrefix == '?'
+        if (!isPrivate && csiPrivatePrefix != '\u0000') return
 
         if (!isPrivate && finalChar == 'm') {
             buffer.style = AnsiSgrHelper.apply(buffer.style, csiBuf)
             return
         }
 
-        val startIdx = if (isPrivate) 1 else 0
-        for (i in startIdx until len) {
-            val c = csiBuf[i].code
-            if (c in 0x20..0x2F) return // Ignore unhandled CSI intermediate bytes (e.g. SL/SR/DECSCUSR)
-        }
-        parseCsiParams(startIdx, len)
+        parseCsiParams(0, csiBuf.length)
 
         if (isPrivate) {
             if (finalChar == 'h' || finalChar == 'l') {
@@ -281,6 +323,21 @@ class AnsiParser(
                 6 -> emitReply("\u001B[${buffer.cursorRow + 1};${buffer.cursorCol + 1}R")
             }
             'c' -> if (param0(0) == 0) emitReply("\u001B[?62;c")
+        }
+    }
+
+    private fun executeCsiWithIntermediates(finalChar: Char) {
+        // Properly consume CSI sequences carrying ECMA-48 intermediate bytes (0x20..0x2F),
+        // such as DECSCUSR (CSI Ps SP q), SL/SR (CSI Ps SP @ / A), DECRQM (CSI ? Ps $ p),
+        // and DECSTR (CSI ! p), without misfiring plain CSI handlers.
+        if (csiPrivatePrefix == '\u0000' && csiIntermediates.length == 1 && csiIntermediates[0] == '!' && finalChar == 'p') {
+            // DECSTR soft terminal reset (without forcibly exiting alternate screen)
+            buffer.applicationCursorKeys = false
+            buffer.cursorVisible = true
+            buffer.style = TerminalStyle()
+            g0DecGraphics = false
+            g1DecGraphics = false
+            useG1 = false
         }
     }
 

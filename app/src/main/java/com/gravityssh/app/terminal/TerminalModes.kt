@@ -6,7 +6,7 @@ internal object TerminalModes {
     private const val MOUSE_NORMAL_BIT = 1
     private const val MOUSE_BUTTON_BIT = 2
     private const val MOUSE_ANY_BIT = 4
-    private val ALT_SCREEN_ENTER_RE = Regex("\\u001B\\[\\?(?:[0-9]+;)*(?:1049|1047|47)(?:;[0-9]+)*h")
+    private val ALT_SCREEN_ENTER_RE = Regex("\\u001B\\[\\?(?:[0-9]*;)*0*(?:1049|1047|47)(?:;[0-9]*)*h")
 
     fun updateMouseMask(currentMask: Int, modeCode: Int, enable: Boolean): Int {
         val bit = when (modeCode) {

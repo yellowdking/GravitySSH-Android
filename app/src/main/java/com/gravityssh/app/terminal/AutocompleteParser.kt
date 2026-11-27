@@ -16,7 +16,8 @@ object AutocompleteParser {
  private val WT=Regex("\\S+\\s*$")
  private val WR=w("command time nohup")
  private val PF=w("./ ../ / ~/")
- private val RST=w("A B C D H F 1~ 4~")
+ private const val BP_START="\u001B[200~"
+ private const val BP_END="\u001B[201~"
  private val WF=mapOf("sudo" to (w("-u -g -C -p -t -h") to w("-E -H -i -s -n -k -A -b -v")),"env" to (w("-u -C --unset --chdir") to w("-i -0 --ignore-environment -")))
  fun parseLine(input: String, cwd: String, homeDir: String = "/"): ParsedLine {
   val s=input;var q=NQ;var e=false;var s0=0;var i=0;val n=s.length
@@ -101,14 +102,34 @@ object AutocompleteParser {
   return CompletionEdit(a.codePointCount(i,a.length),b.drop(i))
  }
  fun applyTerminalInputToLine(currentLine:String,rawData:String):String {
-  val r=rawData
-  if (r.startsWith("\u001B")) return if (r.length in 3..4&&r[1] in "[O"&&r.drop(2) in RST) "" else currentLine
-  return r.fold(currentLine) {a,ch->when (val c=ch.code) {
-   10,13,3,4,21,9->""
-   127,8->if (a.isEmpty()) "" else a.take(a.offsetByCodePoints(a.length,-1))
-   23->a.replace(WT,"")
-   else->if (c>=32) a+ch else a
-  }}
+  var acc=currentLine
+  var i=0
+  val n=rawData.length
+  while (i<n) {
+   val ch=rawData[i]
+   val c=ch.code
+   if (ch=='\u001B') {
+    if (rawData.startsWith(BP_START,i)) {
+     val endIdx=rawData.indexOf(BP_END,i+BP_START.length)
+     if (endIdx<0) return ""
+     val inner=rawData.substring(i+BP_START.length,endIdx)
+     if (inner.any {it.code<32||it.code==127||it=='\u009B'}) return ""
+     acc+=inner
+     i=endIdx+BP_END.length
+     continue
+    }
+    return ""
+   }
+   if (ch=='\u009B') return ""
+   when (c) {
+    10,13,3,4,21,9->{acc=""}
+    127,8->{if (acc.isNotEmpty()) acc=acc.take(acc.offsetByCodePoints(acc.length,-1))}
+    23->{acc=acc.replace(WT,"")}
+    else->if (c>=32) acc+=ch else return ""
+   }
+   i++
+  }
+  return acc
  }
  fun activeTokenPrefix(input:String,source:String):String {
   if (input.isBlank()) return ""
