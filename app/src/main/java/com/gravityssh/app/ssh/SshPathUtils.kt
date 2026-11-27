@@ -63,6 +63,20 @@ internal object SshPathUtils {
 
     fun shellQuote(s: String): String = "'${s.replace("'", "'\"'\"'")}'"
 
+    fun filterLsItems(rawList: List<RemoteResourceInfo>, showHidden: Boolean): List<RemoteResourceInfo> =
+        rawList.filter { info ->
+            info.name != "." && info.name != ".." && (showHidden || !info.name.startsWith("."))
+        }
+
+    fun mapAndSortEntries(
+        rawList: List<RemoteResourceInfo>,
+        showHidden: Boolean,
+        isDirOverride: ((RemoteResourceInfo) -> Boolean)? = null,
+        includeModTimeIso: Boolean = true
+    ): List<SFTPFileEntry> = filterLsItems(rawList, showHidden)
+        .map { info -> toSftpFileEntry(info, isDirOverride?.invoke(info), includeModTimeIso) }
+        .sortedWith(ENTRY_COMPARATOR)
+
     fun toSftpFileEntry(
         info: RemoteResourceInfo,
         isDirOverride: Boolean? = null,

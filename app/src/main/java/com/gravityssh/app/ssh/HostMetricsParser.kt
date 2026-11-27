@@ -3,6 +3,13 @@ package com.gravityssh.app.ssh
 import com.gravityssh.app.model.HostMetrics
 import java.time.Instant
 
+internal data class ParsedHostMetrics(
+    val metrics: HostMetrics,
+    val cpu: CpuSample?,
+    val net: NetSample?,
+    val parsedCores: Int
+)
+
 internal object HostMetricsParser {
 
     private val WS_RE = Regex("\\s+")
@@ -14,12 +21,27 @@ internal object HostMetricsParser {
         prevCpu: CpuSample?,
         prevNet: NetSample?,
         prevSampleMs: Long,
-        nowMs: Long
+        nowMs: Long,
+        fallbackCores: Int = 1
     ): Triple<HostMetrics, CpuSample?, NetSample?> {
+        val detailed = parseDetailed(sessionId, raw, latencyMs, prevCpu, prevNet, prevSampleMs, nowMs, fallbackCores)
+        return Triple(detailed.metrics, detailed.cpu, detailed.net)
+    }
+
+    fun parseDetailed(
+        sessionId: String,
+        raw: String,
+        latencyMs: Long,
+        prevCpu: CpuSample?,
+        prevNet: NetSample?,
+        prevSampleMs: Long,
+        nowMs: Long,
+        fallbackCores: Int = 1
+    ): ParsedHostMetrics {
         if (raw.contains("UNSUPPORTED")) {
-            return Triple(
+            return ParsedHostMetrics(
                 HostMetrics(sessionId = sessionId, supported = false, latencyMs = latencyMs, updatedAt = Instant.ofEpochMilli(nowMs).toString()),
-                null, null
+                null, null, 0
             )
         }
         var section = ""
@@ -108,16 +130,19 @@ internal object HostMetricsParser {
             }
         }
 
-        return Triple(
-            HostMetrics(
+        val effectiveCores = if (cores > 0) cores else fallbackCores.coerceAtLeast(1)
+        return ParsedHostMetrics(
+            metrics = HostMetrics(
                 sessionId = sessionId, supported = supported, latencyMs = latencyMs,
                 cpuPercent = cpuPct, memUsedMb = memUsedMb, memTotalMb = memTotalMb, memPercent = memPct,
                 diskMount = diskMount, diskPercent = diskPct, netRxKbps = rxKbps, netTxKbps = txKbps,
-                load1 = load1, cores = if (cores > 0) cores else 1,
+                load1 = load1, cores = effectiveCores,
                 hasGpu = hasGpu, gpuUtil = gpuUtil, gpuName = gpuName,
                 updatedAt = Instant.ofEpochMilli(nowMs).toString()
             ),
-            curCpu, curNet
+            cpu = curCpu,
+            net = curNet,
+            parsedCores = cores
         )
     }
 }

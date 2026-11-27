@@ -1,12 +1,12 @@
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 
-# App models & @Serializable types across model/vault/sync/terminal
--keep class com.gravityssh.app.model.** { *; }
--keep,includedescriptorclasses class com.gravityssh.app.**$$serializer { *; }
--keepclassmembers class com.gravityssh.app.** {
+# App @Serializable types across model/sync/terminal/vault
+-keep,includedescriptorclasses class com.gravityssh.app.model.**$$serializer { *; }
+-keep,includedescriptorclasses class com.gravityssh.app.sync.**$$serializer { *; }
+-keep,includedescriptorclasses class com.gravityssh.app.terminal.**$$serializer { *; }
+-keep,includedescriptorclasses class com.gravityssh.app.vault.**$$serializer { *; }
+-keepclassmembers class com.gravityssh.app.model.**,com.gravityssh.app.sync.**,com.gravityssh.app.terminal.**,com.gravityssh.app.vault.** {
     *** Companion;
-}
--keepclasseswithmembers class com.gravityssh.app.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
 
@@ -55,17 +55,11 @@
 -keep class org.bouncycastle.jcajce.provider.asymmetric.x509.** { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.util.** { *; }
 
-# Symmetric ciphers, Poly1305 & KDFs (AES/GCM/CTR/CBC, ChaCha20-Poly1305, Blowfish, 3DES, PBKDF2, scrypt)
+# Symmetric ciphers, Poly1305 & KDFs (AES/GCM/CTR/CBC, ChaCha20-Poly1305, 3DES, PBKDF2, PKCS12)
 -keep class org.bouncycastle.jcajce.provider.symmetric.AES { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.AES$* { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.Blowfish { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.Blowfish$* { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.DES { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.DES$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.DESede { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.DESede$* { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.ARC4 { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.ARC4$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.ChaCha { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.ChaCha$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.Poly1305 { *; }
@@ -74,15 +68,11 @@
 -keep class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF2$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.PBEPKCS12 { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.PBEPKCS12$* { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.SCRYPT { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.SCRYPT$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.util.** { *; }
 
-# Digests & HMACs (SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5)
+# Digests & HMACs (SHA-1, SHA-256, SHA-384, SHA-512, MD5)
 -keep class org.bouncycastle.jcajce.provider.digest.SHA1 { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.SHA1$* { *; }
--keep class org.bouncycastle.jcajce.provider.digest.SHA224 { *; }
--keep class org.bouncycastle.jcajce.provider.digest.SHA224$* { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.SHA256 { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.SHA256$* { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.SHA384 { *; }

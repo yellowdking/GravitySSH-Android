@@ -26,20 +26,12 @@ internal class SftpTransferOps(
         val baos = ByteArrayOutputStream(initialCap)
         sftp.open(clean, EnumSet.of(OpenMode.READ)).use { rf ->
             rf.ReadAheadRemoteFileInputStream(MAX_UNCONFIRMED).use { input ->
-                val buf = ByteArray(IO_BUFFER_SIZE)
-                var totalRead = 0L
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    if (n > 0) {
-                        totalRead += n
-                        if (totalRead > SftpService.MAX_EDITOR_BYTES) {
-                            throw IOException("文件超过 1 MB，无法在线编辑")
-                        }
-                        baos.write(buf, 0, n)
-                    }
-                }
+                copyStreamWithProgress(
+                    input = input,
+                    output = baos,
+                    maxBytes = SftpService.MAX_EDITOR_BYTES.toLong(),
+                    limitErrorMsg = "文件超过 1 MB，无法在线编辑"
+                )
             }
         }
         val bytes = baos.toByteArray()
@@ -74,36 +66,15 @@ internal class SftpTransferOps(
     ) = withContext(Dispatchers.IO) {
         val sftp = sessionManager.requireSftp(sessionId)
         val clean = SshPathUtils.normalizePosixPath(remotePath)
-        val tid = UUID.randomUUID().toString()
-        val fileName = clean.substringAfterLast('/')
-        var sent = 0L
-        var lastEmitMs = 0L
-        var lastEmitPct = -1
-        sftp.open(clean, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
+        val emitter = ProgressEmitter(sessionId, "upload", clean, totalBytes, onProgress)
+        val sent = sftp.open(clean, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
             rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
-                val buf = ByteArray(IO_BUFFER_SIZE)
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    if (n > 0) {
-                        out.write(buf, 0, n)
-                        sent += n
-                        val pct = if (totalBytes > 0) ((sent * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitMs >= PROGRESS_MIN_INTERVAL_MS ||
-                            (totalBytes > 0 && pct - lastEmitPct >= PROGRESS_MIN_PCT_DELTA)
-                        ) {
-                            lastEmitMs = now
-                            lastEmitPct = pct
-                            onProgress(TransferProgress(tid, sessionId, "upload", fileName, clean, sent, totalBytes, pct, "running"))
-                        }
-                    }
-                }
+                val written = copyStreamWithProgress(input, out) { emitter.maybeEmit(it) }
                 out.flush()
+                written
             }
         }
-        onProgress(TransferProgress(tid, sessionId, "upload", fileName, clean, sent, sent, 100, "done"))
+        emitter.emitDone(sent, totalOverride = sent)
     }
 
     suspend fun downloadStream(
@@ -115,36 +86,68 @@ internal class SftpTransferOps(
         val sftp = sessionManager.requireSftp(sessionId)
         val clean = SshPathUtils.normalizePosixPath(remotePath)
         val total = runCatching { sftp.stat(clean).size }.getOrDefault(-1L)
-        val tid = UUID.randomUUID().toString()
-        val fileName = clean.substringAfterLast('/')
-        var readTotal = 0L
-        var lastEmitMs = 0L
-        var lastEmitPct = -1
-        sftp.open(clean, EnumSet.of(OpenMode.READ)).use { rf ->
+        val emitter = ProgressEmitter(sessionId, "download", clean, total, onProgress)
+        val readTotal = sftp.open(clean, EnumSet.of(OpenMode.READ)).use { rf ->
             rf.ReadAheadRemoteFileInputStream(MAX_UNCONFIRMED).use { input ->
-                val buf = ByteArray(IO_BUFFER_SIZE)
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    if (n > 0) {
-                        output.write(buf, 0, n)
-                        readTotal += n
-                        val pct = if (total > 0) ((readTotal * 100) / total).toInt().coerceIn(0, 100) else 0
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitMs >= PROGRESS_MIN_INTERVAL_MS ||
-                            (total > 0 && pct - lastEmitPct >= PROGRESS_MIN_PCT_DELTA)
-                        ) {
-                            lastEmitMs = now
-                            lastEmitPct = pct
-                            onProgress(TransferProgress(tid, sessionId, "download", fileName, clean, readTotal, total, pct, "running"))
-                        }
-                    }
-                }
+                copyStreamWithProgress(input, output) { emitter.maybeEmit(it) }
             }
         }
         output.flush()
-        onProgress(TransferProgress(tid, sessionId, "download", fileName, clean, readTotal, total, 100, "done"))
+        emitter.emitDone(readTotal, totalOverride = total)
+    }
+
+    private suspend fun copyStreamWithProgress(
+        input: InputStream,
+        output: OutputStream,
+        maxBytes: Long = -1L,
+        limitErrorMsg: String = "",
+        onTransferred: ((Long) -> Unit)? = null
+    ): Long {
+        val buf = ByteArray(IO_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val n = input.read(buf)
+            if (n < 0) break
+            if (n > 0) {
+                total += n
+                if (maxBytes > 0L && total > maxBytes) {
+                    throw IOException(limitErrorMsg)
+                }
+                output.write(buf, 0, n)
+                onTransferred?.invoke(total)
+            }
+        }
+        return total
+    }
+
+    private class ProgressEmitter(
+        private val sessionId: String,
+        private val direction: String,
+        private val remotePath: String,
+        private val totalBytes: Long,
+        private val onProgress: (TransferProgress) -> Unit
+    ) {
+        private val tid = UUID.randomUUID().toString()
+        private val fileName = remotePath.substringAfterLast('/')
+        private var lastEmitMs = 0L
+        private var lastEmitPct = -1
+
+        fun maybeEmit(transferred: Long) {
+            val pct = if (totalBytes > 0) ((transferred * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
+            val now = System.currentTimeMillis()
+            if (now - lastEmitMs >= PROGRESS_MIN_INTERVAL_MS ||
+                (totalBytes > 0 && pct - lastEmitPct >= PROGRESS_MIN_PCT_DELTA)
+            ) {
+                lastEmitMs = now
+                lastEmitPct = pct
+                onProgress(TransferProgress(tid, sessionId, direction, fileName, remotePath, transferred, totalBytes, pct, "running"))
+            }
+        }
+
+        fun emitDone(transferred: Long, totalOverride: Long) {
+            onProgress(TransferProgress(tid, sessionId, direction, fileName, remotePath, transferred, totalOverride, 100, "done"))
+        }
     }
 
     companion object {

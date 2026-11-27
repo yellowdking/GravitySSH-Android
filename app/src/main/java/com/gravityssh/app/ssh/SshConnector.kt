@@ -14,7 +14,11 @@ import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.DirectConnection
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
+import java.net.InetAddress
+import java.net.Socket
+import java.net.SocketAddress
 import java.security.PublicKey
+import javax.net.SocketFactory
 
 class SshConnector(
     private val knownHosts: KnownHostsManager
@@ -85,7 +89,12 @@ class SshConnector(
         val proxy = server.proxy.takeIf { it.type != ProxyType.NONE && it.host.isNotBlank() && it.port > 0 }
         val client = buildClient(targetHost, server.port, timeoutMs, proxy)
         try {
-            client.connect(targetHost, server.port)
+            if (proxy != null) {
+                // Skip local DNS resolution; ProxySocketFactory passes raw targetHost to the proxy
+                client.connect(InetAddress.getByAddress(targetHost, byteArrayOf(0, 0, 0, 0)), server.port)
+            } else {
+                client.connect(targetHost, server.port)
+            }
             SshAuthHelper.authenticate(client, server, allKeys)
             return client
         } catch (e: Exception) {
@@ -102,7 +111,11 @@ class SshConnector(
         val client = SSHClient(config)
         client.connectTimeout = timeoutMs
         client.timeout = timeoutMs
-        if (proxy != null) client.socketFactory = ProxySocketFactory(proxy, timeoutMs)
+        client.socketFactory = if (proxy != null) {
+            ProxySocketFactory(proxy, timeoutMs, targetHost, targetPort)
+        } else {
+            TcpNoDelaySocketFactory
+        }
         client.addHostKeyVerifier(object : HostKeyVerifier {
             override fun verify(hostname: String, port: Int, key: PublicKey): Boolean =
                 knownHosts.verify(targetHost, targetPort, key)
@@ -111,5 +124,35 @@ class SshConnector(
                 knownHosts.findExistingAlgorithms(targetHost, targetPort)
         })
         return client
+    }
+
+    private class TcpNoDelaySocket : Socket() {
+        override fun connect(endpoint: SocketAddress) {
+            super.connect(endpoint)
+            runCatching { tcpNoDelay = true }
+        }
+
+        override fun connect(endpoint: SocketAddress, timeout: Int) {
+            super.connect(endpoint, timeout)
+            runCatching { tcpNoDelay = true }
+        }
+    }
+
+    private object TcpNoDelaySocketFactory : SocketFactory() {
+        private val delegate = getDefault()
+
+        override fun createSocket(): Socket = TcpNoDelaySocket()
+
+        override fun createSocket(host: String, port: Int): Socket =
+            delegate.createSocket(host, port).apply { runCatching { tcpNoDelay = true } }
+
+        override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket =
+            delegate.createSocket(host, port, localHost, localPort).apply { runCatching { tcpNoDelay = true } }
+
+        override fun createSocket(host: InetAddress, port: Int): Socket =
+            delegate.createSocket(host, port).apply { runCatching { tcpNoDelay = true } }
+
+        override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int): Socket =
+            delegate.createSocket(address, port, localAddress, localPort).apply { runCatching { tcpNoDelay = true } }
     }
 }

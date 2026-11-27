@@ -44,16 +44,12 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Fetch Smiley Sans Font
-        run: python3 scripts/fetch_fonts.py
-
       - name: Prepare Release Keystore
         shell: bash
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-          ANDROID_KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
-          ANDROID_KEYSTORE_PASS_KEY: ${{ secrets.ANDROID_KEY_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
         run: |
           if [ -n "$ANDROID_KEYSTORE_B64" ]; then
@@ -67,7 +63,7 @@ jobs:
           fi
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           echo "ANDROID_KEYSTORE_PASS=${ANDROID_KEYSTORE_PASS:-gravityssh}" >> "$GITHUB_ENV"
-          echo "ANDROID_KEYSTORE_ALIAS=${ANDROID_KEYSTORE_ALIAS:-gravityssh}" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=${ANDROID_KEY_ALIAS:-gravityssh}" >> "$GITHUB_ENV"
           echo "ANDROID_KEY_PASS=${ANDROID_KEY_PASS:-gravityssh}" >> "$GITHUB_ENV"
 
       - name: Run Unit Tests & Build Release APK

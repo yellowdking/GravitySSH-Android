@@ -80,11 +80,11 @@ internal class RemoteDirCache(
                     null
                 } else {
                     val resolved = SshPathUtils.resolvePath(sftp, norm)
-                    val sorted = sftp.ls(resolved).asSequence()
-                        .filter { it.name != "." && it.name != ".." }
-                        .map { SshPathUtils.toSftpFileEntry(it, includeModTimeIso = false) }
-                        .sortedWith(SshPathUtils.ENTRY_COMPARATOR)
-                        .toList()
+                    val sorted = SshPathUtils.mapAndSortEntries(
+                        rawList = sftp.ls(resolved),
+                        showHidden = true,
+                        includeModTimeIso = false
+                    )
                     var visCount = 0
                     var hidCount = 0
                     sorted.filter { entry ->

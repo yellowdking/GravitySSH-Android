@@ -13,6 +13,10 @@ import com.gravityssh.app.terminal.UpdateChecker
 import com.gravityssh.app.vault.KnownHostsManager
 import com.gravityssh.app.vault.VaultCrypto
 import com.gravityssh.app.vault.VaultRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.File
 import java.security.Security
@@ -20,9 +24,10 @@ import java.security.Security
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
     private val configDir = File(appContext.filesDir, "config")
+    private val initScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val vaultRepository = VaultRepository(File(configDir, "vault.gsv"), VaultCrypto())
-    val knownHostsManager = KnownHostsManager(File(configDir, "known_hosts.json"))
+    val knownHostsManager = KnownHostsManager(File(configDir, "known_hosts.json"), autoLoad = false)
     val sshConnector = SshConnector(knownHostsManager)
     val keyDeployer = KeyDeployer(sshConnector)
     val sshSessionManager = SshSessionManager(appContext, vaultRepository, sshConnector)
@@ -32,8 +37,12 @@ class AppContainer(context: Context) {
     val updateChecker = UpdateChecker(BuildConfig.APP_VERSION)
 
     init {
-        runCatching { vaultRepository.open() }
-            .onFailure { e -> runCatching { Log.e("AppContainer", "Unexpected vault open failure", e) } }
+        initScope.launch {
+            runCatching { knownHostsManager.load() }
+                .onFailure { e -> runCatching { Log.e("AppContainer", "Unexpected known_hosts load failure", e) } }
+            runCatching { vaultRepository.open() }
+                .onFailure { e -> runCatching { Log.e("AppContainer", "Unexpected vault open failure", e) } }
+        }
     }
 }
 

@@ -42,8 +42,4 @@ internal object SftpDeleteOps {
             sftp.rm(target)
         }
     }
-
-    fun resolvePath(sftp: SFTPClient, raw: String): String = SshPathUtils.resolvePath(sftp, raw)
-
-    fun formatPermissions(mask: Int): String = SshPathUtils.formatPermissions(mask)
 }

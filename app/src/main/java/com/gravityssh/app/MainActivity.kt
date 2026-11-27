@@ -11,12 +11,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.AppViewModelFactory
 import com.gravityssh.app.ui.navigation.GravitySshRoot
 import com.gravityssh.app.ui.theme.GravitySshTheme
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
+
+    private var appContainer: AppContainer? = null
 
     private val notificationPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -31,16 +36,32 @@ class MainActivity : FragmentActivity() {
         requestNotificationPermissionOnceIfNeeded()
 
         val container = GravitySshApp.from(this)
+        appContainer = container
         val viewModel = ViewModelProvider(
             this,
             AppViewModelFactory(container)
         )[AppViewModel::class.java]
+
+        lifecycleScope.launch {
+            val unlockedState = viewModel.vaultState.first { !it.lockState.locked }
+            if (unlockedState.data.settings.checkUpdatesOnStartup &&
+                viewModel.updateResult.value == null &&
+                !viewModel.checkingUpdate.value
+            ) {
+                viewModel.checkUpdates(silent = true)
+            }
+        }
 
         setContent {
             GravitySshTheme {
                 GravitySshRoot(viewModel = viewModel)
             }
         }
+    }
+
+    override fun onStop() {
+        appContainer?.vaultRepository?.flushPendingHistoryAsync()
+        super.onStop()
     }
 
     private fun requestNotificationPermissionOnceIfNeeded() {

@@ -11,13 +11,15 @@ import javax.net.SocketFactory
 
 class ProxySocketFactory(
     private val proxy: ProxyConfig,
-    private val timeoutMs: Int = 15_000
+    private val timeoutMs: Int = 15_000,
+    private val rawTargetHost: String? = null,
+    private val rawTargetPort: Int = -1
 ) : SocketFactory() {
 
-    override fun createSocket(): Socket = ProxyTunnelSocket(proxy, timeoutMs)
+    override fun createSocket(): Socket = ProxyTunnelSocket(proxy, timeoutMs, rawTargetHost, rawTargetPort)
 
     override fun createSocket(host: String, port: Int): Socket =
-        ProxyTunnelSocket(proxy, timeoutMs).apply {
+        ProxyTunnelSocket(proxy, timeoutMs, rawTargetHost ?: host, if (rawTargetPort > 0) rawTargetPort else port).apply {
             connect(InetSocketAddress.createUnresolved(host, port), timeoutMs)
         }
 
@@ -25,7 +27,7 @@ class ProxySocketFactory(
         createSocket(host, port)
 
     override fun createSocket(host: InetAddress, port: Int): Socket =
-        createSocket(host.hostAddress ?: host.hostName, port)
+        createSocket(rawTargetHost ?: host.hostAddress ?: host.hostName, port)
 
     override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int): Socket =
         createSocket(address, port)
@@ -33,20 +35,25 @@ class ProxySocketFactory(
 
 private class ProxyTunnelSocket(
     private val proxy: ProxyConfig,
-    private val defaultTimeoutMs: Int
+    private val defaultTimeoutMs: Int,
+    private val rawTargetHost: String?,
+    private val rawTargetPort: Int
 ) : Socket() {
 
     override fun connect(endpoint: SocketAddress) = connect(endpoint, defaultTimeoutMs)
 
     override fun connect(endpoint: SocketAddress, timeout: Int) {
         val target = endpoint as? InetSocketAddress ?: throw IOException("Unsupported endpoint address")
+        val destHost = rawTargetHost?.takeIf { it.isNotBlank() } ?: target.hostString
+        val destPort = if (rawTargetPort > 0) rawTargetPort else target.port
         val effTimeout = if (timeout > 0) timeout else defaultTimeoutMs
         try {
             super.connect(InetSocketAddress(proxy.host.trim(), proxy.port), effTimeout)
+            runCatching { tcpNoDelay = true }
             soTimeout = effTimeout
             when (proxy.type.lowercase()) {
-                ProxyType.SOCKS5 -> ProxyHandshakes.socks5(getInputStream(), getOutputStream(), proxy, target.hostString, target.port)
-                ProxyType.HTTP -> ProxyHandshakes.httpConnect(getInputStream(), getOutputStream(), proxy, target.hostString, target.port)
+                ProxyType.SOCKS5 -> ProxyHandshakes.socks5(getInputStream(), getOutputStream(), proxy, destHost, destPort)
+                ProxyType.HTTP -> ProxyHandshakes.httpConnect(getInputStream(), getOutputStream(), proxy, destHost, destPort)
                 else -> throw IOException("不支持的代理类型: ${proxy.type}")
             }
             soTimeout = 0
