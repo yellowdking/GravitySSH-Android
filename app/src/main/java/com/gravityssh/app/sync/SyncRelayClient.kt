@@ -13,6 +13,8 @@ import okhttp3.ResponseBody
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 
+class RelayGoneException(message: String) : IOException(message)
+
 open class SyncRelayClient(
     private val appGateKey: String = SyncConfig.APP_GATE_KEY,
     private val pinnedSpkiSha256: String = SyncConfig.PINNED_SPKI_SHA256
@@ -53,12 +55,123 @@ open class SyncRelayClient(
         Unit
     }
 
+    open suspend fun pairInit(
+        relayUrl: String,
+        channelId: String,
+        senderToken: String,
+        ttlSeconds: Int = SyncConfig.DEFAULT_TTL_SECONDS
+    ): PairInitResponse = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PairInitRequest(channelId, senderToken, ttlSeconds)).toByteArray(Charsets.UTF_8)
+        val respText = executePost(relayUrl, "/v1/pair/init", body)
+        json.decodeFromString(PairInitResponse.serializer(), respText)
+    }
+
+    open suspend fun pairRequest(
+        relayUrl: String,
+        channelId: String,
+        requestId: String,
+        salt: String,
+        nonce: String,
+        ciphertext: String
+    ): PairRequestResponse = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(
+            PairRequestBody(channelId, requestId, salt, nonce, ciphertext)
+        ).toByteArray(Charsets.UTF_8)
+        val respText = executePost(
+            relayUrl = relayUrl,
+            path = "/v1/pair/request",
+            rawBody = body,
+            conflictMessage = "已有其他设备正在等待验证，请让发送端重新生成同步码"
+        )
+        json.decodeFromString(PairRequestResponse.serializer(), respText)
+    }
+
+    open suspend fun pairPoll(
+        relayUrl: String,
+        channelId: String,
+        senderToken: String
+    ): PairPollResponse = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PairSenderTokenRequest(channelId, senderToken)).toByteArray(Charsets.UTF_8)
+        val respText = executePostOrNullOn404(relayUrl, "/v1/pair/poll", body)
+            ?: return@withContext PairPollResponse(state = "gone")
+        json.decodeFromString(PairPollResponse.serializer(), respText)
+    }
+
+    open suspend fun pairApprove(
+        relayUrl: String,
+        channelId: String,
+        senderToken: String,
+        requestId: String,
+        salt: String,
+        nonce: String,
+        ciphertext: String
+    ) = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(
+            PairApproveRequest(channelId, senderToken, requestId, salt, nonce, ciphertext)
+        ).toByteArray(Charsets.UTF_8)
+        executePost(relayUrl, "/v1/pair/approve", body)
+        Unit
+    }
+
+    open suspend fun pairReject(
+        relayUrl: String,
+        channelId: String,
+        senderToken: String,
+        requestId: String
+    ) = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PairRejectRequest(channelId, senderToken, requestId)).toByteArray(Charsets.UTF_8)
+        executePost(relayUrl, "/v1/pair/reject", body)
+        Unit
+    }
+
+    open suspend fun pairStatus(
+        relayUrl: String,
+        channelId: String,
+        requestId: String
+    ): PairStatusResponse = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PairStatusRequest(channelId, requestId)).toByteArray(Charsets.UTF_8)
+        val respText = executePost(relayUrl, "/v1/pair/status", body)
+        json.decodeFromString(PairStatusResponse.serializer(), respText)
+    }
+
+    open suspend fun pairCancel(
+        relayUrl: String,
+        channelId: String,
+        senderToken: String
+    ) = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PairSenderTokenRequest(channelId, senderToken)).toByteArray(Charsets.UTF_8)
+        executePost(relayUrl, "/v1/pair/cancel", body)
+        Unit
+    }
+
     private fun executePost(
         relayUrl: String,
         path: String,
         rawBody: ByteArray,
-        isPing: Boolean = false
-    ): String {
+        isPing: Boolean = false,
+        conflictMessage: String = "同步通道冲突，请重新生成同步码"
+    ): String = executePostOrNullOn404(
+        relayUrl = relayUrl,
+        path = path,
+        rawBody = rawBody,
+        isPing = isPing,
+        allow404 = false,
+        conflictMessage = conflictMessage
+    ) ?: throw RelayGoneException(
+        if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
+    )
+
+    private fun executePostOrNullOn404(
+        relayUrl: String,
+        path: String,
+        rawBody: ByteArray,
+        isPing: Boolean = false,
+        allow404: Boolean = true,
+        conflictMessage: String = "同步通道冲突，请重新生成同步码"
+    ): String? {
+        if (rawBody.size > MAX_REQUEST_BYTES) {
+            throw IOException("同步数据体积超过中继限制（2 MiB）")
+        }
         val base = SyncConfig.normalizeRelayUrl(relayUrl).ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
         val url = "$base$path".toHttpUrl()
         val client = when {
@@ -81,11 +194,15 @@ open class SyncRelayClient(
         client.newCall(request).execute().use { resp ->
             val text = readBodyCapped(resp.body)
             when (resp.code) {
-                404 -> throw IOException(
-                    if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
-                )
+                404 -> {
+                    if (allow404) return null
+                    throw RelayGoneException(
+                        if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
+                    )
+                }
                 429 -> throw IOException("同步中继繁忙或请求过于频繁，请稍后重试")
-                409 -> throw IOException("同步通道冲突，请重新生成同步码")
+                409 -> throw IOException(conflictMessage)
+                413 -> throw IOException("同步数据体积超过中继限制（2 MiB）")
             }
             if (!resp.isSuccessful) throw IOException("中继服务返回错误 (${resp.code})")
             return text
@@ -116,6 +233,7 @@ open class SyncRelayClient(
     }
 
     companion object {
+        private const val MAX_REQUEST_BYTES = 2 * 1024 * 1024
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
     }
 }

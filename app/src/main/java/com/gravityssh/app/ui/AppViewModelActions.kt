@@ -182,10 +182,18 @@ fun AppViewModel.testSyncRelay(rawUrl: String, onResult: (Result<Long>) -> Unit)
     }
 }
 
-fun AppViewModel.cancelSyncSend(code: String) {
+fun AppViewModel.cancelSyncSend(sessionIdOrCode: String) {
     viewModelScope.launch {
-        runCatching { container.syncService.cancelSend(code) }
+        runCatching { container.syncService.cancelSend(sessionIdOrCode) }
             .onSuccess { showToast("已撤销同步码") }
             .onFailure { showToast("撤销同步码失败: ${it.message}") }
+    }
+}
+
+fun AppViewModel.rejectSyncSend(sessionId: String, requestId: String) {
+    viewModelScope.launch {
+        runCatching { container.syncService.rejectSend(sessionId, requestId) }
+            .onSuccess { showToast("已拒绝配对请求并撤销同步") }
+            .onFailure { showToast("拒绝配对失败: ${it.message}") }
     }
 }

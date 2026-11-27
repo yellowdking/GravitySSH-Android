@@ -6,6 +6,7 @@ object SyncConfig {
     const val DEFAULT_RELAY_URL = "https://107.172.98.169:54843"
     const val CLIENT_HEADER = "GravitySSH/1"
     const val DEFAULT_TTL_SECONDS = 300
+    const val PAIR_POLL_INTERVAL_MS = 1500L
     const val PBKDF2_ITERATIONS = 200_000
     const val CHANNEL_PREFIX = "gssh-sync-channel-v1:"
     const val QR_SCHEME_PREFIX = "gssh-sync://v1?code="

@@ -29,7 +29,58 @@ data class SyncSendSession(
     val serverCount: Int,
     val keyCount: Int,
     val shortcutCount: Int,
-    val templateCount: Int
+    val templateCount: Int,
+    val sessionId: String = ""
+)
+
+@Serializable
+data class PairRequestPayload(
+    @SerialName("receiverCode") val receiverCode: String,
+    @SerialName("receiverDevice") val receiverDevice: String,
+    @SerialName("receiverPlatform") val receiverPlatform: String = "android",
+    @SerialName("requestedAt") val requestedAt: String = ""
+)
+
+enum class SyncSendPollState {
+    WAITING,
+    REQUESTED,
+    APPROVED,
+    REJECTED,
+    CONSUMED,
+    EXPIRED,
+    ERROR
+}
+
+data class SyncSendPollResult(
+    val state: SyncSendPollState,
+    val requestId: String = "",
+    val receiverCode: String = "",
+    val receiverDevice: String = "",
+    val receiverPlatform: String = "",
+    val requestedAt: String = "",
+    val errorMessage: String? = null
+)
+
+data class SyncReceiveWaitSession(
+    val waitId: String,
+    val receiverCode: String,
+    val sendCode: String,
+    val requestId: String,
+    val relayUrl: String,
+    val expiresAt: String,
+    val expiresAtEpochMs: Long
+)
+
+enum class SyncReceivePollState {
+    PENDING,
+    APPROVED,
+    REJECTED,
+    EXPIRED
+}
+
+data class SyncReceivePollResult(
+    val state: SyncReceivePollState,
+    val preview: SyncReceivePreview? = null
 )
 
 data class SyncReceivePreview(
