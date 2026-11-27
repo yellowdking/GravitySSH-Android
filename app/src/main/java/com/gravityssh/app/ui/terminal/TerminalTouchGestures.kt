@@ -21,10 +21,11 @@ internal suspend fun PointerInputScope.detectTerminalTouchGestures(
   onCancelFling: () -> Unit, onTapCell: (row: Int, col: Int) -> Unit,
   getSelection: () -> TextSelection?, onStartSelectionAt: (row: Int, col: Int) -> Unit,
   onUpdateSelection: (TextSelection?) -> Unit, onSelectionHaptic: () -> Unit,
-  onFontSizeChange: (Float) -> Unit, onScrollOffsetChange: (Int) -> Unit,
+  onFontSizeChange: (Float) -> Unit, onFontSizeCommit: (Float) -> Unit,
+  onScrollOffsetChange: (Int) -> Unit,
   onCursorDragStart: () -> Unit,
-  onCursorDragDelta: (dxDp: Float, dyDp: Float, dtSec: Float, horizontalOnly: Boolean) -> Unit,
-  onCursorDragEnd: (vxDpPerSec: Float, vyDpPerSec: Float, horizontalOnly: Boolean) -> Unit
+  onCursorDragDelta: (dxDp: Float, dyDp: Float, dtSec: Float) -> Unit,
+  onCursorDragEnd: (vxDpPerSec: Float, vyDpPerSec: Float) -> Unit
 ) {
   val vc = viewConfiguration; val slop = vc.touchSlop; val lpMs = vc.longPressTimeoutMillis
   val px = TERM_PAD_X; val py = TERM_PAD_Y
@@ -55,7 +56,7 @@ internal suspend fun PointerInputScope.detectTerminalTouchGestures(
       }
     }
     val t0 = down.uptimeMillis; val ns0 = System.nanoTime()
-    var pm = t0; var dr = false; var mu = false; var lpF = false; var upC = false
+    var pm = t0; var dr = false; var mu = false; var zoomed = false; var lpF = false; var upC = false
     var sAcc = 0f; var cDr = false; var hz = false
     val tr = VelocityTracker().apply { addPosition(t0, p0) }
     while (true) {
@@ -67,9 +68,12 @@ internal suspend fun PointerInputScope.detectTerminalTouchGestures(
       val pr = ev.changes.filter { it.pressed }
       if (pr.isEmpty()) { upC = ev.changes.any { it.isConsumed }; break }
       if (pr.size >= 2) {
-        mu = true; if (cDr) { cDr = false; onCursorDragEnd(0f, 0f, hz) }
+        mu = true; if (cDr) { cDr = false; onCursorDragEnd(0f, 0f) }
         val z = ev.calculateZoom()
-        if (z > 1.015f || z < 0.985f) onFontSizeChange((getFontSizeSp() * z).coerceIn(10f, 22f))
+        if (z > 1.015f || z < 0.985f) {
+          zoomed = true
+          onFontSizeChange((getFontSizeSp() * z).coerceIn(10f, 22f))
+        }
         ev.changes.forEach { it.consume() }; continue
       }
       if (mu) continue
@@ -88,12 +92,15 @@ internal suspend fun PointerInputScope.detectTerminalTouchGestures(
       }
       if (dr && (d.x != 0f || d.y != 0f)) {
         chg.consume()
-        if (cDr) onCursorDragDelta(d.x / density, if (hz) 0f else d.y / density, dt, hz)
+        if (cDr) onCursorDragDelta(d.x / density, if (hz) 0f else d.y / density, dt)
         else {
           sAcc += d.y; val h = ch(); val st = (sAcc / h).toInt()
           if (st != 0) { sAcc -= st * h; onScrollOffsetChange((getScrollOffset() + st).coerceIn(0, getScrollbackSize())) }
         }
       }
+    }
+    if (zoomed) {
+      onFontSizeCommit(getFontSizeSp())
     }
     if (lpF) {
       val c0 = cellAt(p0.x, p0.y); onStartSelectionAt(c0.row, c0.col)
@@ -106,7 +113,7 @@ internal suspend fun PointerInputScope.detectTerminalTouchGestures(
         if (cur != last) { last = cur; onUpdateSelection(TextSelection(a, cur)); onSelectionHaptic() }
       }
     } else if (cDr) {
-      val v = tr.calculateVelocity(); onCursorDragEnd(v.x / density, if (hz) 0f else v.y / density, hz)
+      val v = tr.calculateVelocity(); onCursorDragEnd(v.x / density, if (hz) 0f else v.y / density)
     } else if (!dr && !mu && !upC) {
       if (sel != null) onUpdateSelection(null) else cellAt(p0.x, p0.y).let { onTapCell(it.row, it.col) }
     }

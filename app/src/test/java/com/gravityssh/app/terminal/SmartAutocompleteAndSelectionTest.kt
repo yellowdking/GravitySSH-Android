@@ -113,5 +113,27 @@ class SmartAutocompleteAndSelectionTest {
   eq(SelectionHandle.START,sh.hitTestHandle(px+5*cw-r*0.25f,py+ch+r*0.45f,w,cw,ch,px,py,r))
   eq(SelectionHandle.END,sh.hitTestHandle(px+25*cw+r*0.25f,py+ch+r*0.45f,w,cw,ch,px,py,r))
   eq(SelectionHandle.NONE,sh.hitTestHandle(390f,150f,w,cw,ch,px,py,r))
+
+  // CJK wide selection skips continuation cells cleanly
+  val cjkCtrl=TerminalSessionController("sel2",initialCols=20,initialRows=4,keywordHighlightEnabled={false})
+  cjkCtrl.onRemoteOutput("日志 警告中文 test")
+  val cjkSnap=cjkCtrl.snapshot(0)
+  val cjkWord=sh.selectWordAt(cjkSnap,row=0,col=6)
+  eq("警告中文",sh.extractText(cjkSnap,cjkWord))
+ }
+
+ @Test
+ fun mergedSubcommandDataAndCachedHistoryRanking() {
+  val tailRes=ae.suggest("tail ",limit=3)
+  assertTrue(tailRes.any {it.command=="-f -n 100"})
+  val hist=listOf(
+   r("docker compose logs -f","srv-a","2026-11-26T15:00:00Z"),
+   r("docker ps -a","srv-a","2026-11-26T14:00:00Z")
+  )
+  // Calling twice with the same immutable list hits the parsed-history cache cleanly
+  val first=sg("docker c",h=hist,l=5,sid="srv-a")
+  val second=sg("docker compose l",h=hist,l=5,sid="srv-a")
+  assertTrue(first.any {it.command=="docker compose logs -f"})
+  assertTrue(second.any {it.command=="docker compose logs -f"})
  }
 }
