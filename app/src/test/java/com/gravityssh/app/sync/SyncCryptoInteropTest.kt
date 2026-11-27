@@ -7,6 +7,7 @@ import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
 import com.gravityssh.app.model.SyncReceivePollState
+import com.gravityssh.app.model.SyncReceivePreview
 import com.gravityssh.app.model.SyncSendPollState
 import com.gravityssh.app.vault.VaultCrypto
 import com.gravityssh.app.vault.VaultRepository
@@ -97,7 +98,6 @@ class SyncCryptoInteropTest {
         val repo = VaultRepository(File(tempFolder.root, "vault.gsv"), VaultCrypto(InMemoryMasterKeyProvider()))
         repo.open()
         assertTrue(repo.setMasterPassword("", "pw123").isSuccess)
-
         val pairStatusCalls = AtomicInteger(0)
         var nextBundle = SyncBundle(
             schemaVersion = 1,
