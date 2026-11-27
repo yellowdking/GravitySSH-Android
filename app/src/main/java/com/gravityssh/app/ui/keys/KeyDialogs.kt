@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -29,9 +30,9 @@ fun GenerateKeyDialog(
     onGenerate: (type: String, name: String, comment: String, onResult: (Boolean) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var keyType by remember { mutableStateOf("ed25519") }
-    var name by remember { mutableStateOf("") }
-    var comment by remember { mutableStateOf("gravityssh-android") }
+    var keyType by rememberSaveable { mutableStateOf("ed25519") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var comment by rememberSaveable { mutableStateOf("gravityssh-android") }
     var busy by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -90,10 +91,11 @@ fun ImportKeyDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var name by remember { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("") }
+    // Keep private key PEM and passphrase in-memory only (never persisted to SavedInstanceState Bundle).
     var pem by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("") }
-    var comment by remember { mutableStateOf("") }
+    var comment by rememberSaveable { mutableStateOf("") }
     var readingFile by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
 

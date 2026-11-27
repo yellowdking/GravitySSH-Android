@@ -11,6 +11,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,7 +30,7 @@ fun ServerCardItem(
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val accent = parseHexColor(server.color)
+    val accent = remember(server.color) { parseHexColor(server.color) }
     Surface(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onConnect),
         shape = RoundedCornerShape(14.dp),

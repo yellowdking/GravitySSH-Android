@@ -8,28 +8,43 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.model.SSHKeyRecord
+import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.ui.*
 import com.gravityssh.app.ui.components.AgConfirmDialog
 import com.gravityssh.app.ui.components.AgEmptyState
 import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+private data class KeysVaultSlice(
+    val keys: List<SSHKeyRecord>,
+    val servers: List<ServerConfig>
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun KeyVaultScreen(viewModel: AppViewModel, onBack: () -> Unit) {
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-    val keys = vaultState.data.sshKeys
-    val servers = vaultState.data.servers
+    val slice by remember(viewModel) {
+        viewModel.vaultState
+            .map { KeysVaultSlice(it.data.sshKeys, it.data.servers) }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(
+        initialValue = viewModel.vaultState.value.data.let { KeysVaultSlice(it.sshKeys, it.servers) }
+    )
+    val keys = slice.keys
+    val servers = slice.servers
     val clipboard = LocalClipboardManager.current
 
-    var showGenerate by remember { mutableStateOf(false) }
-    var showImport by remember { mutableStateOf(false) }
+    var showGenerate by rememberSaveable { mutableStateOf(false) }
+    var showImport by rememberSaveable { mutableStateOf(false) }
     var deployingKey by remember { mutableStateOf<SSHKeyRecord?>(null) }
     var deletingKey by remember { mutableStateOf<SSHKeyRecord?>(null) }
 

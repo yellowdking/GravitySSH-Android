@@ -17,6 +17,7 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -88,6 +89,7 @@ fun GravitySshRoot(viewModel: AppViewModel) {
     LaunchedEffect(lockState.initialized, lockState.locked) {
         if (!lockState.initialized || lockState.locked) {
             bottomBarHeightDp = 0.dp
+            viewModel.container.sshSessionManager.setActiveSessionId(null)
         }
     }
 
@@ -161,6 +163,17 @@ private fun GravityUnlockedContent(
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Routes.SERVERS
+    val activeSessionId by viewModel.activeSessionId.collectAsStateWithLifecycle()
+    val visibleTerminalSessionId = if (currentRoute == Routes.TERMINAL) activeSessionId else null
+
+    LaunchedEffect(visibleTerminalSessionId) {
+        viewModel.container.sshSessionManager.setActiveSessionId(visibleTerminalSessionId)
+    }
+    DisposableEffect(viewModel) {
+        onDispose {
+            viewModel.container.sshSessionManager.setActiveSessionId(null)
+        }
+    }
     val density = LocalDensity.current
     val imeInsets = WindowInsets.ime
     val navInsets = WindowInsets.navigationBars
