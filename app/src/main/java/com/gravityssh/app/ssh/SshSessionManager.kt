@@ -26,11 +26,35 @@ class SshSessionManager(
     val tabs: StateFlow<List<SessionTab>> = _tabs.asStateFlow()
     private val _activeSessionId = MutableStateFlow<String?>(null)
     val activeSessionId: StateFlow<String?> = _activeSessionId.asStateFlow()
-    private val worker = SshSessionWorker(scope, vaultRepository, connector, ::updateTab, ::syncKeepAlive) { sid, cmd ->
+    private val _appForeground = MutableStateFlow(true)
+    private val _metricsActiveSessionId = MutableStateFlow<String?>(null)
+    private val worker = SshSessionWorker(
+        scope = scope,
+        vaultRepository = vaultRepository,
+        connector = connector,
+        appForegroundFlow = _appForeground.asStateFlow(),
+        activeSessionIdFlow = _metricsActiveSessionId.asStateFlow(),
+        updateTab = ::updateTab,
+        syncKeepAlive = ::syncKeepAlive
+    ) { sid, cmd ->
         runScript(sid, cmd, autoExecute = true)
     }
 
-    fun selectSession(sessionId: String) { if (sessions.containsKey(sessionId)) _activeSessionId.value = sessionId }
+    fun selectSession(sessionId: String) {
+        if (sessions.containsKey(sessionId)) {
+            _activeSessionId.value = sessionId
+            _metricsActiveSessionId.value = sessionId
+        }
+    }
+
+    fun setActiveSessionId(sessionId: String?) {
+        _metricsActiveSessionId.value = sessionId
+    }
+
+    fun setAppForeground(foreground: Boolean) {
+        _appForeground.value = foreground
+    }
+
     fun getTerminalController(sessionId: String): TerminalSessionController? = sessions[sessionId]?.terminal
 
     fun openSession(server: ServerConfig, cols: Int = 80, rows: Int = 24): String {
@@ -51,6 +75,7 @@ class SshSessionManager(
         val tab = SessionTab(sid, server.id, server.name.ifBlank { server.host }, server.host, server.port, server.username, SessionStatus.CONNECTING)
         _tabs.update { it + tab }
         _activeSessionId.value = sid
+        _metricsActiveSessionId.value = sid
         syncKeepAlive()
         worker.startConnect(m, gen, closePreviousFirst = false)
         return sid
@@ -93,6 +118,7 @@ class SshSessionManager(
         }
         _tabs.update { it.filterNot { t -> t.sessionId == sessionId } }
         if (_activeSessionId.value == sessionId) _activeSessionId.value = _tabs.value.lastOrNull()?.sessionId
+        if (_metricsActiveSessionId.value == sessionId) _metricsActiveSessionId.value = _activeSessionId.value
         if (updateKeepAlive) syncKeepAlive()
     }
 

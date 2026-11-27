@@ -6,6 +6,12 @@ import com.gravityssh.app.vault.VaultRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
@@ -22,6 +28,8 @@ internal class SshSessionWorker(
     private val scope: CoroutineScope,
     private val vaultRepository: VaultRepository,
     private val connector: SshConnector,
+    private val appForegroundFlow: StateFlow<Boolean>,
+    private val activeSessionIdFlow: StateFlow<String?>,
     private val updateTab: (String, (SessionTab) -> SessionTab) -> Unit,
     private val syncKeepAlive: () -> Unit,
     private val runStartup: (String, String) -> Unit
@@ -182,6 +190,7 @@ internal class SshSessionWorker(
             val rawBuf = ByteArray(8192)
             val inBuf = ByteBuffer.allocate(8192 + 16)
             val outBuf = CharBuffer.allocate(8192 + 16)
+            val textBuf = StringBuilder(8192)
             try {
                 val input = shell.inputStream
                 while (isActive && !managed.closed && managed.generation.get() == gen) {
@@ -200,19 +209,31 @@ internal class SshSessionWorker(
                     if (n > 0) {
                         inBuf.put(rawBuf, 0, n)
                         inBuf.flip()
-                        val sb = StringBuilder(n)
-                        while (true) {
-                            outBuf.clear()
-                            val res = decoder.decode(inBuf, outBuf, false)
-                            outBuf.flip()
-                            if (outBuf.hasRemaining()) {
-                                sb.append(outBuf)
+                        outBuf.clear()
+                        val firstRes = decoder.decode(inBuf, outBuf, false)
+                        outBuf.flip()
+                        val chunk = if (firstRes.isUnderflow) {
+                            if (outBuf.hasRemaining()) outBuf.toString() else ""
+                        } else {
+                            textBuf.setLength(0)
+                            if (outBuf.hasRemaining()) textBuf.append(outBuf)
+                            while (true) {
+                                outBuf.clear()
+                                val res = decoder.decode(inBuf, outBuf, false)
+                                outBuf.flip()
+                                if (outBuf.hasRemaining()) textBuf.append(outBuf)
+                                if (res.isUnderflow) break
                             }
-                            if (res.isUnderflow) break
+                            textBuf.toString().also {
+                                textBuf.setLength(0)
+                                if (textBuf.capacity() > READER_MAX_SB_CAPACITY) {
+                                    textBuf.trimToSize()
+                                }
+                            }
                         }
                         inBuf.compact()
-                        if (sb.isNotEmpty() && !managed.closed && managed.generation.get() == gen) {
-                            managed.terminal.onRemoteOutput(sb.toString())
+                        if (chunk.isNotEmpty() && !managed.closed && managed.generation.get() == gen) {
+                            managed.terminal.onRemoteOutput(chunk)
                         }
                     }
                 }
@@ -291,16 +312,46 @@ internal class SshSessionWorker(
     private fun startMetrics(managed: ManagedSession, client: SSHClient, gen: Long) {
         managed.metricsJob = scope.launch {
             delay(800)
+            val monitorEnabledFlow = vaultRepository.state
+                .map { it.data.settings.monitorBarEnabled }
+                .distinctUntilChanged()
             while (isActive && !managed.closed && managed.generation.get() == gen && client.isConnected) {
-                if (vaultRepository.state.value.data.settings.monitorBarEnabled) {
-                    managed.metricsSampler.sample(client)?.let { m ->
-                        if (!managed.closed && managed.generation.get() == gen) {
-                            updateTab(managed.sessionId) { it.copy(metrics = m) }
-                        }
+                awaitMetricsSamplingAllowed(
+                    sessionId = managed.sessionId,
+                    activeSessionIdFlow = activeSessionIdFlow,
+                    appForegroundFlow = appForegroundFlow,
+                    monitorEnabledFlow = monitorEnabledFlow
+                )
+                if (!isActive || managed.closed || managed.generation.get() != gen || !client.isConnected) break
+                managed.metricsSampler.sample(client)?.let { m ->
+                    if (!managed.closed && managed.generation.get() == gen) {
+                        updateTab(managed.sessionId) { it.copy(metrics = m) }
                     }
                 }
                 delay(managed.metricsSampler.recommendedDelayMs())
             }
+        }
+    }
+
+    companion object {
+        private const val READER_MAX_SB_CAPACITY = 32 * 1024
+
+        internal fun shouldSampleMetrics(
+            sessionId: String,
+            activeSessionId: String?,
+            appForeground: Boolean,
+            monitorBarEnabled: Boolean
+        ): Boolean = appForeground && monitorBarEnabled && sessionId == activeSessionId
+
+        internal suspend fun awaitMetricsSamplingAllowed(
+            sessionId: String,
+            activeSessionIdFlow: StateFlow<String?>,
+            appForegroundFlow: StateFlow<Boolean>,
+            monitorEnabledFlow: Flow<Boolean>
+        ) {
+            combine(activeSessionIdFlow, appForegroundFlow, monitorEnabledFlow) { activeId, fg, enabled ->
+                shouldSampleMetrics(sessionId, activeId, fg, enabled)
+            }.first { it }
         }
     }
 }
