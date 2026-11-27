@@ -94,16 +94,27 @@ jobs:
               -dname "CN=GravitySSH, OU=Mobile, O=GravitySSH, L=Net, S=Net, C=US"
             echo "ephemeral=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          echo "ANDROID_KEYSTORE_PASS=${ANDROID_KEYSTORE_PASS:-gravityssh}" >> "$GITHUB_ENV"
-          echo "ANDROID_KEY_ALIAS=${ANDROID_KEY_ALIAS:-gravityssh}" >> "$GITHUB_ENV"
-          echo "ANDROID_KEY_PASS=${ANDROID_KEY_PASS:-gravityssh}" >> "$GITHUB_ENV"
 
-      - name: Run Unit Tests & Build Release APK
+      - name: Run Unit Tests, Lint & Build Release APK
         shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+          EPHEMERAL_SIGNING: ${{ steps.keystore.outputs.ephemeral }}
         run: |
           set -o pipefail
-          gradle testDebugUnitTest assembleRelease --build-cache --stacktrace 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+          if [ "$EPHEMERAL_SIGNING" = "true" ]; then
+            export ANDROID_KEYSTORE_PASS="gravityssh"
+            export ANDROID_KEY_ALIAS="gravityssh"
+            export ANDROID_KEY_PASS="gravityssh"
+          else
+            export ANDROID_KEYSTORE_PASS="${ANDROID_KEYSTORE_PASS:-gravityssh}"
+            export ANDROID_KEY_ALIAS="${ANDROID_KEY_ALIAS:-gravityssh}"
+            export ANDROID_KEY_PASS="${ANDROID_KEY_PASS:-gravityssh}"
+          fi
+          gradle testDebugUnitTest lintDebug assembleRelease --build-cache --stacktrace 2>&1 | tee "$RUNNER_TEMP/gradle.log"
 
       - name: Emit Failure Annotations
         if: failure()

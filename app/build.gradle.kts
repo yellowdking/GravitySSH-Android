@@ -7,11 +7,19 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val appVersionName = rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { "1.1.2" } ?: "1.1.2"
-val appVersionCode = appVersionName.split(".").let { p ->
-    val maj = p.getOrNull(0)?.toIntOrNull() ?: 1
-    val min = p.getOrNull(1)?.toIntOrNull() ?: 0
-    val pat = p.getOrNull(2)?.toIntOrNull() ?: 6
+val appVersionName = rootProject.file("VERSION").also {
+    require(it.exists()) { "VERSION file is missing at ${it.absolutePath}" }
+}.readText().trim().also {
+    require(it.isNotEmpty()) { "VERSION file is empty" }
+}
+val appVersionCode = appVersionName.substringBefore('+').substringBefore('-').split('.').let { p ->
+    require(p.size == 3) { "Invalid semantic version in VERSION: '$appVersionName' (expected MAJOR.MINOR.PATCH)" }
+    val maj = p[0].toInt()
+    val min = p[1].toInt()
+    val pat = p[2].toInt()
+    require(maj >= 0 && min in 0..99 && pat in 0..99) {
+        "Version numbers out of bounds in VERSION: '$appVersionName' (expected major>=0, minor/patch in 0..99)"
+    }
     maj * 10000 + min * 100 + pat
 }
 
@@ -21,7 +29,7 @@ android {
 
     defaultConfig {
         applicationId = "com.gravityssh.app"
-        minSdk = 26
+        minSdk = 29
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
@@ -88,6 +96,7 @@ android {
     }
     lint {
         disable += setOf("InvalidPackage")
+        checkReleaseBuilds = true
         abortOnError = false
     }
     testOptions {
