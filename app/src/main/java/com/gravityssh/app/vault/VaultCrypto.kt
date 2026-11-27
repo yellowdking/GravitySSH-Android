@@ -1,6 +1,7 @@
 package com.gravityssh.app.vault
 
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
@@ -31,6 +32,11 @@ class CachedPasswordKey internal constructor(
         return SecretKeySpec(rawKey, "AES")
     }
 
+    internal fun matchesKeyBytes(candidateKeyBytes: ByteArray): Boolean {
+        check(!cleared) { "CachedPasswordKey has been cleared" }
+        return MessageDigest.isEqual(rawKey, candidateKeyBytes)
+    }
+
     fun clear() {
         cleared = true
         CryptoUtils.zero(rawKey)
@@ -39,7 +45,7 @@ class CachedPasswordKey internal constructor(
 }
 
 class VaultCrypto(
-    private val masterKeyProvider: MasterKeyProvider = AndroidKeystoreMasterKeyProvider()
+    internal val masterKeyProvider: MasterKeyProvider = AndroidKeystoreMasterKeyProvider()
 ) {
     private val random = SecureRandom()
 
@@ -57,25 +63,44 @@ class VaultCrypto(
             CachedPasswordKey(salt, keyBytes)
         } finally {
             CryptoUtils.zero(keyBytes)
+            CryptoUtils.zero(salt)
+        }
+    }
+
+    fun verifyPassword(password: String, cachedKey: CachedPasswordKey): Boolean {
+        val salt = cachedKey.saltCopy()
+        val candidate = CryptoUtils.pbkdf2Sha256(password, salt, PBKDF2_ITERS, 256)
+        return try {
+            cachedKey.matchesKeyBytes(candidate)
+        } finally {
+            CryptoUtils.zero(candidate)
+            CryptoUtils.zero(salt)
         }
     }
 
     fun seal(plaintext: ByteArray, password: String? = null, biometricLock: Boolean = false): ByteArray {
-        val (mode, innerPayload) = if (!password.isNullOrEmpty()) {
-            val salt = ByteArray(SALT_LEN).also { random.nextBytes(it) }
-            val iv = ByteArray(IV_LEN).also { random.nextBytes(it) }
-            val keyBytes = CryptoUtils.pbkdf2Sha256(password, salt, PBKDF2_ITERS, 256)
-            val enc = try {
-                CryptoUtils.aesGcmEncrypt(keyBytes, iv, plaintext, AAD_INNER)
-            } finally {
-                CryptoUtils.zero(keyBytes)
+        var ownedInner: ByteArray? = null
+        return try {
+            val (mode, innerPayload) = if (!password.isNullOrEmpty()) {
+                val salt = ByteArray(SALT_LEN).also { random.nextBytes(it) }
+                val iv = ByteArray(IV_LEN).also { random.nextBytes(it) }
+                val keyBytes = CryptoUtils.pbkdf2Sha256(password, salt, PBKDF2_ITERS, 256)
+                val enc = try {
+                    CryptoUtils.aesGcmEncrypt(keyBytes, iv, plaintext, AAD_INNER)
+                } finally {
+                    CryptoUtils.zero(keyBytes)
+                }
+                val packed = packInnerPayload(salt, iv, enc)
+                ownedInner = packed
+                MODE_PASSWORD to packed
+            } else {
+                val m = if (biometricLock) MODE_BIOMETRIC else MODE_KEYSTORE
+                m to plaintext
             }
-            MODE_PASSWORD to packInnerPayload(salt, iv, enc)
-        } else {
-            val m = if (biometricLock) MODE_BIOMETRIC else MODE_KEYSTORE
-            m to plaintext
+            sealOuterV2(mode, innerPayload)
+        } finally {
+            CryptoUtils.zero(ownedInner)
         }
-        return sealOuterV2(mode, innerPayload)
     }
 
     fun sealWithCachedKey(
@@ -83,16 +108,27 @@ class VaultCrypto(
         cachedKey: CachedPasswordKey?,
         biometricLock: Boolean = false
     ): ByteArray {
-        val (mode, innerPayload) = if (cachedKey != null) {
-            val salt = cachedKey.saltCopy()
-            val iv = ByteArray(IV_LEN).also { random.nextBytes(it) }
-            val enc = CryptoUtils.aesGcmEncrypt(cachedKey.secretKey(), iv, plaintext, AAD_INNER)
-            MODE_PASSWORD to packInnerPayload(salt, iv, enc)
-        } else {
-            val m = if (biometricLock) MODE_BIOMETRIC else MODE_KEYSTORE
-            m to plaintext
+        var ownedInner: ByteArray? = null
+        return try {
+            val (mode, innerPayload) = if (cachedKey != null) {
+                val salt = cachedKey.saltCopy()
+                val iv = ByteArray(IV_LEN).also { random.nextBytes(it) }
+                val packed = try {
+                    val enc = CryptoUtils.aesGcmEncrypt(cachedKey.secretKey(), iv, plaintext, AAD_INNER)
+                    packInnerPayload(salt, iv, enc)
+                } finally {
+                    CryptoUtils.zero(salt)
+                }
+                ownedInner = packed
+                MODE_PASSWORD to packed
+            } else {
+                val m = if (biometricLock) MODE_BIOMETRIC else MODE_KEYSTORE
+                m to plaintext
+            }
+            sealOuterV2(mode, innerPayload)
+        } finally {
+            CryptoUtils.zero(ownedInner)
         }
-        return sealOuterV2(mode, innerPayload)
     }
 
     fun open(blob: ByteArray, password: String? = null): ByteArray {
@@ -128,15 +164,17 @@ class VaultCrypto(
 
         if (mode != MODE_PASSWORD) return innerPayload to null
 
-        if (password.isNullOrEmpty()) throw SecurityException("需要主密码解锁保险库")
-        if (innerPayload.size < SALT_LEN + IV_LEN + 16) {
-            throw IllegalArgumentException("Password vault payload truncated")
-        }
-        val salt = innerPayload.copyOfRange(0, SALT_LEN)
-        val innerIv = innerPayload.copyOfRange(SALT_LEN, SALT_LEN + IV_LEN)
-        val innerCt = innerPayload.copyOfRange(SALT_LEN + IV_LEN, innerPayload.size)
-        val keyBytes = CryptoUtils.pbkdf2Sha256(password, salt, PBKDF2_ITERS, 256)
+        var salt: ByteArray? = null
+        var keyBytes: ByteArray? = null
         return try {
+            if (password.isNullOrEmpty()) throw SecurityException("需要主密码解锁保险库")
+            if (innerPayload.size < SALT_LEN + IV_LEN + 16) {
+                throw IllegalArgumentException("Password vault payload truncated")
+            }
+            salt = innerPayload.copyOfRange(0, SALT_LEN)
+            val innerIv = innerPayload.copyOfRange(SALT_LEN, SALT_LEN + IV_LEN)
+            val innerCt = innerPayload.copyOfRange(SALT_LEN + IV_LEN, innerPayload.size)
+            keyBytes = CryptoUtils.pbkdf2Sha256(password, salt, PBKDF2_ITERS, 256)
             val plain = try {
                 CryptoUtils.aesGcmDecrypt(keyBytes, innerIv, innerCt, AAD_INNER)
             } catch (e: Exception) {
@@ -145,6 +183,8 @@ class VaultCrypto(
             plain to CachedPasswordKey(salt, keyBytes)
         } finally {
             CryptoUtils.zero(keyBytes)
+            CryptoUtils.zero(salt)
+            CryptoUtils.zero(innerPayload)
         }
     }
 

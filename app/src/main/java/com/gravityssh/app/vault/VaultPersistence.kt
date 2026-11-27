@@ -21,10 +21,13 @@ internal class VaultPersistence(
 ) {
     private val json = AppJson.json
 
+    val masterKeyProvider: MasterKeyProvider
+        get() = crypto.masterKeyProvider
+
     fun openInitial(): VaultOpenResult {
         if (!vaultFile.exists()) {
             val init = VaultData(templates = BuiltinOpsPresets.all())
-            save(init, password = null, cachedKey = null)
+            save(init, cachedKey = null)
             return VaultOpenResult(locked = false, hasPassword = false, biometric = false, data = init)
         }
         val blob = vaultFile.readBytes()
@@ -32,7 +35,12 @@ internal class VaultPersistence(
             VaultCrypto.MODE_PASSWORD -> VaultOpenResult(locked = true, hasPassword = true, biometric = false, data = VaultData())
             VaultCrypto.MODE_BIOMETRIC -> VaultOpenResult(locked = true, hasPassword = false, biometric = true, data = VaultData())
             else -> {
-                val data = decode(crypto.open(blob, null))
+                val plain = crypto.open(blob, null)
+                val data = try {
+                    decode(plain)
+                } finally {
+                    CryptoUtils.zero(plain)
+                }
                 VaultOpenResult(locked = false, hasPassword = false, biometric = data.settings.biometricLockEnabled, data = data)
             }
         }
@@ -45,36 +53,40 @@ internal class VaultPersistence(
         } catch (e: Exception) {
             cachedKey?.clear()
             throw e
+        } finally {
+            CryptoUtils.zero(plain)
         }
     }
 
-    fun loadForBiometric(cachedPassword: String?): Triple<VaultData, Boolean, CachedPasswordKey?> {
+    fun loadForBiometric(): Triple<VaultData, Boolean, CachedPasswordKey?> {
         val blob = vaultFile.readBytes()
-        val pw = if (crypto.isPasswordProtected(blob)) {
-            cachedPassword?.takeIf { it.isNotEmpty() } ?: throw SecurityException("请先输入主密码解锁")
-        } else {
-            null
+        if (crypto.isPasswordProtected(blob)) {
+            throw SecurityException("请先输入主密码解锁")
         }
-        val (plain, cachedKey) = crypto.openWithKeyCache(blob, pw)
+        val (plain, cachedKey) = crypto.openWithKeyCache(blob, null)
         return try {
-            Triple(decode(plain), pw != null, cachedKey)
+            Triple(decode(plain), false, cachedKey)
         } catch (e: Exception) {
             cachedKey?.clear()
             throw e
+        } finally {
+            CryptoUtils.zero(plain)
         }
     }
 
     fun deriveForNewPassword(password: String): CachedPasswordKey =
         crypto.deriveForNewPassword(password)
 
-    fun save(data: VaultData, password: String?, cachedKey: CachedPasswordKey? = null) {
+    fun verifyPassword(password: String, cachedKey: CachedPasswordKey): Boolean =
+        crypto.verifyPassword(password, cachedKey)
+
+    fun save(data: VaultData, cachedKey: CachedPasswordKey? = null) {
         val plain = json.encodeToString(data).toByteArray(Charsets.UTF_8)
-        val hasPassword = cachedKey != null || !password.isNullOrEmpty()
-        val biometricLock = !hasPassword && data.settings.biometricLockEnabled
-        val blob = if (cachedKey != null) {
+        val blob = try {
+            val biometricLock = cachedKey == null && data.settings.biometricLockEnabled
             crypto.sealWithCachedKey(plain, cachedKey, biometricLock)
-        } else {
-            crypto.seal(plain, password, biometricLock)
+        } finally {
+            CryptoUtils.zero(plain)
         }
         AtomicFileOps.writeBytesAtomic(vaultFile, blob)
     }
