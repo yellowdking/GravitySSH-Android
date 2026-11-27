@@ -13,6 +13,14 @@ import java.util.UUID
 
 internal object VaultCrudOps {
 
+    private inline fun <T> List<T>.upsertById(item: T, idOf: (T) -> String): List<T> {
+        val targetId = idOf(item)
+        val out = toMutableList()
+        val idx = out.indexOfFirst { idOf(it) == targetId }
+        if (idx >= 0) out[idx] = item else out.add(item)
+        return out
+    }
+
     fun upsertServer(data: VaultData, server: ServerConfig): Pair<VaultData, ServerConfig> {
         val now = Instant.now().toString()
         val id = server.id.ifBlank { UUID.randomUUID().toString() }
@@ -30,10 +38,7 @@ internal object VaultCrudOps {
             updatedAt = now,
             lastConnectedAt = existing?.lastConnectedAt ?: server.lastConnectedAt
         )
-        val list = data.servers.toMutableList()
-        val idx = list.indexOfFirst { it.id == id }
-        if (idx >= 0) list[idx] = norm else list.add(norm)
-        return data.copy(servers = list) to norm
+        return data.copy(servers = data.servers.upsertById(norm) { it.id }) to norm
     }
 
     fun upsertSshKey(data: VaultData, key: SSHKeyRecord): Pair<VaultData, SSHKeyRecord> {
@@ -44,10 +49,7 @@ internal object VaultCrudOps {
             name = key.name.trim().ifBlank { "SSH Key" },
             createdAt = key.createdAt.ifBlank { now }
         )
-        val list = data.sshKeys.toMutableList()
-        val idx = list.indexOfFirst { it.id == id }
-        if (idx >= 0) list[idx] = norm else list.add(norm)
-        return data.copy(sshKeys = list) to norm
+        return data.copy(sshKeys = data.sshKeys.upsertById(norm) { it.id }) to norm
     }
 
     fun upsertShortcut(data: VaultData, shortcut: CommandShortcut): Pair<VaultData, CommandShortcut> {
@@ -62,10 +64,7 @@ internal object VaultCrudOps {
             createdAt = existing?.createdAt?.ifBlank { now } ?: now,
             updatedAt = now
         )
-        val list = data.shortcuts.toMutableList()
-        val idx = list.indexOfFirst { it.id == id }
-        if (idx >= 0) list[idx] = norm else list.add(norm)
-        return data.copy(shortcuts = list) to norm
+        return data.copy(shortcuts = data.shortcuts.upsertById(norm) { it.id }) to norm
     }
 
     fun upsertTemplate(data: VaultData, template: BuiltinTemplate): Pair<VaultData, BuiltinTemplate> {
@@ -78,10 +77,7 @@ internal object VaultCrudOps {
             category = template.category.trim().ifBlank { "自定义" },
             command = template.command.trim()
         )
-        val list = data.templates.toMutableList()
-        val idx = list.indexOfFirst { it.id == id }
-        if (idx >= 0) list[idx] = norm else list.add(norm)
-        return data.copy(templates = list) to norm
+        return data.copy(templates = data.templates.upsertById(norm) { it.id }) to norm
     }
 
     fun loadPresets(data: VaultData): Pair<VaultData, PresetLoadResult> {

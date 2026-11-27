@@ -7,9 +7,10 @@ import com.gravityssh.app.model.SyncImportSummary
 import com.gravityssh.app.model.SyncReceivePreview
 import com.gravityssh.app.model.SyncSendSession
 import com.gravityssh.app.vault.VaultRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 class SyncService(
     private val vaultRepository: VaultRepository,
@@ -20,7 +21,12 @@ class SyncService(
         val expiresAtMs: Long
     )
 
-    private val previews = ConcurrentHashMap<String, CachedPreview>()
+    private val previewLock = Any()
+    private val previews = LinkedHashMap<String, CachedPreview>()
+
+    init {
+        vaultRepository.addOnLockListener { clearPreviews() }
+    }
 
     private fun resolveRelayUrl(overrideUrl: String?): String {
         val candidate = overrideUrl?.trim().orEmpty()
@@ -48,7 +54,9 @@ class SyncService(
         val url = resolveRelayUrl(relayUrl)
         val bundle = vaultRepository.exportSyncBundle(deviceName())
         val code = SyncCrypto.generateSyncCode()
-        val encrypted = SyncCrypto.encryptBundle(bundle, code)
+        val encrypted = withContext(Dispatchers.Default) {
+            SyncCrypto.encryptBundle(bundle, code)
+        }
 
         val resp = relayClient.drop(
             url,
@@ -83,18 +91,29 @@ class SyncService(
     }
 
     suspend fun previewReceive(codeOrUri: String, relayUrl: String? = null): SyncReceivePreview {
-        pruneExpiredPreviews()
+        if (vaultRepository.state.value.lockState.locked) {
+            throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
+        }
         val url = resolveRelayUrl(relayUrl)
         val canonical = SyncCrypto.canonicalizeCode(codeOrUri)
         val channelId = SyncCrypto.deriveChannelId(canonical)
         val pickup = relayClient.pickup(url, channelId)
-        val bundle = SyncCrypto.decryptBundle(pickup.salt, pickup.nonce, pickup.ciphertext, canonical)
+        val bundle = withContext(Dispatchers.Default) {
+            SyncCrypto.decryptBundle(pickup.salt, pickup.nonce, pickup.ciphertext, canonical)
+        }
 
         val previewId = UUID.randomUUID().toString()
-        previews[previewId] = CachedPreview(
-            bundle = bundle,
-            expiresAtMs = System.currentTimeMillis() + PREVIEW_TTL_MS
-        )
+        synchronized(previewLock) {
+            pruneExpiredLocked()
+            while (previews.size >= MAX_CACHED_PREVIEWS) {
+                val oldestKey = previews.entries.minByOrNull { it.value.expiresAtMs }?.key ?: break
+                previews.remove(oldestKey)
+            }
+            previews[previewId] = CachedPreview(
+                bundle = bundle,
+                expiresAtMs = System.currentTimeMillis() + PREVIEW_TTL_MS
+            )
+        }
 
         return SyncReceivePreview(
             previewId = previewId,
@@ -109,22 +128,37 @@ class SyncService(
     }
 
     fun applyReceive(previewId: String, mode: SyncImportMode): SyncImportSummary {
-        pruneExpiredPreviews()
-        val cached = previews.remove(previewId)
-            ?: throw IllegalStateException("同步预览已过期，请重新获取同步码")
-        return vaultRepository.importSyncBundle(cached.bundle, mode)
+        val cached = synchronized(previewLock) {
+            pruneExpiredLocked()
+            previews[previewId]
+        } ?: throw IllegalStateException("同步预览已过期，请重新获取同步码")
+
+        val summary = vaultRepository.importSyncBundle(cached.bundle, mode)
+        synchronized(previewLock) {
+            previews.remove(previewId)
+        }
+        return summary
     }
 
     fun discardPreview(previewId: String) {
-        previews.remove(previewId)
+        synchronized(previewLock) {
+            previews.remove(previewId)
+        }
     }
 
-    private fun pruneExpiredPreviews() {
+    fun clearPreviews() {
+        synchronized(previewLock) {
+            previews.clear()
+        }
+    }
+
+    private fun pruneExpiredLocked() {
         val now = System.currentTimeMillis()
         previews.entries.removeIf { it.value.expiresAtMs < now }
     }
 
     companion object {
         private const val PREVIEW_TTL_MS = 10 * 60 * 1000L
+        private const val MAX_CACHED_PREVIEWS = 2
     }
 }
