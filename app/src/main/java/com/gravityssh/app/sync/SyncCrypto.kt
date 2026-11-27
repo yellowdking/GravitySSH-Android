@@ -102,7 +102,15 @@ object SyncCrypto {
     ): PairRequestPayload {
         val canonicalSend = canonicalizeCode(sendCode)
         val channelId = deriveChannelId(canonicalSend)
-        val rawJson = decryptRawJsonWithSecret(saltB64, nonceB64, ctB64, canonicalSend, channelId)
+        val rawJson = decryptRawJsonWithSecret(
+            saltB64 = saltB64,
+            nonceB64 = nonceB64,
+            ciphertextB64 = ctB64,
+            secret = canonicalSend,
+            aad = channelId,
+            maxPlainBytes = SyncCryptoPrimitives.MAX_PAIR_REQUEST_PLAIN_BYTES,
+            limitErrorMsg = "配对验证请求超过 64 KiB 上限"
+        )
         return json.decodeFromString(PairRequestPayload.serializer(), rawJson)
     }
 
@@ -174,7 +182,9 @@ object SyncCrypto {
         nonceB64: String,
         ciphertextB64: String,
         secret: String,
-        aad: String
+        aad: String,
+        maxPlainBytes: Int = SyncCryptoPrimitives.MAX_BUNDLE_PLAIN_BYTES,
+        limitErrorMsg: String = "同步数据包超过 16 MiB 上限"
     ): String {
         val b64 = Base64.getDecoder()
         val salt = decodeB64(b64, saltB64, "同步加密盐值格式无效")
@@ -192,7 +202,8 @@ object SyncCrypto {
         } finally {
             CryptoUtils.zero(key)
         }
-        return SyncCryptoPrimitives.gzipDecompress(compressed).toString(Charsets.UTF_8)
+        return SyncCryptoPrimitives.gzipDecompress(compressed, maxPlainBytes, limitErrorMsg)
+            .toString(Charsets.UTF_8)
     }
 
     private fun decodeB64(decoder: Base64.Decoder, value: String, errorMsg: String): ByteArray =

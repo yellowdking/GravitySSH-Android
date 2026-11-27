@@ -6,14 +6,30 @@ data class ResolvedRelayEndpoint(
     val baseUrl: String,
     val hostPort: String,
     val host: String,
-    val explicitSpkiPin: String?,
-    val isDefaultRelay: Boolean,
-    val isRawIp: Boolean
+    val explicitSpkiPins: List<String> = emptyList(),
+    val customAppGateKey: String? = null,
+    val isDefaultRelay: Boolean = false,
+    val isRawIp: Boolean = false
+) {
+    val explicitSpkiPin: String?
+        get() = explicitSpkiPins.firstOrNull()
+}
+
+internal data class ParsedRelayFragment(
+    val spkiPins: List<String> = emptyList(),
+    val appGateKey: String? = null
 )
 
 object SyncConfig {
     const val DEFAULT_RELAY_URL = "https://43.155.231.14:54843"
     const val CLIENT_HEADER = "GravitySSH/1"
+    const val WIRE_PROTO_VERSION = 2
+    const val WIRE_PROTO_MIN_VERSION = 1
+    const val WIRE_PROTO_MAX_VERSION = 2
+    const val WIRE_PROTO_HEADER = "X-GSSH-Proto"
+    const val WIRE_PROTO_MIN_HEADER = "X-GSSH-Proto-Min"
+    const val WIRE_PROTO_MAX_HEADER = "X-GSSH-Proto-Max"
+    const val MAX_SPKI_PINS_PER_RELAY = 8
     const val DEFAULT_TTL_SECONDS = 300
     const val PAIR_POLL_INTERVAL_MS = 1500L
     const val PBKDF2_ITERATIONS = 200_000
@@ -22,9 +38,11 @@ object SyncConfig {
 
     // Live credentials from relay-ops deployment on 43.155.231.14:54843
     const val PINNED_SPKI_SHA256 = "ca1a5f441de4962b6269449325ded3a284a0a8a9d8fd3d995ffcb218c8eb7575"
+    val DEFAULT_RELAY_SPKI_PINS: List<String> = listOf(PINNED_SPKI_SHA256)
     const val APP_GATE_KEY = "fb6f39e339dffe1141537e5e8154491cce0044c7bc2ecb26b17828571b9d5aae"
 
     internal val SPKI_HEX_RE = Regex("^[0-9a-f]{64}$")
+    internal val GATE_KEY_HEX_RE = Regex("^[0-9a-f]{64}$")
 
     private val IPV4_RE = Regex(
         "^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
@@ -43,23 +61,57 @@ object SyncConfig {
         return clean.count { it == ':' } >= 2 && IPV6_CHARS_RE.matches(clean)
     }
 
-    internal fun parseExplicitSpkiFragment(fragment: String?): String? {
+    fun parseSpkiPinList(raw: String): List<String> {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) {
+            throw IllegalArgumentException("中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）")
+        }
+        val parts = trimmed.split(',')
+        if (parts.size > MAX_SPKI_PINS_PER_RELAY) {
+            throw IllegalArgumentException("中继 SPKI 指纹数量超出上限（最多 $MAX_SPKI_PINS_PER_RELAY 个）")
+        }
+        val seen = LinkedHashSet<String>(parts.size)
+        for (item in parts) {
+            val pin = item.trim().lowercase().removePrefix("sha256:")
+            if (!SPKI_HEX_RE.matches(pin)) {
+                throw IllegalArgumentException("中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）")
+            }
+            seen.add(pin)
+        }
+        if (seen.isEmpty()) {
+            throw IllegalArgumentException("中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）")
+        }
+        return seen.toList()
+    }
+
+    internal fun parseRelayFragment(fragment: String?): ParsedRelayFragment {
         val trimmed = fragment?.trim().orEmpty()
-        if (trimmed.isEmpty()) return null
+        if (trimmed.isEmpty()) return ParsedRelayFragment()
+        var pins: List<String> = emptyList()
+        var gateKey: String? = null
         for (part in trimmed.split('&')) {
             val eqIdx = part.indexOf('=')
             if (eqIdx <= 0) continue
             val key = part.substring(0, eqIdx).trim()
-            if (key.equals("spki", ignoreCase = true)) {
-                val pin = part.substring(eqIdx + 1).trim().lowercase().removePrefix("sha256:")
-                if (!SPKI_HEX_RE.matches(pin)) {
-                    throw IllegalArgumentException("中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）")
+            val value = part.substring(eqIdx + 1).trim()
+            when {
+                key.equals("spki", ignoreCase = true) -> {
+                    pins = parseSpkiPinList(value)
                 }
-                return pin
+                key.equals("gate", ignoreCase = true) -> {
+                    val g = value.lowercase()
+                    if (!GATE_KEY_HEX_RE.matches(g)) {
+                        throw IllegalArgumentException("自定义中继 App Gate 密钥格式无效（应为 64 位十六进制字符串）")
+                    }
+                    gateKey = g
+                }
             }
         }
-        return null
+        return ParsedRelayFragment(spkiPins = pins, appGateKey = gateKey)
     }
+
+    internal fun parseExplicitSpkiFragment(fragment: String?): String? =
+        parseRelayFragment(fragment).spkiPins.firstOrNull()
 
     fun normalizeRelayUrl(raw: String): String {
         val trimmed = raw.trim()
@@ -76,7 +128,7 @@ object SyncConfig {
         if (parsed.username.isNotEmpty() || parsed.password.isNotEmpty()) {
             throw IllegalArgumentException("中继服务器地址不支持包含用户名或密码")
         }
-        val explicitPin = parseExplicitSpkiFragment(parsed.fragment)
+        val frag = parseRelayFragment(parsed.fragment)
         val cleanHost = parsed.host.removeSurrounding("[", "]")
         val hostPart = if (':' in cleanHost) "[$cleanHost]" else cleanHost
         val authority = withScheme.substringAfter("://")
@@ -95,14 +147,21 @@ object SyncConfig {
         }
         val cleanPath = parsed.encodedPath.trimEnd('/')
         val base = "$origin$cleanPath"
-        return if (explicitPin != null) "$base#spki=$explicitPin" else base
+        val fragParts = ArrayList<String>(2)
+        if (frag.spkiPins.isNotEmpty()) {
+            fragParts.add("spki=${frag.spkiPins.joinToString(",")}")
+        }
+        if (frag.appGateKey != null) {
+            fragParts.add("gate=${frag.appGateKey}")
+        }
+        return if (fragParts.isNotEmpty()) "$base#${fragParts.joinToString("&")}" else base
     }
 
     fun parseRelayEndpoint(raw: String): ResolvedRelayEndpoint {
         val normalized = normalizeRelayUrl(raw).ifEmpty { DEFAULT_RELAY_URL }
         val parsed = normalized.toHttpUrlOrNull()
             ?: throw IllegalArgumentException("中继地址格式无效，请输入如 1.2.3.4:54843")
-        val explicitPin = parseExplicitSpkiFragment(parsed.fragment)
+        val frag = parseRelayFragment(parsed.fragment)
         val baseUrl = normalized.substringBefore('#')
         val cleanHost = parsed.host.removeSurrounding("[", "]")
         val hostPort = formatHostPortKey(cleanHost, parsed.port)
@@ -110,7 +169,8 @@ object SyncConfig {
             baseUrl = baseUrl,
             hostPort = hostPort,
             host = cleanHost,
-            explicitSpkiPin = explicitPin,
+            explicitSpkiPins = frag.spkiPins,
+            customAppGateKey = frag.appGateKey,
             isDefaultRelay = hostPort == defaultHostPortKey,
             isRawIp = isRawIpHost(cleanHost)
         )

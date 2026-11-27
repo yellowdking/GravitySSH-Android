@@ -45,11 +45,16 @@ internal object SyncCryptoPrimitives {
         return baos.toByteArray()
     }
 
-    private const val MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024
+    const val MAX_BUNDLE_PLAIN_BYTES = 16 * 1024 * 1024
+    const val MAX_PAIR_REQUEST_PLAIN_BYTES = 64 * 1024
 
-    fun gzipDecompress(data: ByteArray): ByteArray =
+    fun gzipDecompress(
+        data: ByteArray,
+        maxBytes: Int = MAX_BUNDLE_PLAIN_BYTES,
+        limitErrorMsg: String = "同步数据包超过 16 MiB 上限"
+    ): ByteArray =
         GZIPInputStream(ByteArrayInputStream(data)).use { gis ->
-            readStreamCapped(gis, MAX_DECOMPRESSED_BYTES, "同步数据包超过 16 MiB 上限")
+            readStreamCapped(gis, maxBytes, limitErrorMsg)
         }
 
     fun readStreamCapped(input: InputStream, maxBytes: Int, limitErrorMsg: String): ByteArray {

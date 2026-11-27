@@ -45,12 +45,22 @@ object SyncHttpClients {
     internal fun spkiSha256Hex(cert: X509Certificate): String =
         SyncCryptoPrimitives.sha256Hex(cert.publicKey.encoded).lowercase()
 
-    internal fun verifyPinnedSpkiCert(chain: Array<X509Certificate>, expectedSpkiHex: String) {
+    internal fun verifyPinnedSpkiCert(chain: Array<X509Certificate>, expectedSpkiHex: String) =
+        verifyPinnedSpkiCerts(chain, listOf(expectedSpkiHex))
+
+    internal fun verifyPinnedSpkiCerts(chain: Array<X509Certificate>, expectedSpkiHexes: List<String>) {
         if (chain.isEmpty()) throw CertificateException("Empty server certificate chain")
+        if (expectedSpkiHexes.isEmpty()) throw CertificateException("中继 SPKI 指纹未配置")
         chain[0].checkValidity()
-        val expectedBytes = expectedSpkiHex.trim().lowercase().toByteArray(Charsets.UTF_8)
         val spkiHash = spkiSha256Hex(chain[0]).toByteArray(Charsets.UTF_8)
-        if (!MessageDigest.isEqual(spkiHash, expectedBytes)) {
+        var matched = false
+        for (expected in expectedSpkiHexes) {
+            val expectedBytes = expected.trim().lowercase().removePrefix("sha256:").toByteArray(Charsets.UTF_8)
+            if (MessageDigest.isEqual(spkiHash, expectedBytes)) {
+                matched = true
+            }
+        }
+        if (!matched) {
             throw CertificateException("中继服务器证书指纹校验失败（SPKI Pin 不匹配）")
         }
     }
@@ -110,13 +120,17 @@ object SyncHttpClients {
     internal fun buildPinnedClient(
         pinnedSpkiSha256: String,
         expectedHost: String = SyncConfig.DEFAULT_RELAY_URL.toHttpUrl().host
+    ): OkHttpClient = buildPinnedClient(SyncConfig.parseSpkiPinList(pinnedSpkiSha256), expectedHost)
+
+    internal fun buildPinnedClient(
+        pinnedSpkiSha256List: List<String>,
+        expectedHost: String = SyncConfig.DEFAULT_RELAY_URL.toHttpUrl().host
     ): OkHttpClient {
-        val pin = pinnedSpkiSha256.trim().lowercase().removePrefix("sha256:")
-        require(SyncConfig.SPKI_HEX_RE.matches(pin)) { "中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）" }
+        val pins = SyncConfig.parseSpkiPinList(pinnedSpkiSha256List.joinToString(","))
         val trustManager = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
-                verifyPinnedSpkiCert(chain, pin)
+                verifyPinnedSpkiCerts(chain, pins)
             }
 
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
