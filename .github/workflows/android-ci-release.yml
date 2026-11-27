@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: android-ci-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -32,6 +32,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Read & Verify Version
+        id: ver
+        shell: bash
+        run: |
+          VER=$(tr -d '\r\n ' < VERSION)
+          if [ -z "$VER" ]; then
+            echo "::error::VERSION file is empty."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$VER" ]]; then
+            echo "::error::Tag ${GITHUB_REF} does not match VERSION ${VER}."
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -47,6 +63,7 @@ jobs:
       - name: Prepare Release Keystore
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -54,12 +71,15 @@ jobs:
         run: |
           if [ -n "$ANDROID_KEYSTORE_B64" ]; then
             printf '%s' "$ANDROID_KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/release.jks"
-          else
-            echo "::warning::ANDROID_KEYSTORE_B64 secret is not configured; falling back to an ephemeral signing keystore. Configure ANDROID_KEYSTORE_B64 for consistent release upgrade signatures."
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "::warning::ANDROID_KEYSTORE_B64 secret is not available in pull_request; using an ephemeral signing keystore for PR verification only."
             keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
               -storepass gravityssh -keypass gravityssh -alias gravityssh \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=GravitySSH, OU=Mobile, O=GravitySSH, L=Net, S=Net, C=US"
+          else
+            echo "::error::ANDROID_KEYSTORE_B64 secret is empty on event '${EVENT_NAME}' (${GITHUB_REF}). Refusing to sign a release APK with an ephemeral keystore."
+            exit 1
           fi
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           echo "ANDROID_KEYSTORE_PASS=${ANDROID_KEYSTORE_PASS:-gravityssh}" >> "$GITHUB_ENV"
@@ -110,19 +130,30 @@ jobs:
 
   release:
     needs: build
-    if: github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
+    if: >-
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-pipeline
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
       - name: Check Existing Release Tag
         id: check
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ needs.build.outputs.version }}
           TAG: ${{ needs.build.outputs.tag }}
         run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            if gh api "repos/${{ github.repository }}/releases/tags/${TAG}" >/dev/null 2>&1; then
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$VER" ]]; then
+            echo "::error::Tag ${GITHUB_REF} does not match VERSION ${VER}."
+            exit 1
+          fi
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then
               echo "Release ${TAG} already exists; skipping automatic release on main."
               echo "publish=false" >> "$GITHUB_OUTPUT"
               exit 0

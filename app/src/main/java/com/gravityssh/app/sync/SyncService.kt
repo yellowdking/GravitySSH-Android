@@ -13,7 +13,11 @@ import com.gravityssh.app.model.SyncSendPollResult
 import com.gravityssh.app.model.SyncSendPollState
 import com.gravityssh.app.model.SyncSendSession
 import com.gravityssh.app.vault.VaultRepository
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.UUID
@@ -35,6 +39,7 @@ class SyncService(
         val relayUrl: String,
         var bundle: SyncBundle?,
         val expiresAtEpochMs: Long,
+        var approving: Boolean = false,
         var approved: Boolean = false
     )
 
@@ -49,6 +54,8 @@ class SyncService(
     )
 
     private val sessionLock = Any()
+    private val cancelScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var lockEpoch: Long = 0L
     private val previews = LinkedHashMap<String, CachedPreview>()
     private val pendingSends = LinkedHashMap<String, PendingSendSession>()
     private val pendingReceives = LinkedHashMap<String, PendingReceiveSession>()
@@ -103,6 +110,10 @@ class SyncService(
     fun generateReceiverCode(): String = SyncCrypto.generateSyncCode()
 
     suspend fun startSend(relayUrl: String? = null): SyncSendSession {
+        val startEpoch = synchronized(sessionLock) {
+            requireUnlocked("发送同步数据")
+            lockEpoch
+        }
         val url = resolveRelayUrl(relayUrl)
         val bundle = vaultRepository.exportSyncBundle(deviceName())
         val code = SyncCrypto.generateSyncCode()
@@ -118,18 +129,29 @@ class SyncService(
         )
         val expiresMs = parseExpiresMs(resp.expiresAt)
 
-        synchronized(sessionLock) {
-            pruneExpiredLocked()
-            evictOldestIfAtCapacity(pendingSends, MAX_PENDING_SESSIONS) { it.expiresAtEpochMs }
-            pendingSends[sessionId] = PendingSendSession(
-                sessionId = sessionId,
-                channelId = channelId,
-                senderToken = senderToken,
-                sendCode = code,
-                relayUrl = url,
-                bundle = bundle,
-                expiresAtEpochMs = expiresMs
-            )
+        val lockedMidFlight = synchronized(sessionLock) {
+            if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
+                true
+            } else {
+                pruneExpiredLocked()
+                evictOldestIfAtCapacity(pendingSends, MAX_PENDING_SESSIONS) { it.expiresAtEpochMs }
+                pendingSends[sessionId] = PendingSendSession(
+                    sessionId = sessionId,
+                    channelId = channelId,
+                    senderToken = senderToken,
+                    sendCode = code,
+                    relayUrl = url,
+                    bundle = bundle,
+                    expiresAtEpochMs = expiresMs
+                )
+                false
+            }
+        }
+        if (lockedMidFlight) {
+            withContext(NonCancellable) {
+                runCatching { relayClient.pairCancel(url, channelId, senderToken) }
+            }
+            throw SecurityException("保险库已锁定，请先解锁后再发送同步数据")
         }
 
         return SyncSendSession(
@@ -209,9 +231,10 @@ class SyncService(
                 )
             }
             "gone" -> {
-                synchronized(sessionLock) { pendingSends.remove(sessionId) }
+                val removed = synchronized(sessionLock) { pendingSends.remove(sessionId) }
+                val approved = wasApproved || (removed?.approved == true)
                 SyncSendPollResult(
-                    state = if (wasApproved) SyncSendPollState.CONSUMED else SyncSendPollState.EXPIRED
+                    state = if (approved) SyncSendPollState.CONSUMED else SyncSendPollState.EXPIRED
                 )
             }
             else -> SyncSendPollResult(
@@ -225,34 +248,90 @@ class SyncService(
         requireUnlocked("同意发送同步数据")
         require(requestId.isNotBlank()) { "请求 ID 不能为空" }
 
-        val (session, bundle) = synchronized(sessionLock) {
+        val startEpoch: Long
+        val relayUrl: String
+        val channelId: String
+        val senderToken: String
+        val sendCode: String
+        val bundle: SyncBundle
+        synchronized(sessionLock) {
+            requireUnlocked("同意发送同步数据")
             pruneExpiredLocked()
             val s = pendingSends[sessionId]
                 ?: throw IllegalStateException("同步会话已过期，请重新生成同步码")
-            val b = s.bundle
-                ?: throw IllegalStateException("该同步会话已发送，请重新生成同步码")
-            s to b
-        }
-
-        val encrypted = withContext(Dispatchers.Default) {
-            SyncCrypto.encryptBundleDual(bundle, session.sendCode, receiverCode, requestId)
-        }
-
-        relayClient.pairApprove(
-            relayUrl = session.relayUrl,
-            channelId = session.channelId,
-            senderToken = session.senderToken,
-            requestId = requestId,
-            salt = encrypted.saltB64,
-            nonce = encrypted.nonceB64,
-            ciphertext = encrypted.ciphertextB64
-        )
-
-        synchronized(sessionLock) {
-            pendingSends[sessionId]?.let {
-                it.approved = true
-                it.bundle = null
+            if (s.approved || s.bundle == null) {
+                throw IllegalStateException("该同步会话已发送，请重新生成同步码")
             }
+            if (s.approving) {
+                throw IllegalStateException("该同步会话正在处理中，请勿重复发送")
+            }
+            s.approving = true
+            startEpoch = lockEpoch
+            relayUrl = s.relayUrl
+            channelId = s.channelId
+            senderToken = s.senderToken
+            sendCode = s.sendCode
+            bundle = s.bundle!!
+        }
+
+        try {
+            val encrypted = withContext(Dispatchers.Default) {
+                SyncCrypto.encryptBundleDual(bundle, sendCode, receiverCode, requestId)
+            }
+
+            synchronized(sessionLock) {
+                if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
+                    throw SecurityException("保险库已锁定，已中止发送同步数据")
+                }
+                val cur = pendingSends[sessionId]
+                if (cur == null || !cur.approving || cur.approved) {
+                    throw IllegalStateException("同步会话已取消或已失效，请重新生成同步码")
+                }
+            }
+
+            relayClient.pairApprove(
+                relayUrl = relayUrl,
+                channelId = channelId,
+                senderToken = senderToken,
+                requestId = requestId,
+                salt = encrypted.saltB64,
+                nonce = encrypted.nonceB64,
+                ciphertext = encrypted.ciphertextB64
+            )
+
+            val postRpcAbortReason: String? = synchronized(sessionLock) {
+                when {
+                    vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch -> {
+                        pendingSends.remove(sessionId)
+                        "locked"
+                    }
+                    pendingSends[sessionId] == null -> "cancelled"
+                    else -> {
+                        val cur = pendingSends[sessionId]!!
+                        cur.approving = false
+                        cur.approved = true
+                        cur.bundle = null
+                        null
+                    }
+                }
+            }
+            if (postRpcAbortReason != null) {
+                withContext(NonCancellable) {
+                    runCatching { relayClient.pairCancel(relayUrl, channelId, senderToken) }
+                }
+                if (postRpcAbortReason == "locked") {
+                    throw SecurityException("保险库已锁定，已尝试撤销同步数据")
+                } else {
+                    throw IllegalStateException("同步会话已取消，已尝试撤销同步数据")
+                }
+            }
+        } catch (t: Throwable) {
+            synchronized(sessionLock) {
+                pendingSends[sessionId]?.let {
+                    if (!it.approved) it.approving = false
+                }
+            }
+            throw t
         }
     }
 
@@ -287,7 +366,10 @@ class SyncService(
         receiverCode: String,
         relayUrl: String? = null
     ): SyncReceiveWaitSession {
-        requireUnlocked("接收同步数据")
+        val startEpoch = synchronized(sessionLock) {
+            requireUnlocked("接收同步数据")
+            lockEpoch
+        }
         val url = resolveRelayUrl(relayUrl)
         val canonicalSend = SyncCrypto.canonicalizeCode(codeOrUri)
         val canonicalRecv = SyncCrypto.canonicalizeCode(receiverCode)
@@ -308,6 +390,12 @@ class SyncService(
             )
         }
 
+        synchronized(sessionLock) {
+            if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
+                throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
+            }
+        }
+
         val resp = relayClient.pairRequest(
             relayUrl = url,
             channelId = encrypted.channelId,
@@ -320,6 +408,9 @@ class SyncService(
         val waitId = UUID.randomUUID().toString()
 
         synchronized(sessionLock) {
+            if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
+                throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
+            }
             pruneExpiredLocked()
             evictOldestIfAtCapacity(pendingReceives, MAX_PENDING_SESSIONS) { it.expiresAtEpochMs }
             pendingReceives[waitId] = PendingReceiveSession(
@@ -350,10 +441,14 @@ class SyncService(
             throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
         }
 
-        val session = synchronized(sessionLock) {
+        val (session, startEpoch) = synchronized(sessionLock) {
             pruneExpiredLocked()
-            pendingReceives[waitId]
-        } ?: return SyncReceivePollResult(state = SyncReceivePollState.EXPIRED)
+            val s = pendingReceives[waitId]
+            s to lockEpoch
+        }
+        if (session == null) {
+            return SyncReceivePollResult(state = SyncReceivePollState.EXPIRED)
+        }
 
         val statusResp = try {
             relayClient.pairStatus(session.relayUrl, session.channelId, session.requestId)
@@ -383,8 +478,13 @@ class SyncService(
                         requestId = session.requestId
                     )
                 }
-                synchronized(sessionLock) { pendingReceives.remove(waitId) }
-                val preview = cachePreview(bundle)
+                val preview = synchronized(sessionLock) {
+                    pendingReceives.remove(waitId)
+                    if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
+                        throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
+                    }
+                    cachePreviewLocked(bundle)
+                }
                 SyncReceivePollResult(state = SyncReceivePollState.APPROVED, preview = preview)
             }
             else -> throw IllegalStateException("未知中继状态: ${statusResp.state}")
@@ -397,16 +497,14 @@ class SyncService(
         }
     }
 
-    private fun cachePreview(bundle: SyncBundle): SyncReceivePreview {
+    private fun cachePreviewLocked(bundle: SyncBundle): SyncReceivePreview {
         val previewId = UUID.randomUUID().toString()
-        synchronized(sessionLock) {
-            pruneExpiredLocked()
-            evictOldestIfAtCapacity(previews, MAX_CACHED_PREVIEWS) { it.expiresAtMs }
-            previews[previewId] = CachedPreview(
-                bundle = bundle,
-                expiresAtMs = System.currentTimeMillis() + PREVIEW_TTL_MS
-            )
-        }
+        pruneExpiredLocked()
+        evictOldestIfAtCapacity(previews, MAX_CACHED_PREVIEWS) { it.expiresAtMs }
+        previews[previewId] = CachedPreview(
+            bundle = bundle,
+            expiresAtMs = System.currentTimeMillis() + PREVIEW_TTL_MS
+        )
 
         return SyncReceivePreview(
             previewId = previewId,
@@ -440,22 +538,33 @@ class SyncService(
     }
 
     fun clearAllSessions() {
-        synchronized(sessionLock) {
+        val toCancel = synchronized(sessionLock) {
+            lockEpoch++
+            val activeSends = pendingSends.values.map {
+                Triple(it.relayUrl, it.channelId, it.senderToken)
+            }
             previews.clear()
             pendingSends.clear()
             pendingReceives.clear()
+            activeSends
+        }
+        for ((relayUrl, channelId, senderToken) in toCancel) {
+            cancelScope.launch {
+                runCatching { relayClient.pairCancel(relayUrl, channelId, senderToken) }
+            }
         }
     }
 
     private fun pruneExpiredLocked() {
         val now = System.currentTimeMillis()
         previews.entries.removeIf { it.value.expiresAtMs < now }
-        pendingSends.entries.removeIf { it.value.expiresAtEpochMs <= now }
-        pendingReceives.entries.removeIf { it.value.expiresAtEpochMs <= now }
+        pendingSends.entries.removeIf { it.value.expiresAtEpochMs + CLOCK_SKEW_GRACE_MS <= now }
+        pendingReceives.entries.removeIf { it.value.expiresAtEpochMs + CLOCK_SKEW_GRACE_MS <= now }
     }
 
     companion object {
         private const val PREVIEW_TTL_MS = 10 * 60 * 1000L
+        private const val CLOCK_SKEW_GRACE_MS = 135_000L // App Gate maxClockSkew (120s) + 15s grace
         private const val MAX_CACHED_PREVIEWS = 2
         private const val MAX_PENDING_SESSIONS = 8
     }

@@ -18,41 +18,43 @@ internal class SftpTransferOps(
     private val sessionManager: SshSessionManager
 ) {
     suspend fun readTextFile(sessionId: String, path: String): RemoteFileContent = withContext(Dispatchers.IO) {
-        val sftp = sessionManager.requireSftp(sessionId)
-        val clean = SshPathUtils.normalizePosixPath(path)
-        val attrs = sftp.stat(clean)
-        if (attrs.size > SftpService.MAX_EDITOR_BYTES) throw IOException("文件超过 1 MB，无法在线编辑")
-        val initialCap = attrs.size.toInt().coerceIn(256, SftpService.MAX_EDITOR_BYTES)
-        val baos = ByteArrayOutputStream(initialCap)
-        sftp.open(clean, EnumSet.of(OpenMode.READ)).use { rf ->
-            rf.ReadAheadRemoteFileInputStream(MAX_UNCONFIRMED).use { input ->
-                copyStreamWithProgress(
-                    input = input,
-                    output = baos,
-                    maxBytes = SftpService.MAX_EDITOR_BYTES.toLong(),
-                    limitErrorMsg = "文件超过 1 MB，无法在线编辑"
-                )
+        sessionManager.withSftp(sessionId) { sftp ->
+            val clean = SshPathUtils.normalizePosixPath(path)
+            val attrs = sftp.stat(clean)
+            if (attrs.size > SftpService.MAX_EDITOR_BYTES) throw IOException("文件超过 1 MB，无法在线编辑")
+            val initialCap = attrs.size.toInt().coerceIn(256, SftpService.MAX_EDITOR_BYTES)
+            val baos = ByteArrayOutputStream(initialCap)
+            sftp.open(clean, EnumSet.of(OpenMode.READ)).use { rf ->
+                rf.ReadAheadRemoteFileInputStream(MAX_UNCONFIRMED).use { input ->
+                    copyStreamWithProgress(
+                        input = input,
+                        output = baos,
+                        maxBytes = SftpService.MAX_EDITOR_BYTES.toLong(),
+                        limitErrorMsg = "文件超过 1 MB，无法在线编辑"
+                    )
+                }
             }
+            val bytes = baos.toByteArray()
+            RemoteFileContent(clean, bytes.toString(Charsets.UTF_8), bytes.size.toLong())
         }
-        val bytes = baos.toByteArray()
-        RemoteFileContent(clean, bytes.toString(Charsets.UTF_8), bytes.size.toLong())
     }
 
     suspend fun writeTextFile(sessionId: String, path: String, content: String) = withContext(Dispatchers.IO) {
         val bytes = content.toByteArray(Charsets.UTF_8)
         if (bytes.size > SftpService.MAX_EDITOR_BYTES) throw IOException("内容超过 1 MB 限制")
-        val sftp = sessionManager.requireSftp(sessionId)
-        val clean = SshPathUtils.normalizePosixPath(path)
-        sftp.open(clean, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
-            rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
-                var off = 0
-                while (off < bytes.size) {
-                    currentCoroutineContext().ensureActive()
-                    val chunk = minOf(IO_BUFFER_SIZE, bytes.size - off)
-                    out.write(bytes, off, chunk)
-                    off += chunk
+        sessionManager.withSftp(sessionId) { sftp ->
+            val clean = SshPathUtils.normalizePosixPath(path)
+            sftp.open(clean, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
+                rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
+                    var off = 0
+                    while (off < bytes.size) {
+                        currentCoroutineContext().ensureActive()
+                        val chunk = minOf(IO_BUFFER_SIZE, bytes.size - off)
+                        out.write(bytes, off, chunk)
+                        off += chunk
+                    }
+                    out.flush()
                 }
-                out.flush()
             }
         }
     }
@@ -64,17 +66,18 @@ internal class SftpTransferOps(
         totalBytes: Long,
         onProgress: (TransferProgress) -> Unit
     ) = withContext(Dispatchers.IO) {
-        val sftp = sessionManager.requireSftp(sessionId)
-        val clean = SshPathUtils.normalizePosixPath(remotePath)
-        val emitter = ProgressEmitter(sessionId, "upload", clean, totalBytes, onProgress)
-        val sent = sftp.open(clean, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
-            rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
-                val written = copyStreamWithProgress(input, out) { emitter.maybeEmit(it) }
-                out.flush()
-                written
+        sessionManager.withSftp(sessionId) { sftp ->
+            val clean = SshPathUtils.normalizePosixPath(remotePath)
+            val emitter = ProgressEmitter(sessionId, "upload", clean, totalBytes, onProgress)
+            val sent = sftp.open(clean, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
+                rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
+                    val written = copyStreamWithProgress(input, out) { emitter.maybeEmit(it) }
+                    out.flush()
+                    written
+                }
             }
+            emitter.emitDone(sent, totalOverride = sent)
         }
-        emitter.emitDone(sent, totalOverride = sent)
     }
 
     suspend fun downloadStream(
@@ -83,17 +86,18 @@ internal class SftpTransferOps(
         output: OutputStream,
         onProgress: (TransferProgress) -> Unit
     ) = withContext(Dispatchers.IO) {
-        val sftp = sessionManager.requireSftp(sessionId)
-        val clean = SshPathUtils.normalizePosixPath(remotePath)
-        val total = runCatching { sftp.stat(clean).size }.getOrDefault(-1L)
-        val emitter = ProgressEmitter(sessionId, "download", clean, total, onProgress)
-        val readTotal = sftp.open(clean, EnumSet.of(OpenMode.READ)).use { rf ->
-            rf.ReadAheadRemoteFileInputStream(MAX_UNCONFIRMED).use { input ->
-                copyStreamWithProgress(input, output) { emitter.maybeEmit(it) }
+        sessionManager.withSftp(sessionId) { sftp ->
+            val clean = SshPathUtils.normalizePosixPath(remotePath)
+            val total = runCatching { sftp.stat(clean).size }.getOrDefault(-1L)
+            val emitter = ProgressEmitter(sessionId, "download", clean, total, onProgress)
+            val readTotal = sftp.open(clean, EnumSet.of(OpenMode.READ)).use { rf ->
+                rf.ReadAheadRemoteFileInputStream(MAX_UNCONFIRMED).use { input ->
+                    copyStreamWithProgress(input, output) { emitter.maybeEmit(it) }
+                }
             }
+            output.flush()
+            emitter.emitDone(readTotal, totalOverride = if (total >= 0L) total else readTotal)
         }
-        output.flush()
-        emitter.emitDone(readTotal, totalOverride = total)
     }
 
     private suspend fun copyStreamWithProgress(

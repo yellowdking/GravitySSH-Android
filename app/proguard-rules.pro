@@ -58,15 +58,25 @@
 -keep class org.bouncycastle.jcajce.provider.asymmetric.x509.** { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.util.** { *; }
 
-# Symmetric ciphers, Poly1305 & KDFs (AES/GCM/CTR/CBC, ChaCha20-Poly1305, 3DES, PBKDF2, PKCS12)
+# Symmetric ciphers, Poly1305 & KDFs (AES/GCM/CTR/CBC, ChaCha20-Poly1305, 3DES, Blowfish, DES, SCRYPT, OpenSSLPBKDF, PBKDF1/2, PKCS12)
 -keep class org.bouncycastle.jcajce.provider.symmetric.AES { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.AES$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.DESede { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.DESede$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.DES { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.DES$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.Blowfish { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.Blowfish$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.ChaCha { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.ChaCha$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.Poly1305 { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.Poly1305$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.SCRYPT { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.SCRYPT$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.OpenSSLPBKDF { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.OpenSSLPBKDF$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF1 { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF1$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF2 { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF2$* { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.PBEPKCS12 { *; }

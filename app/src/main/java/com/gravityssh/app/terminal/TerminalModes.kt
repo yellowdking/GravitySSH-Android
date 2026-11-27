@@ -6,6 +6,7 @@ internal object TerminalModes {
     private const val MOUSE_NORMAL_BIT = 1
     private const val MOUSE_BUTTON_BIT = 2
     private const val MOUSE_ANY_BIT = 4
+    private val ALT_SCREEN_ENTER_RE = Regex("\\u001B\\[\\?(?:[0-9]+;)*(?:1049|1047|47)(?:;[0-9]+)*h")
 
     fun updateMouseMask(currentMask: Int, modeCode: Int, enable: Boolean): Int {
         val bit = when (modeCode) {
@@ -56,7 +57,10 @@ internal object TerminalModes {
     }
 
     fun containsAltScreenEnter(rawText: String): Boolean =
-        rawText.contains("\u001B[?1049h") || rawText.contains("\u001B[?1047h") || rawText.contains("\u001B[?47h")
+        rawText.contains("\u001B[?1049h") ||
+            rawText.contains("\u001B[?1047h") ||
+            rawText.contains("\u001B[?47h") ||
+            ('\u001B' in rawText && ALT_SCREEN_ENTER_RE.containsMatchIn(rawText))
 
     private fun rowMatchesNano(row: Array<TerminalCell>): Boolean =
         rowContainsAscii(row, "GNU nano", ignoreCase = true) ||
@@ -69,7 +73,9 @@ internal object TerminalModes {
         val maxStart = row.size - nLen
         outer@ for (i in 0..maxStart) {
             for (j in 0 until nLen) {
-                val a = row[i + j].ch
+                val cp = row[i + j].codePoint
+                if (cp > 0x7F) continue@outer
+                val a = cp.toChar()
                 val b = needle[j]
                 if (a != b && (!ignoreCase || a.lowercaseChar() != b.lowercaseChar())) continue@outer
             }
@@ -80,11 +86,13 @@ internal object TerminalModes {
 }
 
 fun TerminalBuffer.scrollUp(count: Int) {
+    clearLastWrite()
     E.scrollUp(activeGrid(), scrollback, topMargin, bottomMargin, cols, rows, isAltScreen, maxScrollback, style, count)
     markAltNanoDirty()
 }
 
 fun TerminalBuffer.scrollDown(count: Int) {
+    clearLastWrite()
     E.scrollDown(activeGrid(), topMargin, bottomMargin, cols, style, count)
     markAltNanoDirty()
 }

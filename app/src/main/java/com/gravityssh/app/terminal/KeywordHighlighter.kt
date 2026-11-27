@@ -2,11 +2,11 @@ package com.gravityssh.app.terminal
 
 object KeywordHighlighter {
     private val ANSI_TOKEN_RE = Regex(
-        "(\\u001B\\[[0-9;:?<>!=]*[ -/]*[@-~]|" +
+        "(\\u001B\\[[0-9:;<=>?]*[ -/]*[@-~]|" +
             "\\u001B\\][^\\u0007\\u001B]*(?:\\u0007|\\u001B\\\\)|" +
             "\\u001B[P_^X][^\\u0007\\u001B]*(?:\\u0007|\\u001B\\\\)|" +
             "\\u001B[()*+][ -~]|" +
-            "\\u001B[@-Z\\\\-_])"
+            "\\u001B[@-OQ-WYZ\\\\])"
     )
     private val IPV4_RE = Regex("^\\d+\\.\\d+\\.\\d+\\.\\d+$")
     private val HIGHLIGHT_RE = Regex(
@@ -31,25 +31,40 @@ object KeywordHighlighter {
     }
 
     class Session {
+        private val lock = Any()
         private var inRemoteFgColor = false
+        private var inAnsiString = false
         private var pendingEsc = ""
 
-        fun highlight(chunk: String): String = process(chunk, holdIncompleteTail = true)
+        fun highlight(chunk: String): String = synchronized(lock) {
+            process(chunk, holdIncompleteTail = true)
+        }
 
-        fun flushPending(): String {
+        fun flushPending(): String = synchronized(lock) {
             if (pendingEsc.isEmpty()) return ""
             val out = pendingEsc
             pendingEsc = ""
-            return out
+            out
         }
 
-        fun reset() {
+        fun reset() = synchronized(lock) {
             pendingEsc = ""
             inRemoteFgColor = false
+            inAnsiString = false
         }
 
+        internal fun flushAndReset(): String = synchronized(lock) {
+            val out = pendingEsc
+            pendingEsc = ""
+            inRemoteFgColor = false
+            inAnsiString = false
+            out
+        }
+
+        internal fun peekPending(): String = synchronized(lock) { pendingEsc }
+
         internal fun process(chunk: String, holdIncompleteTail: Boolean): String {
-            val text = if (pendingEsc.isNotEmpty()) {
+            var text = if (pendingEsc.isNotEmpty()) {
                 val merged = pendingEsc + chunk
                 pendingEsc = ""
                 merged
@@ -57,12 +72,31 @@ object KeywordHighlighter {
                 chunk
             }
             if (text.isEmpty()) return text
-            if ('\u001B' !in text) {
-                return if (inRemoteFgColor) text else colorizePlain(text)
+
+            var prefixRaw = ""
+            if (inAnsiString) {
+                val termEnd = findAnsiStringTerminatorEnd(text)
+                if (termEnd < 0) {
+                    if (holdIncompleteTail && text.endsWith("\u001B")) {
+                        pendingEsc = "\u001B"
+                        return text.substring(0, text.length - 1)
+                    }
+                    return text
+                }
+                prefixRaw = text.substring(0, termEnd)
+                inAnsiString = false
+                text = text.substring(termEnd)
+                if (text.isEmpty()) return prefixRaw
             }
 
-            val out = StringBuilder(text.length + 32)
-            var changed = false
+            if ('\u001B' !in text) {
+                val rest = if (inRemoteFgColor) text else colorizePlain(text)
+                return if (prefixRaw.isEmpty()) rest else prefixRaw + rest
+            }
+
+            val out = StringBuilder(prefixRaw.length + text.length + 32)
+            if (prefixRaw.isNotEmpty()) out.append(prefixRaw)
+            var changed = prefixRaw.isNotEmpty()
             var lastEnd = 0
 
             for (match in ANSI_TOKEN_RE.findAll(text)) {
@@ -84,7 +118,7 @@ object KeywordHighlighter {
 
             if (lastEnd < text.length) {
                 val escIdx = if (holdIncompleteTail) text.indexOf('\u001B', lastEnd) else -1
-                if (escIdx >= 0 && text.length - escIdx <= MAX_PENDING_ESC && isIncompleteAnsiPrefix(text, escIdx)) {
+                if (escIdx >= 0 && isIncompleteAnsiPrefix(text, escIdx)) {
                     if (escIdx > lastEnd) {
                         val beforeEsc = text.substring(lastEnd, escIdx)
                         if (inRemoteFgColor) {
@@ -93,8 +127,21 @@ object KeywordHighlighter {
                             out.append(colorizePlain(beforeEsc))
                         }
                     }
-                    pendingEsc = text.substring(escIdx)
-                    changed = true
+                    if (text.length - escIdx <= MAX_PENDING_ESC) {
+                        pendingEsc = text.substring(escIdx)
+                        changed = true
+                    } else if (isStringIntroducer(text, escIdx)) {
+                        inAnsiString = true
+                        if (text.endsWith("\u001B")) {
+                            out.append(text, escIdx, text.length - 1)
+                            pendingEsc = "\u001B"
+                            changed = true
+                        } else {
+                            out.append(text, escIdx, text.length)
+                        }
+                    } else {
+                        out.append(text, escIdx, text.length)
+                    }
                 } else {
                     val tail = text.substring(lastEnd)
                     if (inRemoteFgColor) {
@@ -107,6 +154,31 @@ object KeywordHighlighter {
                 }
             }
             return if (changed) out.toString() else text
+        }
+    }
+
+    private fun findAnsiStringTerminatorEnd(text: String): Int {
+        var i = 0
+        val n = text.length
+        while (i < n) {
+            when (text[i]) {
+                '\u0007', '\u0018', '\u001A' -> return i + 1
+                '\u001B' -> {
+                    if (i + 1 < n) {
+                        return if (text[i + 1] == '\\') i + 2 else i
+                    }
+                }
+            }
+            i++
+        }
+        return -1
+    }
+
+    private fun isStringIntroducer(text: String, start: Int): Boolean {
+        if (start + 1 >= text.length) return false
+        return when (text[start + 1]) {
+            ']', 'P', '_', '^', 'X' -> true
+            else -> false
         }
     }
 

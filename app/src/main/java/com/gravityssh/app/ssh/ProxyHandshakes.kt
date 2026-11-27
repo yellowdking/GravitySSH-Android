@@ -4,19 +4,31 @@ import com.gravityssh.app.model.ProxyConfig
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.SocketTimeoutException
 import java.util.Base64
 
 internal object ProxyHandshakes {
 
     private val HTTP_OK_RE = Regex("^HTTP/1\\.[01]\\s+200(?:\\s.*)?$")
+    internal const val MAX_HTTP_HEADER_LINES = 64
+    internal const val MAX_HTTP_HEADER_BYTES = 32 * 1024
+    private const val MAX_SINGLE_HEADER_LINE_CHARS = 4096
 
-    fun socks5(input: InputStream, out: OutputStream, proxy: ProxyConfig, targetHost: String, targetPort: Int) {
+    fun socks5(
+        input: InputStream,
+        out: OutputStream,
+        proxy: ProxyConfig,
+        targetHost: String,
+        targetPort: Int,
+        deadlineNs: Long = 0L,
+        setSoTimeout: ((Int) -> Unit)? = null
+    ) {
         val cleanHost = sanitizeTargetHost(targetHost).removeSurrounding("[", "]")
         val hasAuth = proxy.username.isNotEmpty() || proxy.password.isNotEmpty()
         out.write(if (hasAuth) byteArrayOf(0x05, 0x02, 0x00, 0x02) else byteArrayOf(0x05, 0x01, 0x00))
         out.flush()
 
-        val methodResp = readExact(input, 2)
+        val methodResp = readExact(input, 2, deadlineNs, setSoTimeout)
         if (methodResp[0].toInt() != 0x05) throw IOException("SOCKS5 协议版本错误")
         when (methodResp[1].toInt() and 0xFF) {
             0x00 -> Unit
@@ -32,7 +44,9 @@ internal object ProxyHandshakes {
                 System.arraycopy(p, 0, authReq, 3 + u.size, p.size)
                 out.write(authReq)
                 out.flush()
-                if (readExact(input, 2)[1].toInt() != 0x00) throw IOException("SOCKS5 代理鉴权失败")
+                if (readExact(input, 2, deadlineNs, setSoTimeout)[1].toInt() != 0x00) {
+                    throw IOException("SOCKS5 代理鉴权失败")
+                }
             }
             else -> throw IOException("SOCKS5 代理拒绝认证方式")
         }
@@ -47,18 +61,26 @@ internal object ProxyHandshakes {
         out.write(req)
         out.flush()
 
-        val head = readExact(input, 4)
+        val head = readExact(input, 4, deadlineNs, setSoTimeout)
         if (head[1].toInt() != 0x00) throw IOException("SOCKS5 连接目标失败 (code=${head[1].toInt() and 0xFF})")
         val addrLen = when (val atyp = head[3].toInt() and 0xFF) {
             0x01 -> 4
-            0x03 -> readExact(input, 1)[0].toInt() and 0xFF
+            0x03 -> readExact(input, 1, deadlineNs, setSoTimeout)[0].toInt() and 0xFF
             0x04 -> 16
             else -> throw IOException("SOCKS5 未知地址类型: $atyp")
         }
-        readExact(input, addrLen + 2)
+        readExact(input, addrLen + 2, deadlineNs, setSoTimeout)
     }
 
-    fun httpConnect(input: InputStream, out: OutputStream, proxy: ProxyConfig, targetHost: String, targetPort: Int) {
+    fun httpConnect(
+        input: InputStream,
+        out: OutputStream,
+        proxy: ProxyConfig,
+        targetHost: String,
+        targetPort: Int,
+        deadlineNs: Long = 0L,
+        setSoTimeout: ((Int) -> Unit)? = null
+    ) {
         val cleanHost = sanitizeTargetHost(targetHost)
         val hostHeader = if (cleanHost.contains(':') && !(cleanHost.startsWith('[') && cleanHost.endsWith(']'))) {
             "[$cleanHost]:$targetPort"
@@ -77,11 +99,34 @@ internal object ProxyHandshakes {
         out.write(sb.toString().toByteArray(Charsets.US_ASCII))
         out.flush()
 
-        val statusLine = readAsciiLine(input)
+        var totalBytes = 0
+        val (statusLine, statusBytes) = readAsciiLine(
+            input = input,
+            maxBytes = MAX_HTTP_HEADER_BYTES,
+            deadlineNs = deadlineNs,
+            setSoTimeout = setSoTimeout
+        )
+        totalBytes += statusBytes
         if (!HTTP_OK_RE.matches(statusLine)) {
             throw IOException("HTTP 代理连接失败: $statusLine")
         }
-        while (readAsciiLine(input).isNotEmpty()) { /* consume headers */ }
+
+        var headerLines = 0
+        while (true) {
+            val remainingBytes = MAX_HTTP_HEADER_BYTES - totalBytes
+            val (line, lineBytes) = readAsciiLine(
+                input = input,
+                maxBytes = remainingBytes,
+                deadlineNs = deadlineNs,
+                setSoTimeout = setSoTimeout
+            )
+            totalBytes += lineBytes
+            if (line.isEmpty()) break
+            headerLines++
+            if (headerLines > MAX_HTTP_HEADER_LINES) {
+                throw IOException("HTTP 代理响应头行数超过上限 ($MAX_HTTP_HEADER_LINES)")
+            }
+        }
     }
 
     private fun sanitizeTargetHost(targetHost: String): String {
@@ -92,10 +137,27 @@ internal object ProxyHandshakes {
         return trimmed
     }
 
-    private fun readExact(input: InputStream, len: Int): ByteArray {
+    private fun applyDeadline(deadlineNs: Long, setSoTimeout: ((Int) -> Unit)?) {
+        if (deadlineNs <= 0L) return
+        val remNs = deadlineNs - System.nanoTime()
+        if (remNs <= 0L) throw SocketTimeoutException("代理握手超时")
+        val remMs = ((remNs + 999_999L) / 1_000_000L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+            .coerceAtLeast(1)
+        setSoTimeout?.invoke(remMs)
+    }
+
+    private fun readExact(
+        input: InputStream,
+        len: Int,
+        deadlineNs: Long,
+        setSoTimeout: ((Int) -> Unit)?
+    ): ByteArray {
         val buf = ByteArray(len)
         var off = 0
         while (off < len) {
+            applyDeadline(deadlineNs, setSoTimeout)
             val n = input.read(buf, off, len - off)
             if (n < 0) throw IOException("代理连接意外关闭")
             off += n
@@ -103,14 +165,30 @@ internal object ProxyHandshakes {
         return buf
     }
 
-    private fun readAsciiLine(input: InputStream): String {
+    private fun readAsciiLine(
+        input: InputStream,
+        maxBytes: Int,
+        deadlineNs: Long,
+        setSoTimeout: ((Int) -> Unit)?
+    ): Pair<String, Int> {
         val sb = StringBuilder()
-        while (sb.length < 4096) {
+        var bytesRead = 0
+        while (true) {
+            if (bytesRead >= maxBytes) {
+                throw IOException("HTTP 代理响应头超过 32 KiB 上限")
+            }
+            applyDeadline(deadlineNs, setSoTimeout)
             val b = input.read()
             if (b < 0) throw IOException("HTTP 代理提前断开")
+            bytesRead++
             if (b == '\n'.code) break
-            if (b != '\r'.code) sb.append(b.toChar())
+            if (b != '\r'.code) {
+                if (sb.length >= MAX_SINGLE_HEADER_LINE_CHARS) {
+                    throw IOException("HTTP 代理响应头单行超过限制")
+                }
+                sb.append(b.toChar())
+            }
         }
-        return sb.toString()
+        return sb.toString() to bytesRead
     }
 }

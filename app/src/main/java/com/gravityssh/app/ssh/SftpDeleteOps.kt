@@ -17,8 +17,9 @@ internal object SftpDeleteOps {
             false
         }
         if (fastOk) return
-        val sftp = sessionManager.requireSftp(sessionId)
-        deleteRecursiveSftp(sftp, target)
+        sessionManager.withSftp(sessionId) { sftp ->
+            deleteRecursiveSftp(sftp, target)
+        }
     }
 
     private suspend fun deleteViaSshFastPath(sessionManager: SshSessionManager, sessionId: String, target: String): Boolean {

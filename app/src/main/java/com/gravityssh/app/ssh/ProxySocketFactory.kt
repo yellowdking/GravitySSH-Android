@@ -7,19 +7,23 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketAddress
+import java.net.SocketTimeoutException
 import javax.net.SocketFactory
 
 class ProxySocketFactory(
     private val proxy: ProxyConfig,
     private val timeoutMs: Int = 15_000,
     private val rawTargetHost: String? = null,
-    private val rawTargetPort: Int = -1
+    private val rawTargetPort: Int = -1,
+    private val onSocketCreated: ((Socket) -> Unit)? = null
 ) : SocketFactory() {
 
-    override fun createSocket(): Socket = ProxyTunnelSocket(proxy, timeoutMs, rawTargetHost, rawTargetPort)
+    override fun createSocket(): Socket =
+        ProxyTunnelSocket(proxy, timeoutMs, rawTargetHost, rawTargetPort).also { onSocketCreated?.invoke(it) }
 
     override fun createSocket(host: String, port: Int): Socket =
         ProxyTunnelSocket(proxy, timeoutMs, rawTargetHost ?: host, if (rawTargetPort > 0) rawTargetPort else port).apply {
+            onSocketCreated?.invoke(this)
             connect(InetSocketAddress.createUnresolved(host, port), timeoutMs)
         }
 
@@ -47,13 +51,31 @@ private class ProxyTunnelSocket(
         val destHost = rawTargetHost?.takeIf { it.isNotBlank() } ?: target.hostString
         val destPort = if (rawTargetPort > 0) rawTargetPort else target.port
         val effTimeout = if (timeout > 0) timeout else defaultTimeoutMs
+        val deadlineNs = System.nanoTime() + effTimeout.toLong() * 1_000_000L
         try {
-            super.connect(InetSocketAddress(proxy.host.trim(), proxy.port), effTimeout)
+            val connectRemMs = remainingTimeoutMs(deadlineNs)
+            super.connect(InetSocketAddress(proxy.host.trim(), proxy.port), connectRemMs)
             runCatching { tcpNoDelay = true }
-            soTimeout = effTimeout
+            soTimeout = remainingTimeoutMs(deadlineNs)
             when (proxy.type.lowercase()) {
-                ProxyType.SOCKS5 -> ProxyHandshakes.socks5(getInputStream(), getOutputStream(), proxy, destHost, destPort)
-                ProxyType.HTTP -> ProxyHandshakes.httpConnect(getInputStream(), getOutputStream(), proxy, destHost, destPort)
+                ProxyType.SOCKS5 -> ProxyHandshakes.socks5(
+                    input = getInputStream(),
+                    out = getOutputStream(),
+                    proxy = proxy,
+                    targetHost = destHost,
+                    targetPort = destPort,
+                    deadlineNs = deadlineNs,
+                    setSoTimeout = { ms -> soTimeout = ms }
+                )
+                ProxyType.HTTP -> ProxyHandshakes.httpConnect(
+                    input = getInputStream(),
+                    out = getOutputStream(),
+                    proxy = proxy,
+                    targetHost = destHost,
+                    targetPort = destPort,
+                    deadlineNs = deadlineNs,
+                    setSoTimeout = { ms -> soTimeout = ms }
+                )
                 else -> throw IOException("不支持的代理类型: ${proxy.type}")
             }
             soTimeout = 0
@@ -61,5 +83,11 @@ private class ProxyTunnelSocket(
             runCatching { close() }
             throw e
         }
+    }
+
+    private fun remainingTimeoutMs(deadlineNs: Long): Int {
+        val remNs = deadlineNs - System.nanoTime()
+        if (remNs <= 0L) throw SocketTimeoutException("代理连接超时")
+        return ((remNs + 999_999L) / 1_000_000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1)
     }
 }

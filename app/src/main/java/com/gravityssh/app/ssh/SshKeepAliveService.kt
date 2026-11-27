@@ -53,30 +53,35 @@ class SshKeepAliveService : Service() {
 
         ensureChannel(this)
         if (alreadyRunning) {
-            runCatching {
-                getSystemService(NotificationManager::class.java)
-                    ?.notify(NOTIFICATION_ID, buildNotification(this, effectiveCount))
+            val stillRunning = synchronized(stateLock) {
+                if (isRunning && latestActiveCount > 0) {
+                    notifyIfRunningLocked(this)
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!stillRunning) {
+                stopAndClear(startId)
             }
             return START_NOT_STICKY
         }
 
         if (tryStartForeground(effectiveCount)) {
-            val (shouldStopNow, latestCount) = synchronized(stateLock) {
+            val shouldStopNow = synchronized(stateLock) {
                 if (latestActiveCount <= 0) {
                     isRunning = false
-                    true to 0
+                    true
                 } else {
                     isRunning = true
-                    false to latestActiveCount
+                    if (latestActiveCount != effectiveCount) {
+                        notifyIfRunningLocked(this)
+                    }
+                    false
                 }
             }
             if (shouldStopNow) {
                 stopAndClear(startId)
-            } else if (latestCount != effectiveCount) {
-                runCatching {
-                    getSystemService(NotificationManager::class.java)
-                        ?.notify(NOTIFICATION_ID, buildNotification(this, latestCount))
-                }
             }
         } else {
             stopAndClear(startId)
@@ -91,6 +96,8 @@ class SshKeepAliveService : Service() {
     override fun onDestroy() {
         synchronized(stateLock) {
             isRunning = false
+            startPending = false
+            cancelNotificationLocked(this)
         }
         super.onDestroy()
     }
@@ -98,16 +105,18 @@ class SshKeepAliveService : Service() {
     private fun stopAndClear(startId: Int) {
         synchronized(stateLock) {
             isRunning = false
+            startPending = false
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            cancelNotificationLocked(this)
         }
-        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf(startId)
     }
 
     private fun tryStartForeground(count: Int): Boolean {
         ensureChannel(this)
         val notification = buildNotification(this, count)
-        val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         } else {
             0
         }
@@ -143,12 +152,11 @@ class SshKeepAliveService : Service() {
         fun update(context: Context, activeCount: Int) {
             val appCtx = context.applicationContext
             val clamped = activeCount.coerceAtLeast(0)
-            var notifyCount: Int? = null
             synchronized(stateLock) {
                 latestActiveCount = clamped
                 if (clamped > 0) {
                     if (isRunning) {
-                        notifyCount = clamped
+                        notifyIfRunningLocked(appCtx)
                     } else if (!startPending) {
                         startPending = true
                         val intent = Intent(appCtx, SshKeepAliveService::class.java).apply {
@@ -178,16 +186,26 @@ class SshKeepAliveService : Service() {
                     isRunning = false
                     val intent = Intent(appCtx, SshKeepAliveService::class.java)
                     runCatching { appCtx.stopService(intent) }
+                    cancelNotificationLocked(appCtx)
                 }
                 // If clamped == 0 and startPending == true, do NOT call stopService() prematurely;
                 // onStartCommand() will observe latestActiveCount <= 0, call tryStartForeground(0), then stopSelf().
             }
-            notifyCount?.let { count ->
-                runCatching {
-                    ensureChannel(appCtx)
-                    appCtx.getSystemService(NotificationManager::class.java)
-                        ?.notify(NOTIFICATION_ID, buildNotification(appCtx, count))
-                }
+        }
+
+        private fun notifyIfRunningLocked(context: Context) {
+            if (!isRunning || latestActiveCount <= 0) return
+            runCatching {
+                ensureChannel(context)
+                context.getSystemService(NotificationManager::class.java)
+                    ?.notify(NOTIFICATION_ID, buildNotification(context, latestActiveCount))
+            }
+        }
+
+        private fun cancelNotificationLocked(context: Context) {
+            runCatching {
+                context.getSystemService(NotificationManager::class.java)
+                    ?.cancel(NOTIFICATION_ID)
             }
         }
 

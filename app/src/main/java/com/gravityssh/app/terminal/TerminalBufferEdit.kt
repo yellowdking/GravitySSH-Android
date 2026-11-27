@@ -11,20 +11,20 @@ internal object TerminalBufferEdit {
         }
     }
 
-    fun writeCell(grid: Array<Array<TerminalCell>>, r: Int, c: Int, rows: Int, cols: Int, ch: Char, s: TerminalStyle) {
+    fun writeCell(grid: Array<Array<TerminalCell>>, r: Int, c: Int, rows: Int, cols: Int, codePoint: Int, s: TerminalStyle) {
         if (r in 0 until rows && c in 0 until cols) {
             val row = grid[r]
             clearWideAt(row, c, cols, s)
-            row[c] = TerminalCell(ch, s.fg, s.bg, s.bold, s.dim, s.underline, s.inverse)
+            row[c] = TerminalCell(codePoint, s.fg, s.bg, s.bold, s.dim, s.underline, s.inverse)
         }
     }
 
-    fun writeWideCell(grid: Array<Array<TerminalCell>>, r: Int, c: Int, rows: Int, cols: Int, ch: Char, s: TerminalStyle) {
+    fun writeWideCell(grid: Array<Array<TerminalCell>>, r: Int, c: Int, rows: Int, cols: Int, codePoint: Int, s: TerminalStyle) {
         if (r in 0 until rows && c in 0 until cols - 1) {
             val row = grid[r]
             clearWideAt(row, c, cols, s)
             clearWideAt(row, c + 1, cols, s)
-            row[c] = TerminalCell(ch, s.fg, s.bg, s.bold, s.dim, s.underline, s.inverse, isWide = true)
+            row[c] = TerminalCell(codePoint, s.fg, s.bg, s.bold, s.dim, s.underline, s.inverse, isWide = true)
             row[c + 1] = TerminalCell.continuation(s)
         }
     }
@@ -136,7 +136,7 @@ internal object TerminalBufferEdit {
         snap.lines.joinToString("\n") { row ->
             val sb = StringBuilder(row.size)
             for (cell in row) {
-                if (!cell.isContinuation) sb.append(if (cell.ch == '\u0000') ' ' else cell.ch)
+                cell.appendTo(sb)
             }
             var end = sb.length
             while (end > 0 && sb[end - 1] == ' ') end--
@@ -149,9 +149,21 @@ internal object TerminalBufferEdit {
         return Array(c) { blank }
     }
 
-    fun resizeGrid(old: Array<Array<TerminalCell>>, newR: Int, newC: Int): Array<Array<TerminalCell>> {
+    fun resizeGrid(old: Array<Array<TerminalCell>>, newR: Int, newC: Int): Array<Array<TerminalCell>> =
+        resizeGridWithTopDrop(old, newR, newC, 0)
+
+    fun resizeGridWithTopDrop(
+        old: Array<Array<TerminalCell>>,
+        newR: Int,
+        newC: Int,
+        dropTop: Int
+    ): Array<Array<TerminalCell>> {
         val next = makeGrid(newR, newC)
-        for (r in 0 until minOf(old.size, newR)) next[r] = resizeRow(old[r], newC)
+        val start = dropTop.coerceIn(0, old.size)
+        val count = minOf(old.size - start, newR)
+        for (r in 0 until count) {
+            next[r] = resizeRow(old[start + r], newC)
+        }
         return next
     }
 

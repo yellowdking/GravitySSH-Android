@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import net.schmizz.keepalive.KeepAliveRunner
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
@@ -46,7 +47,15 @@ internal class SshSessionWorker(
                 managed.lifecycleMutex.withLock {
                     if (managed.closed || managed.generation.get() != gen) return@launch
                     if (closePreviousFirst) {
+                        val prevReader = managed.lastReaderJob
+                        managed.lastReaderJob = null
                         managed.closeTransportOnly()
+                        withTimeoutOrNull(2000L) { prevReader?.join() }
+                        if (managed.closed || managed.generation.get() != gen) return@launch
+                        updateTab(sid) {
+                            it.copy(status = SessionStatus.CONNECTING, sftpReady = false, error = null)
+                        }
+                        managed.terminal.resetForReconnect("\r\n\u001B[36m[GravitySSH] 正在重新连接...\u001B[0m\r\n")
                     }
                 }
 
@@ -89,24 +98,32 @@ internal class SshSessionWorker(
                     managed.lastSentRows = curRows
                     managed.startWriter(scope, shell)
                     committed = true
+
+                    updateTab(sid) {
+                        it.copy(
+                            status = SessionStatus.CONNECTED,
+                            sftpReady = false,
+                            homeDir = "/",
+                            currentDir = initialDir,
+                            viaSummary = conn.viaSummary,
+                            error = null
+                        )
+                    }
+                    syncKeepAlive()
+                    startReader(managed, shell, gen)
+                    startSftpInit(managed, conn.client, customStartDir, gen)
+                    startKeepAlive(managed, conn, gen)
+                    startMetrics(managed, conn.client, gen)
+
+                    if (managed.closed || managed.generation.get() != gen) {
+                        managed.closeTransportOnly()
+                        return@launch
+                    }
                 }
 
-                vaultRepository.markServerConnected(managed.server.id)
-                updateTab(sid) {
-                    it.copy(
-                        status = SessionStatus.CONNECTED,
-                        sftpReady = false,
-                        homeDir = "/",
-                        currentDir = initialDir,
-                        viaSummary = conn.viaSummary,
-                        error = null
-                    )
+                if (!managed.closed && managed.generation.get() == gen) {
+                    vaultRepository.markServerConnected(managed.server.id)
                 }
-                syncKeepAlive()
-                startReader(managed, shell, gen)
-                startSftpInit(managed, conn.client, customStartDir, gen)
-                startKeepAlive(managed, conn, gen)
-                startMetrics(managed, conn.client, gen)
 
                 if (managed.server.startupCommand.isNotBlank()) {
                     delay(50)
@@ -122,7 +139,7 @@ internal class SshSessionWorker(
                 if (!managed.closed && managed.generation.get() == gen) {
                     val msg = e.message ?: "连接失败"
                     managed.terminal.onRemoteOutput("\r\n\u001B[31m[连接失败] $msg\u001B[0m\r\n")
-                    updateTab(sid) { it.copy(status = SessionStatus.ERROR, error = msg) }
+                    updateTab(sid) { it.copy(status = SessionStatus.ERROR, sftpReady = false, error = msg) }
                     syncKeepAlive()
                 }
             }
@@ -158,7 +175,7 @@ internal class SshSessionWorker(
     }
 
     private fun startReader(managed: ManagedSession, shell: Session.Shell, gen: Long) {
-        managed.readerJob = scope.launch {
+        val job = scope.launch {
             val decoder = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPLACE)
                 .onUnmappableCharacter(CodingErrorAction.REPLACE)
@@ -175,7 +192,7 @@ internal class SshSessionWorker(
                         decoder.decode(inBuf, outBuf, true)
                         decoder.flush(outBuf)
                         outBuf.flip()
-                        if (outBuf.hasRemaining()) {
+                        if (outBuf.hasRemaining() && !managed.closed && managed.generation.get() == gen) {
                             managed.terminal.onRemoteOutput(outBuf.toString())
                         }
                         break
@@ -194,7 +211,7 @@ internal class SshSessionWorker(
                             if (res.isUnderflow) break
                         }
                         inBuf.compact()
-                        if (sb.isNotEmpty()) {
+                        if (sb.isNotEmpty() && !managed.closed && managed.generation.get() == gen) {
                             managed.terminal.onRemoteOutput(sb.toString())
                         }
                     }
@@ -206,7 +223,9 @@ internal class SshSessionWorker(
             } finally {
                 if (!managed.closed && managed.generation.get() == gen) {
                     updateTab(managed.sessionId) {
-                        if (it.status == SessionStatus.CONNECTED) it.copy(status = SessionStatus.DISCONNECTED) else it
+                        if (it.status == SessionStatus.CONNECTED) {
+                            it.copy(status = SessionStatus.DISCONNECTED, sftpReady = false)
+                        } else it
                     }
                     syncKeepAlive()
                     scope.launch {
@@ -219,6 +238,8 @@ internal class SshSessionWorker(
                 }
             }
         }
+        managed.readerJob = job
+        managed.lastReaderJob = job
     }
 
     private fun startKeepAlive(managed: ManagedSession, conn: ConnectedSsh, gen: Long) {
@@ -249,7 +270,7 @@ internal class SshSessionWorker(
                     if (!managed.closed && managed.generation.get() == gen) {
                         updateTab(managed.sessionId) {
                             if (it.status == SessionStatus.CONNECTED) {
-                                it.copy(status = SessionStatus.DISCONNECTED, error = "心跳超时，连接已断开")
+                                it.copy(status = SessionStatus.DISCONNECTED, sftpReady = false, error = "心跳超时，连接已断开")
                             } else it
                         }
                         syncKeepAlive()

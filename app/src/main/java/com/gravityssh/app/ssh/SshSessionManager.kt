@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.withLock
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.sftp.SFTPClient
+import net.schmizz.sshj.sftp.SFTPException
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -61,7 +62,6 @@ class SshSessionManager(
         vaultRepository.state.value.data.servers.find { it.id == m.server.id }?.let { m.server = it }
         val gen = m.generation.incrementAndGet()
         m.cancelJobs(includeConnect = true)
-        m.terminal.onRemoteOutput("\r\n\u001B[36m[GravitySSH] 正在重新连接...\u001B[0m\r\n")
         updateTab(sessionId) { it.copy(status = SessionStatus.CONNECTING, sftpReady = false, error = null) }
         syncKeepAlive()
         worker.startConnect(m, gen, closePreviousFirst = true)
@@ -113,10 +113,21 @@ class SshSessionManager(
         dirCache.peekCached(sessionId, dirPath, homeOf(sessionId), showHidden).orEmpty()
 
     suspend fun listDirForAutocomplete(sessionId: String, dirPath: String, showHidden: Boolean = true): List<SFTPFileEntry> =
-        dirCache.listDir(sessionId, dirPath, homeOf(sessionId), showHidden) {
-            val client = sessions[sessionId]?.conn?.client
-            if (client == null || !client.isConnected) null else requireSftp(sessionId)
-        }
+        dirCache.listDir(
+            sessionId = sessionId,
+            dirPath = dirPath,
+            homeDir = homeOf(sessionId),
+            showHidden = showHidden,
+            sftpProvider = {
+                val client = sessions[sessionId]?.conn?.client
+                if (client == null || !client.isConnected) null else requireSftp(sessionId)
+            },
+            onSftpError = { sftp, err ->
+                if (isSftpChannelBroken(sftp, err)) {
+                    invalidateSftp(sessionId, sftp)
+                }
+            }
+        )
 
     fun resizeSession(sessionId: String, cols: Int, rows: Int) {
         val m = sessions[sessionId] ?: return
@@ -149,10 +160,49 @@ class SshSessionManager(
         return client
     }
 
+    internal fun isSftpOpen(sftp: SFTPClient): Boolean =
+        runCatching { sftp.getSFTPEngine().getSubsystem().isOpen }.getOrDefault(false)
+
+    internal fun isSftpChannelBroken(sftp: SFTPClient, error: Throwable): Boolean {
+        if (!isSftpOpen(sftp)) return true
+        return error is IOException && error !is SFTPException
+    }
+
+    internal fun invalidateSftp(sessionId: String, failed: SFTPClient? = null) {
+        val m = sessions[sessionId] ?: return
+        val toClose = synchronized(m.sftpLock) {
+            val cur = m.sftpClient
+            if (cur != null && (failed == null || cur === failed)) {
+                m.sftpClient = null
+                cur
+            } else {
+                null
+            }
+        }
+        if (toClose != null) {
+            runCatching { toClose.close() }
+        }
+    }
+
+    internal inline fun <T> withSftp(sessionId: String, block: (SFTPClient) -> T): T {
+        val sftp = requireSftp(sessionId)
+        return try {
+            block(sftp)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            if (isSftpChannelBroken(sftp, e)) {
+                invalidateSftp(sessionId, sftp)
+            }
+            throw e
+        }
+    }
+
     internal fun requireSftp(sessionId: String): SFTPClient {
         val m = sessions[sessionId] ?: throw IOException("会话不存在")
         val gen = m.generation.get()
         var staleSftp: SFTPClient? = null
+        var cached: SFTPClient? = null
         val client: SSHClient = synchronized(m.sftpLock) {
             val c = m.conn?.client
             if (m.closed || c == null || !c.isConnected) {
@@ -160,7 +210,7 @@ class SshSessionManager(
                 m.sftpClient = null
                 null
             } else {
-                m.sftpClient?.let { return it }
+                cached = m.sftpClient
                 c
             }
         } ?: run {
@@ -168,22 +218,40 @@ class SshSessionManager(
             throw IOException("SSH 会话未连接")
         }
 
+        if (cached != null) {
+            if (isSftpOpen(cached!!)) {
+                return cached!!
+            }
+            val detached = synchronized(m.sftpLock) {
+                if (m.sftpClient === cached) {
+                    m.sftpClient = null
+                    cached
+                } else {
+                    null
+                }
+            }
+            runCatching { detached?.close() }
+        }
+
         val created = client.newSFTPClient()
         var adopted = false
+        var replacedOld: SFTPClient? = null
         val result = synchronized(m.sftpLock) {
             if (m.closed || m.generation.get() != gen || m.conn?.client !== client || !client.isConnected) {
                 null
             } else {
                 val existing = m.sftpClient
-                if (existing != null) {
+                if (existing != null && isSftpOpen(existing)) {
                     existing
                 } else {
+                    if (existing != null) replacedOld = existing
                     m.sftpClient = created
                     adopted = true
                     created
                 }
             }
         }
+        runCatching { replacedOld?.close() }
         if (result == null) {
             runCatching { created.close() }
             throw IOException("SSH 会话已断开")

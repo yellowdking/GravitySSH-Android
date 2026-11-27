@@ -22,18 +22,19 @@ class SftpService(
 
     suspend fun list(sessionId: String, path: String, showHidden: Boolean = false): SFTPListResult =
         withContext(Dispatchers.IO) {
-            val sftp = sessionManager.requireSftp(sessionId)
-            val resolved = SshPathUtils.resolvePath(sftp, path)
-            val rawList = SshPathUtils.filterLsItems(sftp.ls(resolved), showHidden)
-            val symlinkDirs = resolveSymlinkDirs(sessionId, sftp, rawList)
-            val entries = SshPathUtils.mapAndSortEntries(
-                rawList = rawList,
-                showHidden = showHidden,
-                isDirOverride = { info -> info.isDirectory || symlinkDirs[info.path] == true },
-                includeModTimeIso = true
-            )
-            val parent = SshPathUtils.parentDir(resolved)
-            SFTPListResult(path = resolved, parent = parent, entries = entries)
+            sessionManager.withSftp(sessionId) { sftp ->
+                val resolved = SshPathUtils.resolvePath(sftp, path)
+                val rawList = SshPathUtils.filterLsItems(sftp.ls(resolved), showHidden)
+                val symlinkDirs = resolveSymlinkDirs(sessionId, sftp, rawList)
+                val entries = SshPathUtils.mapAndSortEntries(
+                    rawList = rawList,
+                    showHidden = showHidden,
+                    isDirOverride = { info -> info.isDirectory || symlinkDirs[info.path] == true },
+                    includeModTimeIso = true
+                )
+                val parent = SshPathUtils.parentDir(resolved)
+                SFTPListResult(path = resolved, parent = parent, entries = entries)
+            }
         }
 
     private suspend fun resolveSymlinkDirs(
@@ -98,7 +99,7 @@ class SftpService(
 
     suspend fun mkdir(sessionId: String, path: String) = withContext(Dispatchers.IO) {
         val clean = SshPathUtils.normalizePosixPath(path)
-        sessionManager.requireSftp(sessionId).mkdirs(clean)
+        sessionManager.withSftp(sessionId) { it.mkdirs(clean) }
         sessionManager.invalidateDirCache(sessionId, SshPathUtils.parentDir(clean))
         sessionManager.invalidateDirCache(sessionId, clean)
     }
@@ -107,7 +108,7 @@ class SftpService(
         val src = SshPathUtils.normalizePosixPath(oldPath)
         val dst = SshPathUtils.normalizePosixPath(newPath)
         require(src != "/" && dst != "/") { "不能重命名根目录" }
-        sessionManager.requireSftp(sessionId).rename(src, dst)
+        sessionManager.withSftp(sessionId) { it.rename(src, dst) }
         sessionManager.invalidateDirCache(sessionId, SshPathUtils.parentDir(src))
         sessionManager.invalidateDirCache(sessionId, SshPathUtils.parentDir(dst))
         sessionManager.invalidateDirCache(sessionId, src)

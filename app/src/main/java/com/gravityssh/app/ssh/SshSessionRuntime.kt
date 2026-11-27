@@ -2,6 +2,7 @@ package com.gravityssh.app.ssh
 
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SessionTab
+import com.gravityssh.app.terminal.PasteGuard
 import com.gravityssh.app.terminal.TerminalSessionController
 import com.gravityssh.app.vault.VaultRepository
 import kotlinx.coroutines.CancellationException
@@ -41,6 +42,7 @@ internal class ManagedSession(
     @Volatile var connectJob: Job? = null
     @Volatile var sftpInitJob: Job? = null
     @Volatile var readerJob: Job? = null
+    @Volatile var lastReaderJob: Job? = null
     @Volatile var keepAliveJob: Job? = null
     @Volatile var metricsJob: Job? = null
     @Volatile var scriptJob: Job? = null
@@ -83,8 +85,15 @@ internal class ManagedSession(
         val normalized = script.replace("\r\n", "\n").replace("\r", "\n")
         val lines = normalized.split('\n').filter { it.isNotBlank() }
         if (lines.isEmpty()) return
-        if (!autoExecute || lines.size == 1) {
-            sendRaw(if (autoExecute) "${lines.first()}\r" else normalized)
+        if (!autoExecute) {
+            val fillPayload = formatSafeFillPayload(normalized, terminal.isBracketedPasteEnabled())
+            if (fillPayload.isNotEmpty()) {
+                sendRaw(fillPayload)
+            }
+            return
+        }
+        if (lines.size == 1) {
+            sendRaw("${lines.first()}\r")
             return
         }
         scriptJob?.cancel()
@@ -134,9 +143,36 @@ internal class ManagedSession(
         connectJob?.cancel()
         connectJob = null
         closeTransportOnly()
+        lastReaderJob = null
     }
 
     companion object {
+        internal fun formatSafeFillPayload(script: String, bracketedPasteEnabled: Boolean): String {
+            val normalized = script.replace("\r\n", "\n").replace("\r", "\n").trimEnd('\n')
+            if (normalized.isEmpty()) return ""
+            if ('\n' !in normalized) return normalized
+            if (bracketedPasteEnabled) {
+                val safe = PasteGuard.sanitizePasteText(normalized)
+                return "\u001B[200~$safe\u001B[201~"
+            }
+            val parts = normalized.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+            if (parts.isEmpty()) return ""
+            val sb = StringBuilder(normalized.length)
+            for (i in parts.indices) {
+                val part = parts[i]
+                if (i > 0) {
+                    val prev = parts[i - 1]
+                    val needsSemi = !(prev.endsWith(";") || prev.endsWith("&&") || prev.endsWith("||") ||
+                        prev.endsWith("|") || prev.endsWith("{") || prev.endsWith("(") ||
+                        prev.endsWith("then") || prev.endsWith("do") || prev.endsWith("else") ||
+                        prev.endsWith("\\"))
+                    sb.append(if (needsSemi) "; " else " ")
+                }
+                sb.append(part)
+            }
+            return sb.toString()
+        }
+
         fun createController(
             sessionId: String,
             server: ServerConfig,
@@ -153,7 +189,10 @@ internal class ManagedSession(
             keywordHighlightEnabled = { vault.state.value.data.settings.keywordHighlightEnabled },
             onCwdDetected = { dir -> updateTab(sessionId) { it.copy(currentDir = dir) } },
             onCommandCommitted = { cmd ->
-                vault.recordCommand(cmd, server.id, server.name, sessionId)
+                val leadingSpace = cmd.firstOrNull()?.let { it == ' ' || it == '\t' } == true
+                if (!leadingSpace && cmd.isNotBlank()) {
+                    vault.recordCommand(cmd, server.id, server.name, sessionId)
+                }
                 findTab(sessionId)?.let { tab ->
                     ShellPathTracker.resolveNextDir(cmd, tab.currentDir, tab.homeDir)?.let { next ->
                         updateTab(sessionId) { it.copy(currentDir = next) }

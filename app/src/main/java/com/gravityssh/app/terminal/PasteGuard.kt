@@ -22,12 +22,14 @@ data class PasteInspection(
 
 object PasteGuard {
     private val HIDDEN_CHARS_RE = Regex("[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2069\\uFEFF]")
+    private val BRACKETED_PASTE_MARKER_RE = Regex("(?:\\u001B\\[|\\u009B)20[01]~")
+    private val DANGEROUS_CONTROL_RE = Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F\\u009B]")
     private val PIPE_SHELL_RE = Regex("\\b(curl|wget)\\b[^\\n|]*\\|\\s*(sudo\\s+)?(sh|bash|zsh|ash)\\b", RegexOption.IGNORE_CASE)
     private val MIXED_LATIN_CYRILLIC_RE = Regex(
         "(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_\\u0400-\\u04FF-]*[\\u0400-\\u04FF])[A-Za-z0-9_\\u0400-\\u04FF-]+"
     )
 
-    private const val RM_TARGETS = "(?:/(?:\\s|\$|\\*|;|\\||&)|~/?(?:\\s|\$|\\*|;|\\||&)|\\*(?:\\s|\$|;|\\||&))"
+    private const val RM_TARGETS = "(?:/(?:\\s|\$|\\*|;|\\||&)|~/?(?:\\s|\$|\\*|;|\\||&)|\\*(?:\\s|\$|\\*|;|\\||&))"
     private val DANGEROUS_PATTERNS: List<Pair<Regex, String>> = listOf(
         Regex(
             "\\brm\\s+(?:" +
@@ -49,9 +51,13 @@ object PasteGuard {
 
     fun sanitizePasteText(raw: String): String {
         if (raw.isEmpty()) return ""
-        return raw
-            .replace("\u001B[200~", "")
-            .replace("\u001B[201~", "")
+        var s = raw
+        while (true) {
+            val next = s.replace(BRACKETED_PASTE_MARKER_RE, "")
+            if (next == s) break
+            s = next
+        }
+        return s
             .replace("\r\n", "\n")
             .replace("\r", "\n")
     }
@@ -62,10 +68,11 @@ object PasteGuard {
         }
         val normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         val warnings = mutableListOf<PasteWarning>()
-        var hasHidden = false
+        val hasHidden = HIDDEN_CHARS_RE.containsMatchIn(normalized)
+        val purified = if (hasHidden) stripHiddenChars(normalized) else normalized
+        val candidates = if (hasHidden) listOf(normalized, purified) else listOf(normalized)
 
-        if (HIDDEN_CHARS_RE.containsMatchIn(normalized)) {
-            hasHidden = true
+        if (hasHidden) {
             warnings.add(
                 PasteWarning(
                     kind = PasteWarningKind.HIDDEN_CHARS,
@@ -75,7 +82,22 @@ object PasteGuard {
             )
         }
 
-        if (MIXED_LATIN_CYRILLIC_RE.containsMatchIn(normalized)) {
+        if (DANGEROUS_CONTROL_RE.containsMatchIn(normalized)) {
+            val hasEscape = '\u001B' in normalized || '\u009B' in normalized
+            warnings.add(
+                PasteWarning(
+                    kind = PasteWarningKind.DANGER,
+                    label = if (hasEscape) "终端转义/控制序列" else "异常控制字符",
+                    detail = if (hasEscape) {
+                        "内容包含 ESC/CSI 终端控制序列，可能绕过括号粘贴保护或篡改终端状态"
+                    } else {
+                        "内容包含不可见 C0 控制字符，可能触发非预期终端操作"
+                    }
+                )
+            )
+        }
+
+        if (candidates.any { MIXED_LATIN_CYRILLIC_RE.containsMatchIn(it) }) {
             warnings.add(
                 PasteWarning(
                     kind = PasteWarningKind.HOMOGLYPH,
@@ -86,13 +108,13 @@ object PasteGuard {
         }
 
         for ((re, detail) in DANGEROUS_PATTERNS) {
-            if (re.containsMatchIn(normalized)) {
+            if (candidates.any { re.containsMatchIn(it) }) {
                 warnings.add(PasteWarning(PasteWarningKind.DANGER, "高危系统命令", detail))
                 break
             }
         }
 
-        if (PIPE_SHELL_RE.containsMatchIn(normalized)) {
+        if (candidates.any { PIPE_SHELL_RE.containsMatchIn(it) }) {
             warnings.add(
                 PasteWarning(
                     kind = PasteWarningKind.PIPE_SHELL,

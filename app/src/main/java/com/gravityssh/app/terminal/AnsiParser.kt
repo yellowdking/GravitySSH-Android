@@ -13,18 +13,61 @@ class AnsiParser(
     private val csiParams = IntArray(32)
     private var csiParamCount = 0
 
-    private var lastPrintedChar: Char = '\u0000'
+    private var lastPrintedCodePoint: Int = 0
+    private var pendingHighSurrogate: Char = '\u0000'
     private var charsetSlot = 0
     private var g0DecGraphics = false
     private var g1DecGraphics = false
     private var useG1 = false
     private var pendingReplies: MutableList<String>? = null
 
+    fun reset() {
+        state = State.GROUND
+        csiBuf.setLength(0)
+        oscBuf.setLength(0)
+        csiParamCount = 0
+        lastPrintedCodePoint = 0
+        pendingHighSurrogate = '\u0000'
+        charsetSlot = 0
+        g0DecGraphics = false
+        g1DecGraphics = false
+        useG1 = false
+        pendingReplies = null
+    }
+
     fun feed(text: String) {
         if (text.isEmpty()) return
         var repliesToSend: List<String>? = null
         buffer.synchronizedBuffer {
-            for (i in 0 until text.length) processChar(text[i])
+            var i = 0
+            val n = text.length
+            while (i < n) {
+                val ch = text[i++]
+                if (pendingHighSurrogate != '\u0000') {
+                    val hi = pendingHighSurrogate
+                    pendingHighSurrogate = '\u0000'
+                    if (ch.isLowSurrogate()) {
+                        processCodePoint(Character.toCodePoint(hi, ch))
+                        continue
+                    } else {
+                        processCodePoint(0xFFFD)
+                    }
+                }
+                when {
+                    ch.isHighSurrogate() -> {
+                        if (i < n && text[i].isLowSurrogate()) {
+                            val lo = text[i++]
+                            processCodePoint(Character.toCodePoint(ch, lo))
+                        } else if (i == n) {
+                            pendingHighSurrogate = ch
+                        } else {
+                            processCodePoint(0xFFFD)
+                        }
+                    }
+                    ch.isLowSurrogate() -> processCodePoint(0xFFFD)
+                    else -> processCodePoint(ch.code)
+                }
+            }
             buffer.touch()
             pendingReplies?.let {
                 repliesToSend = it
@@ -43,51 +86,59 @@ class AnsiParser(
         list.add(reply)
     }
 
-    private fun processChar(ch: Char) {
+    private fun processCodePoint(cp: Int) {
         when (state) {
-            State.GROUND -> handleGround(ch)
-            State.ESC -> handleEsc(ch)
-            State.CHARSET -> handleCharset(ch)
-            State.CSI -> handleCsi(ch)
-            State.OSC -> handleOsc(ch)
+            State.GROUND -> handleGround(cp)
+            State.OSC -> handleOsc(cp)
+            State.ESC -> if (cp <= 0xFFFF) handleEsc(cp.toChar()) else state = State.GROUND
+            State.CHARSET -> if (cp <= 0xFFFF) handleCharset(cp.toChar()) else state = State.GROUND
+            State.CSI -> if (cp <= 0xFFFF) handleCsi(cp.toChar()) else state = State.GROUND
             State.OSC_ESC -> {
-                if (ch == '\\') {
+                if (cp == '\\'.code) {
                     finishOsc()
                     state = State.GROUND
-                } else {
+                } else if (cp <= 0xFFFF) {
                     state = State.ESC
-                    handleEsc(ch)
+                    handleEsc(cp.toChar())
+                } else {
+                    state = State.GROUND
                 }
             }
-            State.STR_SKIP -> handleStrSkip(ch)
+            State.STR_SKIP -> if (cp <= 0xFFFF) handleStrSkip(cp.toChar())
             State.STR_SKIP_ESC -> {
-                when (ch) {
-                    '\\' -> state = State.GROUND
-                    '\u001B' -> state = State.STR_SKIP_ESC
+                when (cp) {
+                    '\\'.code -> state = State.GROUND
+                    0x1B -> state = State.STR_SKIP_ESC
                     else -> {
-                        state = State.ESC
-                        handleEsc(ch)
+                        if (cp <= 0xFFFF) {
+                            state = State.ESC
+                            handleEsc(cp.toChar())
+                        } else {
+                            state = State.GROUND
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun handleGround(ch: Char) {
-        when (ch) {
-            '\u001B' -> state = State.ESC
-            '\r' -> buffer.carriageReturn()
-            '\n', '\u000B', '\u000C' -> buffer.lineFeed()
-            '\b' -> buffer.backspace()
-            '\t' -> buffer.tab()
-            '\u000E' -> useG1 = true
-            '\u000F' -> useG1 = false
-            '\u0007', '\u0000' -> Unit
-            else -> if (ch >= ' ') {
+    private fun handleGround(cp: Int) {
+        when (cp) {
+            0x1B -> state = State.ESC
+            '\r'.code -> buffer.carriageReturn()
+            '\n'.code, 0x0B, 0x0C -> buffer.lineFeed()
+            '\b'.code -> buffer.backspace()
+            '\t'.code -> buffer.tab()
+            0x0E -> useG1 = true
+            0x0F -> useG1 = false
+            0x07, 0x00 -> Unit
+            else -> if (cp >= 0x20) {
                 val activeDec = if (useG1) g1DecGraphics else g0DecGraphics
-                val mapped = if (activeDec && ch.code in 0x60..0x7E) mapDecGraphics(ch) else ch
-                buffer.putChar(mapped)
-                lastPrintedChar = mapped
+                val mapped = if (activeDec && cp in 0x60..0x7E) mapDecGraphics(cp.toChar()).code else cp
+                buffer.putCodePoint(mapped)
+                if (codePointWidth(mapped) > 0) {
+                    lastPrintedCodePoint = mapped
+                }
             }
         }
     }
@@ -110,7 +161,8 @@ class AnsiParser(
                 buffer.style = TerminalStyle()
                 buffer.eraseDisplay(2)
                 buffer.moveCursorTo(0, 0)
-                lastPrintedChar = '\u0000'
+                lastPrintedCodePoint = 0
+                pendingHighSurrogate = '\u0000'
                 g0DecGraphics = false
                 g1DecGraphics = false
                 useG1 = false
@@ -132,7 +184,7 @@ class AnsiParser(
         when {
             ch == '\u001B' -> state = State.ESC
             ch == '\u0018' || ch == '\u001A' -> state = State.GROUND
-            ch.code < 0x20 -> handleGround(ch)
+            ch.code < 0x20 -> handleGround(ch.code)
             ch.code in 0x40..0x7E -> {
                 executeCsi(ch)
                 state = State.GROUND
@@ -141,12 +193,12 @@ class AnsiParser(
         }
     }
 
-    private fun handleOsc(ch: Char) {
-        when (ch) {
-            '\u0007' -> { finishOsc(); state = State.GROUND }
-            '\u001B' -> state = State.OSC_ESC
-            '\u0018', '\u001A' -> state = State.GROUND
-            else -> if (oscBuf.length < 512) oscBuf.append(ch)
+    private fun handleOsc(cp: Int) {
+        when (cp) {
+            0x07 -> { finishOsc(); state = State.GROUND }
+            0x1B -> state = State.OSC_ESC
+            0x18, 0x1A -> state = State.GROUND
+            else -> if (oscBuf.length < 512) oscBuf.appendCodePoint(cp)
         }
     }
 
@@ -180,6 +232,10 @@ class AnsiParser(
         }
 
         val startIdx = if (isPrivate) 1 else 0
+        for (i in startIdx until len) {
+            val c = csiBuf[i].code
+            if (c in 0x20..0x2F) return // Ignore unhandled CSI intermediate bytes (e.g. SL/SR/DECSCUSR)
+        }
         parseCsiParams(startIdx, len)
 
         if (isPrivate) {
@@ -215,9 +271,9 @@ class AnsiParser(
             's' -> buffer.saveCursor()
             'u' -> buffer.restoreCursor()
             'b' -> {
-                val ch = lastPrintedChar
-                if (ch != '\u0000') {
-                    repeat(param(0, 1).coerceAtMost(4096)) { buffer.putChar(ch) }
+                val cp = lastPrintedCodePoint
+                if (cp != 0) {
+                    repeat(param(0, 1).coerceAtMost(4096)) { buffer.putCodePoint(cp) }
                 }
             }
             'n' -> when (param0(0)) {

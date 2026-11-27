@@ -46,25 +46,29 @@ internal class SftpArchiveOps(
 
     suspend fun alignPermissions(sessionId: String, remotePath: String): String =
         withContext(Dispatchers.IO) {
-            val sftp = sessionManager.requireSftp(sessionId)
-            val clean = SshPathUtils.normalizePosixPath(remotePath)
-            require(clean != "/") { "不能修改根目录权限" }
-            val attrs = sftp.lstat(clean)
-            val isDir = attrs.type == FileMode.Type.DIRECTORY
-            val parent = SshPathUtils.parentDir(clean)
-            val siblings = runCatching { sftp.ls(parent) }.getOrDefault(emptyList())
-            val counts = HashMap<Int, Int>()
-            for (item in siblings) {
-                if (item.name == "." || item.name == ".." || item.path == clean) continue
-                val sameKind = (item.attributes.type == FileMode.Type.DIRECTORY) == isDir
-                if (!sameKind) continue
-                val mode = item.attributes.mode.mask and 0x1FF
-                if (mode != 0) counts[mode] = (counts[mode] ?: 0) + 1
+            sessionManager.withSftp(sessionId) { sftp ->
+                val clean = SshPathUtils.normalizePosixPath(remotePath)
+                require(clean != "/") { "不能修改根目录权限" }
+                val attrs = sftp.lstat(clean)
+                if (attrs.type == FileMode.Type.SYMLINK) {
+                    throw IOException("不支持对符号链接执行权限对齐")
+                }
+                val isDir = attrs.type == FileMode.Type.DIRECTORY
+                val expectedType = if (isDir) FileMode.Type.DIRECTORY else FileMode.Type.REGULAR
+                val parent = SshPathUtils.parentDir(clean)
+                val siblings = runCatching { sftp.ls(parent) }.getOrDefault(emptyList())
+                val counts = HashMap<Int, Int>()
+                for (item in siblings) {
+                    if (item.name == "." || item.name == ".." || item.path == clean) continue
+                    if (item.attributes.type != expectedType) continue
+                    val mode = item.attributes.mode.mask and 0x1FF
+                    if (mode != 0) counts[mode] = (counts[mode] ?: 0) + 1
+                }
+                val targetMode = counts.maxByOrNull { it.value }?.key
+                    ?: if (isDir) 0x1ED else 0x1A4 // 0755 or 0644
+                sftp.chmod(clean, targetMode)
+                String.format("%04o", targetMode)
             }
-            val targetMode = counts.maxByOrNull { it.value }?.key
-                ?: if (isDir) 0x1ED else 0x1A4 // 0755 or 0644
-            sftp.chmod(clean, targetMode)
-            String.format("%04o", targetMode)
         }
 
     private suspend fun runRemoteCommand(sessionId: String, cmd: String, timeoutSec: Long) {
