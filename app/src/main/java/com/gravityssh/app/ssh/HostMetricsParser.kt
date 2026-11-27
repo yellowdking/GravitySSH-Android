@@ -5,6 +5,8 @@ import java.time.Instant
 
 internal object HostMetricsParser {
 
+    private val WS_RE = Regex("\\s+")
+
     fun parse(
         sessionId: String,
         raw: String,
@@ -38,23 +40,38 @@ internal object HostMetricsParser {
             val t = rawLine.trim()
             if (t.isEmpty()) continue
             if (t.startsWith("---") && t.endsWith("---")) { section = t.trim('-'); continue }
-            val f = t.split(Regex("\\s+"))
             when (section) {
-                "CPU" -> if (f.size >= 5 && f[0] == "cpu") {
-                    var total = 0L; var idle = 0L
-                    for (i in 1 until f.size) {
-                        val v = f[i].toLongOrNull() ?: 0L
-                        total += v; if (i == 4 || i == 5) idle += v
+                "CPU" -> {
+                    val f = t.split(WS_RE)
+                    if (f.size >= 5 && f[0] == "cpu") {
+                        var total = 0L; var idle = 0L
+                        for (i in 1 until f.size) {
+                            val v = f[i].toLongOrNull() ?: 0L
+                            total += v; if (i == 4 || i == 5) idle += v
+                        }
+                        curCpu = CpuSample(total, idle); supported = true
                     }
-                    curCpu = CpuSample(total, idle); supported = true
                 }
-                "MEM" -> if (f.size >= 2) memMap[f[0].removeSuffix(":")] = f[1].toLongOrNull() ?: 0L
-                "DISK" -> if (f.size >= 2) {
-                    val pct = f[0].removeSuffix("%").toDoubleOrNull()
-                    if (pct != null && pct >= maxDisk) { maxDisk = pct; diskPct = pct; diskMount = f[1] }
+                "MEM" -> {
+                    val f = t.split(WS_RE)
+                    if (f.size >= 2) memMap[f[0].removeSuffix(":")] = f[1].toLongOrNull() ?: 0L
                 }
-                "NET" -> if (f.size >= 2) curNet = NetSample(f[0].toLongOrNull() ?: 0L, f[1].toLongOrNull() ?: 0L)
+                "DISK" -> {
+                    val parts = t.split(WS_RE, limit = 2)
+                    if (parts.size == 2) {
+                        val pct = parts[0].removeSuffix("%").toDoubleOrNull()
+                        val mount = parts[1].trim()
+                        if (pct != null && mount.isNotEmpty() && pct >= maxDisk) {
+                            maxDisk = pct; diskPct = pct; diskMount = mount
+                        }
+                    }
+                }
+                "NET" -> {
+                    val f = t.split(WS_RE)
+                    if (f.size >= 2) curNet = NetSample(f[0].toLongOrNull() ?: 0L, f[1].toLongOrNull() ?: 0L)
+                }
                 "LOAD" -> {
+                    val f = t.split(WS_RE)
                     if (f.size >= 3 && load1 == 0.0) load1 = f[0].toDoubleOrNull() ?: 0.0
                     else if (f.size == 1 && cores == 0) cores = f[0].toIntOrNull() ?: 0
                 }
