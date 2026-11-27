@@ -69,13 +69,43 @@ class UpdateChecker(
         const val DEFAULT_RELEASE_API = "https://api.github.com/repos/yellowdking/GravitySSH-Android/releases/latest"
 
         fun compareSemver(a: String, b: String): Int {
-            val pa = a.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-            val pb = b.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
+            val ca = a.trim().removePrefix("v").removePrefix("V").substringBefore('+')
+            val cb = b.trim().removePrefix("v").removePrefix("V").substringBefore('+')
+            val dashA = ca.indexOf('-')
+            val dashB = cb.indexOf('-')
+            val coreA = if (dashA >= 0) ca.substring(0, dashA) else ca
+            val coreB = if (dashB >= 0) cb.substring(0, dashB) else cb
+
+            val pa = coreA.split('.').map { it.toIntOrNull() ?: 0 }
+            val pb = coreB.split('.').map { it.toIntOrNull() ?: 0 }
             val n = maxOf(pa.size, pb.size)
             for (i in 0 until n) {
                 val va = pa.getOrElse(i) { 0 }
                 val vb = pb.getOrElse(i) { 0 }
                 if (va != vb) return va.compareTo(vb)
+            }
+
+            val preA = if (dashA >= 0) ca.substring(dashA + 1) else ""
+            val preB = if (dashB >= 0) cb.substring(dashB + 1) else ""
+            if (preA.isEmpty() && preB.isEmpty()) return 0
+            if (preA.isEmpty()) return 1
+            if (preB.isEmpty()) return -1
+
+            val ia = preA.split('.')
+            val ib = preB.split('.')
+            val m = maxOf(ia.size, ib.size)
+            for (i in 0 until m) {
+                val sa = ia.getOrNull(i) ?: return -1
+                val sb = ib.getOrNull(i) ?: return 1
+                val na = sa.toIntOrNull()
+                val nb = sb.toIntOrNull()
+                val cmp = when {
+                    na != null && nb != null -> na.compareTo(nb)
+                    na != null -> -1
+                    nb != null -> 1
+                    else -> sa.compareTo(sb)
+                }
+                if (cmp != 0) return cmp
             }
             return 0
         }

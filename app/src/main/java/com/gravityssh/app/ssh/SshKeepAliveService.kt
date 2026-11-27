@@ -1,5 +1,6 @@
 package com.gravityssh.app.ssh
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -14,100 +15,182 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.gravityssh.app.GravitySshApp
+import com.gravityssh.app.R
 
 class SshKeepAliveService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val startedAsFgs = intent?.getBooleanExtra(EXTRA_STARTED_AS_FGS, false) == true
+
         if (intent?.action == ACTION_DISCONNECT_ALL) {
+            if (!isRunning && startedAsFgs) {
+                tryStartForeground(0)
+            }
             runCatching { GravitySshApp.from(applicationContext).sshSessionManager.closeAllSessions() }
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopAndClear(startId)
             return START_NOT_STICKY
         }
+
         val count = intent?.getIntExtra(EXTRA_COUNT, 0) ?: 0
-        if (count <= 0) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+        if (intent == null || count <= 0) {
+            if (!isRunning && startedAsFgs) {
+                tryStartForeground(0)
+            }
+            stopAndClear(startId)
             return START_NOT_STICKY
         }
-        ensureChannel()
+
+        ensureChannel(this)
+        if (isRunning) {
+            runCatching {
+                getSystemService(NotificationManager::class.java)
+                    ?.notify(NOTIFICATION_ID, buildNotification(this, count))
+            }
+            return START_NOT_STICKY
+        }
+
+        if (tryStartForeground(count)) {
+            isRunning = true
+        } else {
+            stopAndClear(startId)
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopAndClear(startId)
+    }
+
+    override fun onDestroy() {
+        isRunning = false
+        super.onDestroy()
+    }
+
+    private fun stopAndClear(startId: Int) {
+        isRunning = false
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        stopSelf(startId)
+    }
+
+    private fun tryStartForeground(count: Int): Boolean {
+        ensureChannel(this)
+        val notification = buildNotification(this, count)
         val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-        } else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(count), fgsType)
-        return START_STICKY
-    }
-
-    private fun ensureChannel() {
-        val nm = getSystemService(NotificationManager::class.java) ?: return
-        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            val ch = NotificationChannel(
-                CHANNEL_ID,
-                "SSH 后台保活",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "保持活跃 SSH 会话在后台不断开"
-                setShowBadge(false)
+        } else {
+            0
+        }
+        return try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fgsType)
+            true
+        } catch (_: SecurityException) {
+            false
+        } catch (e: IllegalStateException) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                false
+            } else {
+                false
             }
-            nm.createNotificationChannel(ch)
+        } catch (_: RuntimeException) {
+            false
         }
-    }
-
-    private fun buildNotification(activeCount: Int): Notification {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        val openPending = if (launchIntent != null) {
-            PendingIntent.getActivity(
-                this,
-                1,
-                launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-        } else null
-
-        val disconnectIntent = Intent(this, SshKeepAliveService::class.java).apply {
-            action = ACTION_DISCONNECT_ALL
-        }
-        val disconnectPending = PendingIntent.getService(
-            this,
-            2,
-            disconnectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("GravitySSH 运行中")
-            .setContentText("当前有 $activeCount 个活跃 SSH 会话保持后台连接")
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(0, "断开全部", disconnectPending)
-        if (openPending != null) builder.setContentIntent(openPending)
-        return builder.build()
     }
 
     companion object {
         private const val CHANNEL_ID = "gravityssh_keepalive"
         private const val NOTIFICATION_ID = 4102
         private const val EXTRA_COUNT = "active_count"
+        private const val EXTRA_STARTED_AS_FGS = "started_as_fgs"
         const val ACTION_DISCONNECT_ALL = "com.gravityssh.app.action.DISCONNECT_ALL"
 
+        @Volatile
+        private var isRunning: Boolean = false
+
         fun update(context: Context, activeCount: Int) {
-            runCatching {
-                val intent = Intent(context, SshKeepAliveService::class.java).apply {
-                    putExtra(EXTRA_COUNT, activeCount)
-                }
-                if (activeCount > 0) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        ContextCompat.startForegroundService(context, intent)
-                    } else {
-                        context.startService(intent)
+            val appCtx = context.applicationContext
+            if (activeCount > 0) {
+                if (isRunning) {
+                    runCatching {
+                        ensureChannel(appCtx)
+                        appCtx.getSystemService(NotificationManager::class.java)
+                            ?.notify(NOTIFICATION_ID, buildNotification(appCtx, activeCount))
                     }
-                } else {
-                    context.stopService(intent)
+                    return
                 }
+                val intent = Intent(appCtx, SshKeepAliveService::class.java).apply {
+                    putExtra(EXTRA_COUNT, activeCount)
+                    putExtra(EXTRA_STARTED_AS_FGS, true)
+                }
+                try {
+                    ContextCompat.startForegroundService(appCtx, intent)
+                } catch (_: SecurityException) {
+                    // Background FGS restriction on Android 14/15
+                } catch (e: IllegalStateException) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                        // App is not in a valid state to start FGS
+                    }
+                } catch (_: RuntimeException) {
+                    // Ignore OS-level FGS start rejection
+                }
+            } else {
+                val intent = Intent(appCtx, SshKeepAliveService::class.java)
+                runCatching { appCtx.stopService(intent) }
             }
+        }
+
+        private fun ensureChannel(context: Context) {
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+                val ch = NotificationChannel(
+                    CHANNEL_ID,
+                    "SSH 后台保活",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "保持活跃 SSH 会话在后台不断开"
+                    setShowBadge(false)
+                }
+                nm.createNotificationChannel(ch)
+            }
+        }
+
+        private fun buildNotification(context: Context, activeCount: Int): Notification {
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            val openPending = if (launchIntent != null) {
+                PendingIntent.getActivity(
+                    context,
+                    1,
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            } else null
+
+            val disconnectIntent = Intent(context, SshKeepAliveService::class.java).apply {
+                action = ACTION_DISCONNECT_ALL
+            }
+            val disconnectPending = PendingIntent.getService(
+                context,
+                2,
+                disconnectIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val contentText = if (activeCount > 0) {
+                "当前有 $activeCount 个活跃 SSH 会话保持后台连接"
+            } else {
+                "正在断开 SSH 会话..."
+            }
+
+            val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle("GravitySSH 运行中")
+                .setContentText(contentText)
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .addAction(0, "断开全部", disconnectPending)
+            if (openPending != null) builder.setContentIntent(openPending)
+            return builder.build()
         }
     }
 }

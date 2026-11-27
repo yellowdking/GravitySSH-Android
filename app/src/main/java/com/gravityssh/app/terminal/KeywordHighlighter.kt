@@ -2,9 +2,12 @@ package com.gravityssh.app.terminal
 
 object KeywordHighlighter {
     private val ANSI_TOKEN_RE = Regex(
-        "(\\u001B\\[[0-9;?]*[ -/]*[@-~]|\\u001B\\][^\\u0007\\u001B]*(?:\\u0007|\\u001B\\\\)|\\u001B[@-Z\\\\-_])"
+        "(\\u001B\\[[0-9;:?<>!=]*[ -/]*[@-~]|" +
+            "\\u001B\\][^\\u0007\\u001B]*(?:\\u0007|\\u001B\\\\)|" +
+            "\\u001B[P_^X][^\\u0007\\u001B]*(?:\\u0007|\\u001B\\\\)|" +
+            "\\u001B[()*+][ -~]|" +
+            "\\u001B[@-Z\\\\-_])"
     )
-    private val FAST_CHECK_RE = Regex("[efpwosad0-9]", RegexOption.IGNORE_CASE)
     private val IPV4_RE = Regex("^\\d+\\.\\d+\\.\\d+\\.\\d+$")
     private val HIGHLIGHT_RE = Regex(
         "(\\b(?:error|fatal|panic|failed|failure|exception|critical|denied)\\b|" +
@@ -19,49 +22,200 @@ object KeywordHighlighter {
     private const val AMBER = "\u001B[38;5;221m"
     private const val GREEN = "\u001B[38;5;114m"
     private const val CYAN = "\u001B[38;5;117m"
-    private const val RESET = "\u001B[0m"
+    private const val FG_RESET = "\u001B[39m"
+    private const val MAX_PENDING_ESC = 512
 
     fun highlight(text: String): String {
-        if (text.isEmpty() || !FAST_CHECK_RE.containsMatchIn(text)) return text
-        val out = StringBuilder(text.length + 32)
-        var inColor = false
-        var changed = false
-        var lastEnd = 0
+        if (text.isEmpty()) return text
+        return Session().process(text, holdIncompleteTail = false)
+    }
 
-        for (match in ANSI_TOKEN_RE.findAll(text)) {
-            val plain = text.substring(lastEnd, match.range.first)
-            if (plain.isNotEmpty()) {
-                if (inColor) {
-                    out.append(plain)
+    class Session {
+        private var inRemoteFgColor = false
+        private var pendingEsc = ""
+
+        fun highlight(chunk: String): String = process(chunk, holdIncompleteTail = true)
+
+        fun flushPending(): String {
+            if (pendingEsc.isEmpty()) return ""
+            val out = pendingEsc
+            pendingEsc = ""
+            return out
+        }
+
+        fun reset() {
+            pendingEsc = ""
+            inRemoteFgColor = false
+        }
+
+        internal fun process(chunk: String, holdIncompleteTail: Boolean): String {
+            val text = if (pendingEsc.isNotEmpty()) {
+                val merged = pendingEsc + chunk
+                pendingEsc = ""
+                merged
+            } else {
+                chunk
+            }
+            if (text.isEmpty()) return text
+            if ('\u001B' !in text) {
+                return if (inRemoteFgColor) text else colorizePlain(text)
+            }
+
+            val out = StringBuilder(text.length + 32)
+            var changed = false
+            var lastEnd = 0
+
+            for (match in ANSI_TOKEN_RE.findAll(text)) {
+                val plain = text.substring(lastEnd, match.range.first)
+                if (plain.isNotEmpty()) {
+                    if (inRemoteFgColor) {
+                        out.append(plain)
+                    } else {
+                        val replaced = colorizePlain(plain)
+                        if (replaced !== plain) changed = true
+                        out.append(replaced)
+                    }
+                }
+                val seq = match.value
+                out.append(seq)
+                inRemoteFgColor = updateFgColorState(inRemoteFgColor, seq)
+                lastEnd = match.range.last + 1
+            }
+
+            if (lastEnd < text.length) {
+                val escIdx = if (holdIncompleteTail) text.indexOf('\u001B', lastEnd) else -1
+                if (escIdx >= 0 && text.length - escIdx <= MAX_PENDING_ESC && isIncompleteAnsiPrefix(text, escIdx)) {
+                    if (escIdx > lastEnd) {
+                        val beforeEsc = text.substring(lastEnd, escIdx)
+                        if (inRemoteFgColor) {
+                            out.append(beforeEsc)
+                        } else {
+                            out.append(colorizePlain(beforeEsc))
+                        }
+                    }
+                    pendingEsc = text.substring(escIdx)
+                    changed = true
                 } else {
-                    val replaced = colorizePlain(plain)
-                    if (replaced !== plain) changed = true
-                    out.append(replaced)
+                    val tail = text.substring(lastEnd)
+                    if (inRemoteFgColor) {
+                        out.append(tail)
+                    } else {
+                        val replaced = colorizePlain(tail)
+                        if (replaced !== tail) changed = true
+                        out.append(replaced)
+                    }
                 }
             }
-            val seq = match.value
-            out.append(seq)
-            if (isSgrReset(seq)) inColor = false
-            else if (isSgrColorSet(seq)) inColor = true
-            lastEnd = match.range.last + 1
+            return if (changed) out.toString() else text
         }
-
-        if (lastEnd < text.length) {
-            val tail = text.substring(lastEnd)
-            if (inColor) {
-                out.append(tail)
-            } else {
-                val replaced = colorizePlain(tail)
-                if (replaced !== tail) changed = true
-                out.append(replaced)
-            }
-        }
-        return if (changed) out.toString() else text
     }
 
     private fun colorizePlain(segment: String): String {
-        if (!HIGHLIGHT_RE.containsMatchIn(segment)) return segment
-        return HIGHLIGHT_RE.replace(segment) { m -> "${pickColor(m.value)}${m.value}$RESET" }
+        if (!mightMatch(segment) || !HIGHLIGHT_RE.containsMatchIn(segment)) return segment
+        return HIGHLIGHT_RE.replace(segment) { m -> "${pickColor(m.value)}${m.value}$FG_RESET" }
+    }
+
+    private fun mightMatch(s: String): Boolean {
+        val n = s.length
+        if (n < 2) return false
+        for (i in 0 until n - 1) {
+            val c0 = s[i]
+            if (c0 == '.' && i > 0 && s[i - 1] in '0'..'9' && s[i + 1] in '0'..'9') return true
+            if (i == 0 || !isWordChar(s[i - 1])) {
+                val a = c0.lowercaseChar()
+                val b = s[i + 1].lowercaseChar()
+                val hit = when (a) {
+                    'e' -> b == 'r' || b == 'x'
+                    'f', 'p', 'w' -> b == 'a'
+                    'c' -> b == 'r'
+                    'd', 'r', 'h' -> b == 'e'
+                    't' -> b == 'i'
+                    'o' -> b == 'k'
+                    's' -> b == 'u'
+                    'a' -> b == 'c'
+                    else -> false
+                }
+                if (hit) return true
+            }
+        }
+        return false
+    }
+
+    private fun isWordChar(c: Char): Boolean = c.isLetterOrDigit() || c == '_'
+
+    private fun isIncompleteAnsiPrefix(text: String, start: Int): Boolean {
+        val rem = text.length - start
+        if (rem <= 1) return true
+        return when (val second = text[start + 1]) {
+            '[' -> {
+                for (i in start + 2 until text.length) {
+                    if (text[i].code !in 0x20..0x3F) return false
+                }
+                true
+            }
+            ']', 'P', '_', '^', 'X' -> true
+            '(', ')', '*', '+' -> rem == 2
+            else -> second == '\u001B'
+        }
+    }
+
+    private fun updateFgColorState(current: Boolean, seq: String): Boolean {
+        val len = seq.length
+        if (len < 3 || seq[0] != '\u001B' || seq[1] != '[' || seq[len - 1] != 'm') return current
+        if (len == 3) return false
+        val first = seq[2]
+        if (first == '?' || first == '>' || first == '=' || first == '!') return current
+
+        var fg = current
+        var ext = 0 // 1 = awaiting mode for 38, 2 = awaiting mode for 48
+        var skip = 0
+        var pos = 2
+        val end = len - 1
+        while (true) {
+            var sep = pos
+            var colonIdx = -1
+            while (sep < end) {
+                val c = seq[sep]
+                if (c == ';') break
+                if (c == ':' && colonIdx < 0) colonIdx = sep
+                sep++
+            }
+            if (colonIdx >= 0) {
+                ext = 0
+                skip = 0
+                val head = parseInt(seq, pos, colonIdx, -1)
+                if (head == 38) fg = true
+            } else {
+                val v = parseInt(seq, pos, sep, 0)
+                if (ext != 0) {
+                    skip = when (v) { 5 -> 1; 2 -> 3; else -> 0 }
+                    ext = 0
+                } else if (skip > 0) {
+                    skip--
+                } else {
+                    when (v) {
+                        0, 39 -> fg = false
+                        in 30..37, in 90..97 -> fg = true
+                        38 -> { fg = true; ext = 1 }
+                        48 -> ext = 2
+                    }
+                }
+            }
+            if (sep >= end) break
+            pos = sep + 1
+        }
+        return fg
+    }
+
+    private fun parseInt(s: CharSequence, start: Int, end: Int, emptyVal: Int): Int {
+        if (start >= end) return emptyVal
+        var acc = 0
+        for (i in start until end) {
+            val d = s[i] - '0'
+            if (d !in 0..9) return -1
+            acc = (acc * 10 + d).coerceAtMost(999_999)
+        }
+        return acc
     }
 
     private fun pickColor(word: String): String {
@@ -75,10 +229,4 @@ object KeywordHighlighter {
         ) return AMBER
         return RED
     }
-
-    private fun isSgrReset(seq: String): Boolean =
-        seq == "\u001B[0m" || seq == "\u001B[m" || seq == "\u001B[39m" || seq == "\u001B[0;39m"
-
-    private fun isSgrColorSet(seq: String): Boolean =
-        seq.startsWith("\u001B[") && seq.endsWith("m") && !isSgrReset(seq)
 }

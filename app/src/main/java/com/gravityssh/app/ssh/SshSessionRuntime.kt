@@ -4,41 +4,71 @@ import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SessionTab
 import com.gravityssh.app.terminal.TerminalSessionController
 import com.gravityssh.app.vault.VaultRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.sftp.SFTPClient
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicLong
 
 internal class ManagedSession(
     val sessionId: String,
-    var server: ServerConfig,
+    @Volatile var server: ServerConfig,
     val terminal: TerminalSessionController,
-    var lastCols: Int = 80,
-    var lastRows: Int = 24
+    @Volatile var lastCols: Int = 80,
+    @Volatile var lastRows: Int = 24
 ) {
     @Volatile var conn: ConnectedSsh? = null
     @Volatile var sshSession: Session? = null
     @Volatile var shell: Session.Shell? = null
     @Volatile var sftpClient: SFTPClient? = null
     @Volatile var closed: Boolean = false
+
+    val lifecycleMutex = Mutex()
+    val sftpLock = Any()
+    val generation = AtomicLong(0L)
     val metricsSampler = HostMetricsSampler(sessionId)
 
-    var connectJob: Job? = null; var readerJob: Job? = null
-    var keepAliveJob: Job? = null; var metricsJob: Job? = null; var scriptJob: Job? = null
+    @Volatile var connectJob: Job? = null
+    @Volatile var readerJob: Job? = null
+    @Volatile var keepAliveJob: Job? = null
+    @Volatile var metricsJob: Job? = null
+    @Volatile var scriptJob: Job? = null
+    @Volatile var writerJob: Job? = null
 
-    fun sendRaw(scope: CoroutineScope, text: String) {
-        terminal.onLocalInput(text)
-        val sh = shell ?: return
-        scope.launch {
-            runCatching {
-                sh.outputStream.write(text.toByteArray(StandardCharsets.UTF_8))
-                sh.outputStream.flush()
+    @Volatile private var writeChannel: Channel<ByteArray>? = null
+
+    fun startWriter(scope: CoroutineScope, sh: Session.Shell) {
+        writerJob?.cancel()
+        writeChannel?.close()
+        val ch = Channel<ByteArray>(Channel.UNLIMITED)
+        writeChannel = ch
+        writerJob = scope.launch {
+            try {
+                val out = sh.outputStream
+                for (bytes in ch) {
+                    if (!isActive || closed) break
+                    out.write(bytes)
+                    out.flush()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Stream closed
             }
         }
+    }
+
+    fun sendRaw(text: String) {
+        terminal.onLocalInput(text)
+        val ch = writeChannel ?: return
+        ch.trySend(text.toByteArray(StandardCharsets.UTF_8))
     }
 
     fun runPacedScript(scope: CoroutineScope, script: String, autoExecute: Boolean) {
@@ -46,30 +76,52 @@ internal class ManagedSession(
         val lines = normalized.split('\n').filter { it.isNotBlank() }
         if (lines.isEmpty()) return
         if (!autoExecute || lines.size == 1) {
-            sendRaw(scope, if (autoExecute) "${lines.first()}\r" else normalized)
+            sendRaw(if (autoExecute) "${lines.first()}\r" else normalized)
             return
         }
         scriptJob?.cancel()
         scriptJob = scope.launch {
             for (line in lines) {
                 if (!isActive || closed) break
-                val sh = shell ?: break
-                runCatching {
-                    sh.outputStream.write("$line\r".toByteArray(StandardCharsets.UTF_8))
-                    sh.outputStream.flush()
-                }
+                val ch = writeChannel ?: break
+                if (ch.trySend("$line\r".toByteArray(StandardCharsets.UTF_8)).isFailure) break
                 delay(35L)
             }
         }
     }
 
-    fun closeResources() {
-        connectJob?.cancel(); readerJob?.cancel(); keepAliveJob?.cancel(); metricsJob?.cancel(); scriptJob?.cancel()
-        runCatching { sftpClient?.close() }
+    fun cancelJobs(includeConnect: Boolean = true) {
+        if (includeConnect) {
+            connectJob?.cancel()
+            connectJob = null
+        }
+        readerJob?.cancel(); readerJob = null
+        keepAliveJob?.cancel(); keepAliveJob = null
+        metricsJob?.cancel(); metricsJob = null
+        scriptJob?.cancel(); scriptJob = null
+        writerJob?.cancel(); writerJob = null
+        writeChannel?.close(); writeChannel = null
+    }
+
+    fun closeTransportOnly() {
+        cancelJobs(includeConnect = false)
+        synchronized(sftpLock) {
+            runCatching { sftpClient?.close() }
+            sftpClient = null
+        }
         runCatching { shell?.close() }
         runCatching { sshSession?.close() }
         runCatching { conn?.close() }
-        sftpClient = null; shell = null; sshSession = null; conn = null
+        shell = null
+        sshSession = null
+        conn = null
+        metricsSampler.reset()
+    }
+
+    fun closeResources() {
+        connectJob?.cancel()
+        connectJob = null
+        closeTransportOnly()
     }
 
     companion object {
@@ -115,15 +167,5 @@ internal object ShellPathTracker {
         return normalizePosixPath(target)
     }
 
-    fun normalizePosixPath(path: String): String {
-        val parts = ArrayDeque<String>()
-        for (seg in path.split('/')) {
-            when (seg) {
-                "", "." -> Unit
-                ".." -> if (parts.isNotEmpty()) parts.removeLast()
-                else -> parts.addLast(seg)
-            }
-        }
-        return if (parts.isEmpty()) "/" else "/" + parts.joinToString("/")
-    }
+    fun normalizePosixPath(path: String): String = SshPathUtils.normalizePosixPath(path)
 }

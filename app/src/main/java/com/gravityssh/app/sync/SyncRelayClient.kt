@@ -1,21 +1,23 @@
 package com.gravityssh.app.sync
 
+import com.gravityssh.app.model.AppJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 
-class SyncRelayClient(
+open class SyncRelayClient(
     private val appGateKey: String = SyncConfig.APP_GATE_KEY,
     private val pinnedSpkiSha256: String = SyncConfig.PINNED_SPKI_SHA256
 ) {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json = AppJson.json
     private val mediaType = "application/json; charset=utf-8".toMediaType()
 
     private val defaultHostPort: String = run {
@@ -27,25 +29,25 @@ class SyncRelayClient(
     private val selfSignedIpClient: OkHttpClient by lazy { SyncTlsFactory.buildSelfSignedIpClient() }
     private val standardClient: OkHttpClient by lazy { SyncTlsFactory.buildStandardClient() }
 
-    suspend fun ping(relayUrl: String): Long = withContext(Dispatchers.IO) {
+    open suspend fun ping(relayUrl: String): Long = withContext(Dispatchers.IO) {
         val start = System.nanoTime()
         executePost(relayUrl, "/v1/ping", "{}".toByteArray(Charsets.UTF_8), isPing = true)
         ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(1L)
     }
 
-    suspend fun drop(relayUrl: String, req: DropRequest): DropResponse = withContext(Dispatchers.IO) {
+    open suspend fun drop(relayUrl: String, req: DropRequest): DropResponse = withContext(Dispatchers.IO) {
         val body = json.encodeToString(req).toByteArray(Charsets.UTF_8)
         val respText = executePost(relayUrl, "/v1/drop", body)
         json.decodeFromString(DropResponse.serializer(), respText)
     }
 
-    suspend fun pickup(relayUrl: String, channelId: String): PickupResponse = withContext(Dispatchers.IO) {
+    open suspend fun pickup(relayUrl: String, channelId: String): PickupResponse = withContext(Dispatchers.IO) {
         val body = json.encodeToString(ChannelRequest(channelId)).toByteArray(Charsets.UTF_8)
         val respText = executePost(relayUrl, "/v1/pickup", body)
         json.decodeFromString(PickupResponse.serializer(), respText)
     }
 
-    suspend fun cancel(relayUrl: String, channelId: String) = withContext(Dispatchers.IO) {
+    open suspend fun cancel(relayUrl: String, channelId: String) = withContext(Dispatchers.IO) {
         val body = json.encodeToString(ChannelRequest(channelId)).toByteArray(Charsets.UTF_8)
         executePost(relayUrl, "/v1/cancel", body)
         Unit
@@ -77,7 +79,7 @@ class SyncRelayClient(
             .build()
 
         client.newCall(request).execute().use { resp ->
-            val text = resp.body?.string().orEmpty()
+            val text = readBodyCapped(resp.body)
             when (resp.code) {
                 404 -> throw IOException(
                     if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
@@ -88,5 +90,32 @@ class SyncRelayClient(
             if (!resp.isSuccessful) throw IOException("中继服务返回错误 (${resp.code})")
             return text
         }
+    }
+
+    private fun readBodyCapped(body: ResponseBody?): String {
+        if (body == null) return ""
+        val declared = body.contentLength()
+        if (declared > MAX_RESPONSE_BYTES) {
+            throw IOException("中继响应超过 4 MiB 上限")
+        }
+        val out = ByteArrayOutputStream()
+        body.byteStream().use { input ->
+            val buf = ByteArray(8192)
+            var total = 0
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > MAX_RESPONSE_BYTES) {
+                    throw IOException("中继响应超过 4 MiB 上限")
+                }
+                out.write(buf, 0, n)
+            }
+        }
+        return out.toByteArray().toString(Charsets.UTF_8)
+    }
+
+    companion object {
+        private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
     }
 }

@@ -10,6 +10,51 @@ import com.gravityssh.app.terminal.*
 import com.gravityssh.app.ui.theme.*
 import kotlin.math.*
 
+internal data class SearchMatch(val row: Int, val col: Int, val len: Int)
+
+internal class TerminalCanvasDrawState {
+  var runBuf: CharArray = CharArray(256)
+  val teardropPath: Path = Path()
+
+  fun ensureRunBuf(minLen: Int): CharArray {
+    if (runBuf.size < minLen) {
+      runBuf = CharArray(maxOf(minLen, runBuf.size * 2))
+    }
+    return runBuf
+  }
+}
+
+internal fun computeSearchMatches(snapshot: TerminalSnapshot, qLower: String): List<SearchMatch> {
+  if (qLower.isEmpty()) return emptyList()
+  val matches = ArrayList<SearchMatch>()
+  val qLen = qLower.length
+  for (r in snapshot.lines.indices) {
+    val row = snapshot.lines[r]
+    if (row.isEmpty()) continue
+    val sb = StringBuilder(row.size)
+    val colMap = IntArray(row.size)
+    var mappedLen = 0
+    for (c in row.indices) {
+      val cell = row[c]
+      if (cell.isContinuation) continue
+      sb.append(cell.ch.lowercaseChar())
+      colMap[mappedLen++] = c
+    }
+    if (mappedLen < qLen) continue
+    val rowLow = sb.toString()
+    var idx = rowLow.indexOf(qLower)
+    while (idx >= 0) {
+      val startCol = colMap[idx]
+      val endIdx = (idx + qLen - 1).coerceAtMost(mappedLen - 1)
+      val endCellCol = colMap[endIdx]
+      val endCol = endCellCol + if (row[endCellCol].isWide) 2 else 1
+      matches.add(SearchMatch(r, startCol, (endCol - startCol).coerceAtLeast(1)))
+      idx = rowLow.indexOf(qLower, idx + qLen)
+    }
+  }
+  return matches
+}
+
 internal fun DrawScope.drawTerminalSnapshot(
   snapshot: TerminalSnapshot,
   paint: Paint,
@@ -18,7 +63,8 @@ internal fun DrawScope.drawTerminalSnapshot(
   cellH: Float,
   baselineOffset: Float,
   scrollOffset: Int,
-  qLower: String,
+  searchMatches: List<SearchMatch>,
+  drawState: TerminalCanvasDrawState,
   tapIndicatorCell: Pair<Int, Int>? = null,
   selection: TextSelection? = null
 ) {
@@ -32,29 +78,161 @@ internal fun DrawScope.drawTerminalSnapshot(
       if (top >= size.height) break
       val row = snapshot.lines[r]
       val base = top + baselineOffset
-      val rowLow = if (qLower.isNotEmpty()) String(CharArray(row.size) { row[it].ch }).lowercase() else ""
-      for (c in row.indices) {
-        val cell = row[c]
+      val rowSize = row.size
+      val buf = drawState.ensureRunBuf(rowSize)
+
+      // Pass 1: Coalesced background rects
+      var bgActive = false
+      var bgColor = 0
+      var bgStartCol = 0
+      var bgEndCol = 0
+      for (c in 0 until rowSize) {
         val left = px + c * cellW
         if (left >= size.width) break
+        val cell = row[c]
+        if (cell.isContinuation) continue
+        val span = if (cell.isWide) 2 else 1
+        val bg = if (cell.inverse) cell.fg else cell.bg
+        if (bg != TerminalColors.DEFAULT_BG) {
+          if (bgActive && bg == bgColor && c == bgEndCol) {
+            bgEndCol = c + span
+          } else {
+            if (bgActive) {
+              drawRect(
+                Color(bgColor),
+                Offset(px + bgStartCol * cellW, top),
+                Size((bgEndCol - bgStartCol) * cellW + 0.6f, cellH + 0.6f)
+              )
+            }
+            bgActive = true
+            bgColor = bg
+            bgStartCol = c
+            bgEndCol = c + span
+          }
+        } else if (bgActive) {
+          drawRect(
+            Color(bgColor),
+            Offset(px + bgStartCol * cellW, top),
+            Size((bgEndCol - bgStartCol) * cellW + 0.6f, cellH + 0.6f)
+          )
+          bgActive = false
+        }
+      }
+      if (bgActive) {
+        drawRect(
+          Color(bgColor),
+          Offset(px + bgStartCol * cellW, top),
+          Size((bgEndCol - bgStartCol) * cellW + 0.6f, cellH + 0.6f)
+        )
+      }
+
+      // Pass 2: Coalesced text runs (0 String allocations per frame)
+      var runLen = 0
+      var runStartCol = 0
+      var runFg = 0
+      var runBg = 0
+      var runBold = false
+      var runDim = false
+      var runUnderline = false
+      var runInverse = false
+
+      fun flushTextRun() {
+        if (runLen <= 0) return
+        val p = if (runBold) boldPaint else paint
+        p.color = runFg
+        p.alpha = if (runDim) 150 else 255
+        nc.drawText(buf, 0, runLen, px + runStartCol * cellW, base, p)
+        runLen = 0
+      }
+
+      for (c in 0 until rowSize) {
+        val left = px + c * cellW
+        if (left >= size.width) break
+        val cell = row[c]
+        if (cell.isContinuation) continue
+        val ch = cell.ch
+        if (ch == ' ' || ch == '\u0000') {
+          flushTextRun()
+          continue
+        }
         val fg = if (cell.inverse) cell.bg else cell.fg
         val bg = if (cell.inverse) cell.fg else cell.bg
-        if (bg != TerminalColors.DEFAULT_BG) drawRect(Color(bg), Offset(left, top), Size(cellW + 0.6f, cellH + 0.6f))
-        if (cell.ch != ' ' && cell.ch != '\u0000') {
+        if (cell.isWide || ch.code > 0x7E) {
+          flushTextRun()
           val p = if (cell.bold) boldPaint else paint
-          p.color = fg; p.alpha = if (cell.dim) 150 else 255
-          nc.drawText(cell.ch.toString(), left, base, p)
+          p.color = fg
+          p.alpha = if (cell.dim) 150 else 255
+          buf[0] = ch
+          nc.drawText(buf, 0, 1, left, base, p)
+        } else if (
+          runLen > 0 &&
+          c == runStartCol + runLen &&
+          fg == runFg &&
+          bg == runBg &&
+          cell.bold == runBold &&
+          cell.dim == runDim &&
+          cell.underline == runUnderline &&
+          cell.inverse == runInverse
+        ) {
+          buf[runLen++] = ch
+        } else {
+          flushTextRun()
+          runStartCol = c
+          runFg = fg
+          runBg = bg
+          runBold = cell.bold
+          runDim = cell.dim
+          runUnderline = cell.underline
+          runInverse = cell.inverse
+          buf[0] = ch
+          runLen = 1
         }
-        if (cell.underline) drawLine(Color(fg), Offset(left, top + cellH - 2f), Offset(left + cellW, top + cellH - 2f), 1.5f)
       }
-      if (qLower.isNotEmpty()) {
-        var i = rowLow.indexOf(qLower)
-        while (i >= 0) {
-          drawRect(qBg, Offset(px + i * cellW, top), Size(qLower.length * cellW, cellH))
-          i = rowLow.indexOf(qLower, i + qLower.length)
+      flushTextRun()
+
+      // Pass 3: Coalesced underline segments
+      var ulActive = false
+      var ulColor = 0
+      var ulStartCol = 0
+      var ulEndCol = 0
+      val ulY = top + cellH - 2f
+      for (c in 0 until rowSize) {
+        val left = px + c * cellW
+        if (left >= size.width) break
+        val cell = row[c]
+        if (cell.isContinuation) continue
+        val span = if (cell.isWide) 2 else 1
+        if (cell.underline) {
+          val fg = if (cell.inverse) cell.bg else cell.fg
+          if (ulActive && fg == ulColor && c == ulEndCol) {
+            ulEndCol = c + span
+          } else {
+            if (ulActive) {
+              drawLine(Color(ulColor), Offset(px + ulStartCol * cellW, ulY), Offset(px + ulEndCol * cellW, ulY), 1.5f)
+            }
+            ulActive = true
+            ulColor = fg
+            ulStartCol = c
+            ulEndCol = c + span
+          }
+        } else if (ulActive) {
+          drawLine(Color(ulColor), Offset(px + ulStartCol * cellW, ulY), Offset(px + ulEndCol * cellW, ulY), 1.5f)
+          ulActive = false
         }
+      }
+      if (ulActive) {
+        drawLine(Color(ulColor), Offset(px + ulStartCol * cellW, ulY), Offset(px + ulEndCol * cellW, ulY), 1.5f)
       }
     }
+
+    if (searchMatches.isNotEmpty()) {
+      for (m in searchMatches) {
+        val top = py + m.row * cellH
+        if (top >= size.height) break
+        drawRect(qBg, Offset(px + m.col * cellW, top), Size(m.len * cellW, cellH))
+      }
+    }
+
     tapIndicatorCell?.let { (tr, tc) ->
       if (tr in 0 until snapshot.rows && tc in 0 until snapshot.cols) {
         val tl = Offset(px + tc * cellW - 2f, py + tr * cellH - 1f)
@@ -71,12 +249,12 @@ internal fun DrawScope.drawTerminalSnapshot(
         drawRect(AgAccentLight.copy(alpha = 0.85f), Offset(px + snapshot.cursorCol * cellW, cTop), Size(2.5f.coerceAtLeast(cellW * 0.22f), cellH - 2f))
       }
     }
-    if (selection != null) drawSelectionOverlay(snapshot, selection, cellW, cellH, px, py)
+    if (selection != null) drawSelectionOverlay(snapshot, selection, cellW, cellH, px, py, drawState.teardropPath)
   }
 }
 
 private fun DrawScope.drawSelectionOverlay(
-  snap: TerminalSnapshot, sel: TextSelection, cellW: Float, cellH: Float, px: Float, py: Float
+  snap: TerminalSnapshot, sel: TextSelection, cellW: Float, cellH: Float, px: Float, py: Float, teardropPath: Path
 ) {
   if (snap.lines.isEmpty() || snap.cols <= 0) return
   val s = sel.start; val e = sel.end
@@ -89,7 +267,7 @@ private fun DrawScope.drawSelectionOverlay(
     val endC = if (s.row == e.row || r == e.row) range.last else {
       var last = -1
       for (c in minOf(range.last, row.lastIndex) downTo range.first) {
-        if (row[c].ch != ' ' && row[c].ch != '\u0000') { last = c; break }
+        if (row[c].isContinuation || (row[c].ch != ' ' && row[c].ch != '\u0000')) { last = c; break }
       }
       if (last >= range.first) last else range.first
     }
@@ -97,14 +275,14 @@ private fun DrawScope.drawSelectionOverlay(
   }
   val rad = 11f * (cellH / 34f).coerceIn(0.8f, 1.35f)
   if (s.row in snap.lines.indices) {
-    drawTeardrop(px + s.col.coerceIn(0, snap.cols - 1) * cellW, py + s.row * cellH, py + (s.row + 1) * cellH, rad, true)
+    drawTeardrop(px + s.col.coerceIn(0, snap.cols - 1) * cellW, py + s.row * cellH, py + (s.row + 1) * cellH, rad, true, teardropPath)
   }
   if (e.row in snap.lines.indices) {
-    drawTeardrop(px + (e.col.coerceIn(0, snap.cols - 1) + 1) * cellW, py + e.row * cellH, py + (e.row + 1) * cellH, rad, false)
+    drawTeardrop(px + (e.col.coerceIn(0, snap.cols - 1) + 1) * cellW, py + e.row * cellH, py + (e.row + 1) * cellH, rad, false, teardropPath)
   }
 }
 
-private fun DrawScope.drawTeardrop(ax: Float, top: Float, ay: Float, r: Float, isStart: Boolean) {
+private fun DrawScope.drawTeardrop(ax: Float, top: Float, ay: Float, r: Float, isStart: Boolean, path: Path) {
   if (top >= size.height) return
   drawLine(AgCyan, Offset(ax, top), Offset(ax, ay), strokeWidth = 2.5f)
   val bx = if (isStart) (ax - r * 0.55f).coerceAtLeast(r + 2f)
@@ -116,10 +294,11 @@ private fun DrawScope.drawTeardrop(ax: Float, top: Float, ay: Float, r: Float, i
     val beta = acos((r / d).coerceIn(-0.99f, 0.99f))
     val a1 = atan2(dy, dx) + beta
     val deg = (180.0 / PI).toFloat()
-    val path = Path().apply {
-      moveTo(ax, ay); lineTo(bx + r * cos(a1), by + r * sin(a1))
-      arcTo(Rect(bx - r, by - r, bx + r, by + r), a1 * deg, 360f - 2f * beta * deg, false); close()
-    }
+    path.rewind()
+    path.moveTo(ax, ay)
+    path.lineTo(bx + r * cos(a1), by + r * sin(a1))
+    path.arcTo(Rect(bx - r, by - r, bx + r, by + r), a1 * deg, 360f - 2f * beta * deg, false)
+    path.close()
     drawPath(path, AgCyan); drawPath(path, AgBg, style = outline)
   } else {
     drawCircle(AgCyan, r, Offset(bx, by)); drawCircle(AgBg, r, Offset(bx, by), style = outline)

@@ -14,7 +14,12 @@ import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
 
 @Composable
-fun ServerProxyTab(draft: ServerConfig, onChange: (ServerConfig) -> Unit) {
+fun ServerProxyTab(
+    draft: ServerConfig,
+    proxyPortText: String,
+    onProxyPortTextChange: (String) -> Unit,
+    onChange: (ServerConfig) -> Unit
+) {
     val p = draft.proxy
     Text("代理协议", style = MaterialTheme.typography.labelMedium, color = AgMuted)
     ServerChipRow(
@@ -25,9 +30,10 @@ fun ServerProxyTab(draft: ServerConfig, onChange: (ServerConfig) -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AgTextField(p.host, { onChange(draft.copy(proxy = p.copy(host = it))) }, "代理地址", mono = true, modifier = Modifier.weight(2f))
             AgTextField(
-                if (p.port == 0) "" else p.port.toString(),
-                { onChange(draft.copy(proxy = p.copy(port = it.filter(Char::isDigit).toIntOrNull() ?: 0))) },
+                proxyPortText,
+                onProxyPortTextChange,
                 "端口",
+                placeholder = "1080",
                 mono = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.weight(1f)
@@ -41,8 +47,10 @@ fun ServerProxyTab(draft: ServerConfig, onChange: (ServerConfig) -> Unit) {
 @Composable
 fun ServerJumpTab(
     draft: ServerConfig,
+    jumpPortText: String,
     allServers: List<ServerConfig>,
     keys: List<SSHKeyRecord>,
+    onJumpPortTextChange: (String) -> Unit,
     onChange: (ServerConfig) -> Unit
 ) {
     val j = draft.jumpHost
@@ -64,9 +72,10 @@ fun ServerJumpTab(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AgTextField(j.host, { onChange(draft.copy(jumpHost = j.copy(host = it))) }, "跳板地址", mono = true, modifier = Modifier.weight(2f))
                 AgTextField(
-                    j.port.toString(),
-                    { onChange(draft.copy(jumpHost = j.copy(port = it.filter(Char::isDigit).toIntOrNull() ?: 22))) },
+                    jumpPortText,
+                    onJumpPortTextChange,
                     "端口",
+                    placeholder = "22",
                     mono = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.weight(1f)

@@ -9,6 +9,7 @@ import com.gravityssh.app.model.SessionTab
 import com.gravityssh.app.model.UpdateCheckResult
 import com.gravityssh.app.model.VaultState
 import com.gravityssh.app.vault.KnownHostEntry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -22,6 +23,7 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     val vaultState: StateFlow<VaultState> = container.vaultRepository.state
     val sessionTabs: StateFlow<List<SessionTab>> = container.sshSessionManager.tabs
     val activeSessionId: StateFlow<String?> = container.sshSessionManager.activeSessionId
+    val knownHosts: StateFlow<List<KnownHostEntry>> = container.knownHostsManager.knownHosts
 
     private val _toastEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val toastEvents: SharedFlow<String> = _toastEvents.asSharedFlow()
@@ -32,11 +34,7 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     private val _checkingUpdate = MutableStateFlow(false)
     val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
 
-    private val _knownHosts = MutableStateFlow<List<KnownHostEntry>>(emptyList())
-    val knownHosts: StateFlow<List<KnownHostEntry>> = _knownHosts.asStateFlow()
-
     init {
-        refreshKnownHosts()
         viewModelScope.launch {
             val st = vaultState.value
             if (!st.lockState.locked && st.data.settings.checkUpdatesOnStartup) {
@@ -50,26 +48,27 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     }
 
     fun refreshKnownHosts() {
-        _knownHosts.value = container.knownHostsManager.listKnownHosts()
+        // KnownHostsManager.knownHosts is a live StateFlow; no manual copy needed.
     }
 
     fun clearHostKnownKey(host: String, port: Int): Boolean {
         val removed = container.knownHostsManager.clearHost(host, port)
-        refreshKnownHosts()
         showToast(if (removed) "已清除 $host:$port 主机指纹缓存" else "未找到 $host:$port 缓存")
         return removed
     }
 
     fun clearKnownHostByKey(hostPort: String) {
-        container.knownHostsManager.clearHostByKey(hostPort)
-        refreshKnownHosts()
-        showToast("已删除主机指纹 $hostPort")
+        viewModelScope.launch(Dispatchers.IO) {
+            container.knownHostsManager.clearHostByKey(hostPort)
+            showToast("已删除主机指纹 $hostPort")
+        }
     }
 
     fun clearAllKnownHosts() {
-        val n = container.knownHostsManager.clearAll()
-        refreshKnownHosts()
-        showToast("已清除 $n 条 SSH 主机指纹缓存")
+        viewModelScope.launch(Dispatchers.IO) {
+            val n = container.knownHostsManager.clearAll()
+            showToast("已清除 $n 条 SSH 主机指纹缓存")
+        }
     }
 
     fun openServerSession(server: ServerConfig): String =

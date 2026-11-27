@@ -2,6 +2,7 @@ package com.gravityssh.app
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import com.gravityssh.app.ssh.KeyDeployer
 import com.gravityssh.app.ssh.SftpService
 import com.gravityssh.app.ssh.SshConnector
@@ -31,7 +32,8 @@ class AppContainer(context: Context) {
     val updateChecker = UpdateChecker(BuildConfig.APP_VERSION)
 
     init {
-        vaultRepository.open()
+        runCatching { vaultRepository.open() }
+            .onFailure { e -> runCatching { Log.e("AppContainer", "Unexpected vault open failure", e) } }
     }
 }
 

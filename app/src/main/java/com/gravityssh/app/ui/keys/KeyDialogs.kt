@@ -16,10 +16,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+
+private const val MAX_KEY_FILE_BYTES = 256 * 1024
 
 @Composable
 fun GenerateKeyDialog(
-    onGenerate: (type: String, name: String, comment: String) -> Unit,
+    onGenerate: (type: String, name: String, comment: String, onResult: (Boolean) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     var keyType by remember { mutableStateOf("ed25519") }
@@ -34,8 +40,8 @@ fun GenerateKeyDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = keyType == "ed25519", onClick = { keyType = "ed25519" }, label = { Text("Ed25519 (推荐)") })
-                    FilterChip(selected = keyType == "rsa", onClick = { keyType = "rsa" }, label = { Text("RSA-4096") })
+                    FilterChip(selected = keyType == "ed25519", onClick = { if (!busy) keyType = "ed25519" }, label = { Text("Ed25519 (推荐)") })
+                    FilterChip(selected = keyType == "rsa", onClick = { if (!busy) keyType = "rsa" }, label = { Text("RSA-4096") })
                 }
                 AgTextField(name, { name = it }, "密钥名称", placeholder = "例如 生产主密钥")
                 AgTextField(comment, { comment = it }, "公钥注释", mono = true)
@@ -43,7 +49,14 @@ fun GenerateKeyDialog(
         },
         confirmButton = {
             Button(
-                onClick = { busy = true; onGenerate(keyType, name.ifBlank { "${keyType.uppercase()} Key" }, comment) },
+                onClick = {
+                    if (busy) return@Button
+                    busy = true
+                    onGenerate(keyType, name.ifBlank { "${keyType.uppercase()} Key" }, comment) { ok ->
+                        busy = false
+                        if (ok) onDismiss()
+                    }
+                },
                 enabled = !busy,
                 colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
             ) {
@@ -60,33 +73,70 @@ fun GenerateKeyDialog(
 
 @Composable
 fun ImportKeyDialog(
-    onImport: (name: String, pem: String, passphrase: String, comment: String) -> Unit,
+    onImport: (name: String, pem: String, passphrase: String, comment: String, onResult: (Boolean) -> Unit) -> Unit,
+    onToast: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var pem by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("") }
     var comment by remember { mutableStateOf("") }
+    var readingFile by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
-        }.onSuccess { pem = it }
+        if (uri == null || readingFile || busy) return@rememberLauncherForActivityResult
+        readingFile = true
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val stream = context.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法打开所选私钥文件")
+                    stream.use { input ->
+                        val out = ByteArrayOutputStream()
+                        val buf = ByteArray(8192)
+                        var total = 0
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            total += n
+                            if (total > MAX_KEY_FILE_BYTES) {
+                                throw IllegalArgumentException("私钥文件过大（上限 256 KB）")
+                            }
+                            out.write(buf, 0, n)
+                        }
+                        out.toString(Charsets.UTF_8.name())
+                    }
+                }
+            }.onSuccess { text ->
+                pem = text
+            }.onFailure { err ->
+                onToast("读取私钥文件失败: ${err.message ?: "未知错误"}")
+            }
+            readingFile = false
+        }
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy && !readingFile) onDismiss() },
         containerColor = AgPanel,
         title = { Text("导入 SSH 私钥", color = AgText) },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { filePicker.launch(arrayOf("*/*")) },
+                    enabled = !busy && !readingFile,
                     border = BorderStroke(1.dp, AgCyan.copy(alpha = 0.6f)),
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("从本地文件读取私钥 (id_ed25519 / .pem)", color = AgCyan) }
+                ) {
+                    if (readingFile) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AgCyan)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(if (readingFile) "读取文件中..." else "从本地文件读取私钥 (id_ed25519 / .pem)", color = AgCyan)
+                }
                 AgTextField(name, { name = it }, "密钥名称", placeholder = "例如 阿里云密钥")
                 AgTextField(pem, { pem = it }, "私钥内容 (PEM / OpenSSH)", mono = true, singleLine = false, maxLines = 6)
                 AgTextField(passphrase, { passphrase = it }, "私钥口令（未加密可留空）", visualTransformation = PasswordVisualTransformation())
@@ -95,11 +145,26 @@ fun ImportKeyDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onImport(name.ifBlank { "Imported Key" }, pem, passphrase, comment) },
-                enabled = pem.isNotBlank(),
+                onClick = {
+                    if (busy || readingFile) return@Button
+                    busy = true
+                    onImport(name.ifBlank { "Imported Key" }, pem, passphrase, comment) { ok ->
+                        busy = false
+                        if (ok) onDismiss()
+                    }
+                },
+                enabled = pem.isNotBlank() && !busy && !readingFile,
                 colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
-            ) { Text("导入", color = Color.White) }
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = Color.White)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(if (busy) "导入中..." else "导入", color = Color.White)
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = AgMuted) } }
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy && !readingFile) { Text("取消", color = AgMuted) }
+        }
     )
 }

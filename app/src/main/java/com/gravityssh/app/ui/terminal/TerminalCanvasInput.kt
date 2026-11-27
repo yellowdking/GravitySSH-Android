@@ -120,15 +120,21 @@ internal fun TerminalImeSink(focusRequester: FocusRequester, onImeInput: (String
     BasicTextField(
         value = imeValue,
         onValueChange = { next ->
+            val composing = next.composition != null && !next.composition!!.collapsed
+            if (composing) {
+                imeValue = next
+                return@BasicTextField
+            }
+            val wasComposing = imeValue.composition?.let { !it.collapsed } == true
             val raw = next.text
             when {
-                raw.isEmpty() -> onImeInput("\u007F")
+                raw.isEmpty() -> if (!wasComposing) onImeInput("\u007F")
                 raw.startsWith(IME_SENTINEL) -> raw.removePrefix(IME_SENTINEL).takeIf { it.isNotEmpty() }?.let { onImeInput(it.replace("\n", "\r")) }
                 else -> raw.replace(IME_SENTINEL, "").takeIf { it.isNotEmpty() }?.let { onImeInput(it.replace("\n", "\r")) }
             }
             imeValue = TextFieldValue(IME_SENTINEL, TextRange(IME_SENTINEL.length))
         },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false, imeAction = ImeAction.Send),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, autoCorrectEnabled = false, imeAction = ImeAction.Send),
         keyboardActions = KeyboardActions(onSend = { onImeInput("\r") }),
         modifier = Modifier.size(1.dp).alpha(0f).focusRequester(focusRequester)
     )

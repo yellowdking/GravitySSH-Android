@@ -3,6 +3,10 @@ package com.gravityssh.app.terminal
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class TerminalSessionController(
     val sessionId: String,
@@ -14,20 +18,23 @@ class TerminalSessionController(
     onSendInput: (String) -> Unit = {}
 ) {
     val buffer = TerminalBuffer(initialCols, initialRows)
-    private val parser = AnsiParser(
-        buffer = buffer,
-        onTitleChanged = { _title.value = it },
-        onCwdChanged = onCwdDetected
-    )
 
     @Volatile
     private var inputSender: (String) -> Unit = onSendInput
 
+    private val parser = AnsiParser(
+        buffer = buffer,
+        onCwdChanged = onCwdDetected,
+        onReply = { reply -> inputSender(reply) }
+    )
+    private val highlighter = KeywordHighlighter.Session()
+
+    private val frameSeq = AtomicLong(0L)
+    private val lastFrameEmitNs = AtomicLong(0L)
+    private val pendingEmit = AtomicBoolean(false)
+
     private val _frameVersion = MutableStateFlow(0L)
     val frameVersion: StateFlow<Long> = _frameVersion.asStateFlow()
-
-    private val _title = MutableStateFlow("")
-    val title: StateFlow<String> = _title.asStateFlow()
 
     private val _currentInputLine = MutableStateFlow("")
     val currentInputLine: StateFlow<String> = _currentInputLine.asStateFlow()
@@ -48,14 +55,21 @@ class TerminalSessionController(
     fun onRemoteOutput(rawText: String) {
         if (rawText.isEmpty()) return
         val skipHighlight = buffer.isAlternateScreen || TerminalModes.containsAltScreenEnter(rawText)
-        val processed = if (keywordHighlightEnabled() && !skipHighlight) {
-            KeywordHighlighter.highlight(rawText)
+        val processed = if (skipHighlight) {
+            val pending = highlighter.flushPending()
+            highlighter.reset()
+            if (pending.isEmpty()) rawText else pending + rawText
+        } else if (keywordHighlightEnabled()) {
+            highlighter.highlight(rawText)
         } else {
-            rawText
+            val pending = highlighter.flushPending()
+            if (pending.isEmpty()) rawText else pending + rawText
         }
-        parser.feed(processed)
-        syncModeFlows()
-        _frameVersion.value = _frameVersion.value + 1
+        if (processed.isNotEmpty()) {
+            parser.feed(processed)
+            syncModeFlows()
+            notifyFrameUpdated(immediate = false)
+        }
     }
 
     fun onLocalInput(data: String) {
@@ -73,13 +87,7 @@ class TerminalSessionController(
     fun resize(cols: Int, rows: Int) {
         buffer.resize(cols, rows)
         syncModeFlows()
-        _frameVersion.value = _frameVersion.value + 1
-    }
-
-    fun clear() {
-        buffer.clearAll()
-        syncModeFlows()
-        _frameVersion.value = _frameVersion.value + 1
+        notifyFrameUpdated(immediate = true)
     }
 
     fun snapshot(scrollOffset: Int = 0): TerminalSnapshot = buffer.snapshot(scrollOffset)
@@ -111,14 +119,50 @@ class TerminalSessionController(
     }
 
     fun sendSgrMouseTap(col0Based: Int, row0Based: Int): String {
-        val seq = TerminalModes.sgrMouseTapSequence(col0Based, row0Based, buffer.cols, buffer.rows)
+        val (rows, cols) = buffer.screenSize()
+        val seq = TerminalModes.sgrMouseTapSequence(col0Based, row0Based, cols, rows)
         inputSender(seq)
         return seq
     }
 
     private fun syncModeFlows() {
         _bracketedPaste.value = buffer.bracketedPasteMode
-        _alternateScreen.value = buffer.isAlternateScreen
-        _nanoDetected.value = buffer.isNanoScreenHint()
+        val alt = buffer.isAlternateScreen
+        _alternateScreen.value = alt
+        _nanoDetected.value = if (alt) buffer.isNanoScreenHint() else false
+    }
+
+    private fun notifyFrameUpdated(immediate: Boolean) {
+        val next = frameSeq.incrementAndGet()
+        if (immediate) {
+            lastFrameEmitNs.set(System.nanoTime())
+            pendingEmit.set(false)
+            _frameVersion.value = next
+            return
+        }
+        val now = System.nanoTime()
+        val prev = lastFrameEmitNs.get()
+        if (prev == 0L || now - prev >= FRAME_COALESCE_NS) {
+            if (lastFrameEmitNs.compareAndSet(prev, now)) {
+                pendingEmit.set(false)
+                _frameVersion.value = next
+                return
+            }
+        }
+        if (pendingEmit.compareAndSet(false, true)) {
+            val remainingMs = ((FRAME_COALESCE_NS - (now - lastFrameEmitNs.get())).coerceAtLeast(1_000_000L) + 999_999L) / 1_000_000L
+            frameFlushExecutor.schedule({
+                pendingEmit.set(false)
+                lastFrameEmitNs.set(System.nanoTime())
+                _frameVersion.value = frameSeq.get()
+            }, remainingMs.coerceIn(1L, 16L), TimeUnit.MILLISECONDS)
+        }
+    }
+
+    companion object {
+        private const val FRAME_COALESCE_NS = 16_000_000L
+        private val frameFlushExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "TerminalFrameCoalescer").apply { isDaemon = true }
+        }
     }
 }

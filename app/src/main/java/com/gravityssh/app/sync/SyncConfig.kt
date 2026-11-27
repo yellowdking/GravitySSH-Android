@@ -39,16 +39,21 @@ object SyncConfig {
             throw IllegalArgumentException("同步中继仅支持有效的 HTTPS 地址")
         }
         val hostPart = if (':' in parsed.host) "[${parsed.host}]" else parsed.host
-        val authority = withScheme.substringAfter("://").substringBefore('/')
+        val authority = withScheme.substringAfter("://")
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringBefore('#')
         val explicitPort = if (authority.startsWith("[")) {
             authority.substringAfter("]", "").startsWith(":")
         } else {
             authority.contains(':')
         }
-        return if (parsed.port == 443 && !explicitPort) {
+        val origin = if (parsed.port == 443 && !explicitPort) {
             "https://$hostPart"
         } else {
             "https://$hostPart:${parsed.port}"
         }
+        val cleanPath = parsed.encodedPath.trimEnd('/')
+        return "$origin$cleanPath"
     }
 }

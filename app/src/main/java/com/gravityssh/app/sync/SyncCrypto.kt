@@ -1,12 +1,12 @@
 package com.gravityssh.app.sync
 
+import com.gravityssh.app.model.AppJson
 import com.gravityssh.app.model.SyncBundle
+import com.gravityssh.app.vault.CryptoUtils
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.security.SecureRandom
 import java.util.Base64
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.PBEKeySpec
+import javax.crypto.AEADBadTagException
 
 data class EncryptedDropBlob(
     val channelId: String,
@@ -17,12 +17,11 @@ data class EncryptedDropBlob(
 
 object SyncCrypto {
     const val CROCKFORD_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+    private const val SALT_LEN = 16
+    private const val NONCE_LEN = 12
+    private const val MIN_CT_LEN = 16
     private val random = SecureRandom()
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-        coerceInputValues = true
-    }
+    private val json = AppJson.json
 
     fun generateSyncCode(): String {
         val chars = CharArray(8) { CROCKFORD_ALPHABET[random.nextInt(CROCKFORD_ALPHABET.length)] }
@@ -33,7 +32,12 @@ object SyncCrypto {
         var raw = input.trim()
         val idx = raw.indexOf("code=", ignoreCase = true)
         if (idx >= 0) raw = raw.substring(idx + 5).substringBefore('&')
-        val cleaned = raw.uppercase().replace("-", "").replace(" ", "").replace("\n", "").replace("\r", "")
+        val cleaned = raw.uppercase()
+            .replace("-", "")
+            .replace(" ", "")
+            .replace("\t", "")
+            .replace("\n", "")
+            .replace("\r", "")
         require(cleaned.length == 8 && cleaned.all { it in CROCKFORD_ALPHABET }) {
             "同步码格式无效（应为 8 位 XXXX-XXXX）"
         }
@@ -52,13 +56,8 @@ object SyncCrypto {
         return sha256Hex("${SyncConfig.CHANNEL_PREFIX}$canonical".toByteArray(Charsets.UTF_8))
     }
 
-    fun deriveAesKey(canonicalCode: String, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(canonicalCode.toCharArray(), salt, SyncConfig.PBKDF2_ITERATIONS, 256)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val key = factory.generateSecret(spec).encoded
-        spec.clearPassword()
-        return key
-    }
+    fun deriveAesKey(canonicalCode: String, salt: ByteArray): ByteArray =
+        CryptoUtils.pbkdf2Sha256(canonicalCode, salt, SyncConfig.PBKDF2_ITERATIONS, 256)
 
     fun encryptBundle(
         bundle: SyncBundle,
@@ -68,11 +67,17 @@ object SyncCrypto {
     ): EncryptedDropBlob {
         val canonical = canonicalizeCode(code)
         val channelId = deriveChannelId(canonical)
-        val salt = fixedSalt?.copyOf() ?: ByteArray(16).also { random.nextBytes(it) }
-        val nonce = fixedNonce?.copyOf() ?: ByteArray(12).also { random.nextBytes(it) }
+        val salt = fixedSalt?.copyOf() ?: ByteArray(SALT_LEN).also { random.nextBytes(it) }
+        val nonce = fixedNonce?.copyOf() ?: ByteArray(NONCE_LEN).also { random.nextBytes(it) }
+        require(salt.size == SALT_LEN) { "同步加密盐值长度无效" }
+        require(nonce.size == NONCE_LEN) { "同步加密随机数长度无效" }
         val compressed = SyncCryptoPrimitives.gzipCompress(json.encodeToString(bundle).toByteArray(Charsets.UTF_8))
         val key = deriveAesKey(canonical, salt)
-        val ct = SyncCryptoPrimitives.aesGcmEncrypt(key, nonce, compressed, channelId.toByteArray(Charsets.UTF_8))
+        val ct = try {
+            CryptoUtils.aesGcmEncrypt(key, nonce, compressed, channelId.toByteArray(Charsets.UTF_8))
+        } finally {
+            CryptoUtils.zero(key)
+        }
         val b64 = Base64.getEncoder()
         return EncryptedDropBlob(channelId, b64.encodeToString(salt), b64.encodeToString(nonce), b64.encodeToString(ct))
     }
@@ -86,12 +91,30 @@ object SyncCrypto {
         val canonical = canonicalizeCode(code)
         val channelId = deriveChannelId(canonical)
         val b64 = Base64.getDecoder()
-        val key = deriveAesKey(canonical, b64.decode(saltB64))
-        val compressed = SyncCryptoPrimitives.aesGcmDecrypt(
-            key, b64.decode(nonceB64), b64.decode(ciphertextB64), channelId.toByteArray(Charsets.UTF_8)
-        )
+        val salt = decodeB64(b64, saltB64, "同步加密盐值格式无效")
+        val nonce = decodeB64(b64, nonceB64, "同步加密随机数格式无效")
+        val ct = decodeB64(b64, ciphertextB64, "同步密文格式无效")
+        require(salt.size == SALT_LEN) { "同步加密盐值长度无效" }
+        require(nonce.size == NONCE_LEN) { "同步加密随机数长度无效" }
+        require(ct.size >= MIN_CT_LEN) { "同步密文数据不完整" }
+
+        val key = deriveAesKey(canonical, salt)
+        val compressed = try {
+            CryptoUtils.aesGcmDecrypt(key, nonce, ct, channelId.toByteArray(Charsets.UTF_8))
+        } catch (e: AEADBadTagException) {
+            throw SecurityException("同步码错误或数据已被篡改，解密失败", e)
+        } finally {
+            CryptoUtils.zero(key)
+        }
         return SyncCryptoPrimitives.gzipDecompress(compressed).toString(Charsets.UTF_8)
     }
+
+    private fun decodeB64(decoder: Base64.Decoder, value: String, errorMsg: String): ByteArray =
+        try {
+            decoder.decode(value)
+        } catch (e: IllegalArgumentException) {
+            throw IllegalArgumentException(errorMsg, e)
+        }
 
     fun signAppGate(appGateKey: String, method: String, path: String, timestampSec: Long, rawBody: ByteArray): String =
         SyncCryptoPrimitives.signAppGate(appGateKey, method, path, timestampSec, rawBody)

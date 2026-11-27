@@ -1,12 +1,115 @@
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+
+# App models & @Serializable types across model/vault/sync/terminal
 -keep class com.gravityssh.app.model.** { *; }
--keep class kotlinx.serialization.** { *; }
+-keep,includedescriptorclasses class com.gravityssh.app.**$$serializer { *; }
+-keepclassmembers class com.gravityssh.app.** {
+    *** Companion;
+}
+-keepclasseswithmembers class com.gravityssh.app.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# SSHJ & Ed25519 (dynamic factories, ciphers, KEX, key format providers)
 -keep class com.hierynomus.sshj.** { *; }
 -keep class net.schmizz.sshj.** { *; }
 -keep class net.i2p.crypto.eddsa.** { *; }
--keep class org.bouncycastle.** { *; }
+
+# SLF4J 2.x ServiceLoader NOP binding
+-keep class org.slf4j.nop.** { *; }
+-keep class * implements org.slf4j.spi.SLF4JServiceProvider { *; }
+
+# ZXing QR Code reader/writer (lets R8 strip unused 1D/Aztec/PDF417 codecs)
+-keep class com.google.zxing.qrcode.** { *; }
+
+# BouncyCastle: targeted JCA/PEM/OpenSSH keep rules (avoids keeping ~4,000 unused BC classes)
+# Provider core, config & SPI base utilities
+-keep class org.bouncycastle.jce.provider.BouncyCastleProvider { *; }
+-keep class org.bouncycastle.jce.provider.BouncyCastleProvider$* { *; }
+-keep class org.bouncycastle.jce.ECNamedCurveTable { *; }
+-keep class org.bouncycastle.jce.spec.** { *; }
+-keep class org.bouncycastle.jce.interfaces.** { *; }
+-keep class org.bouncycastle.jcajce.provider.config.** { *; }
+-keep class org.bouncycastle.jcajce.provider.util.** { *; }
+-keep class org.bouncycastle.jcajce.provider.keystore.** { *; }
+-keep class org.bouncycastle.jcajce.provider.drbg.** { *; }
+
+# Asymmetric algorithms & $Mappings registrations (RSA, EC/ECDSA/ECDH, DSA, DH, Ed25519/X25519, X.509)
+-keep class org.bouncycastle.jcajce.provider.asymmetric.RSA { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.RSA$* { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.rsa.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.EC { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.EC$* { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.ec.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.DSA { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.DSA$* { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.dsa.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.DH { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.DH$* { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.dh.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.EdEC { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.EdEC$* { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.edec.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.X509 { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.X509$* { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.x509.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.util.** { *; }
+
+# Symmetric ciphers, Poly1305 & KDFs (AES/GCM/CTR/CBC, ChaCha20-Poly1305, Blowfish, 3DES, PBKDF2, scrypt)
+-keep class org.bouncycastle.jcajce.provider.symmetric.AES { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.AES$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.Blowfish { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.Blowfish$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.DES { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.DES$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.DESede { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.DESede$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.ARC4 { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.ARC4$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.ChaCha { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.ChaCha$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.Poly1305 { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.Poly1305$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF2 { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF2$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.PBEPKCS12 { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.PBEPKCS12$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.SCRYPT { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.SCRYPT$* { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.util.** { *; }
+
+# Digests & HMACs (SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5)
+-keep class org.bouncycastle.jcajce.provider.digest.SHA1 { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA1$* { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA224 { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA224$* { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA256 { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA256$* { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA384 { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA384$* { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA512 { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA512$* { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.MD5 { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.MD5$* { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.BCMessageDigest { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.DigestAlgorithmProvider { *; }
+
+# PEM, PKCS#8, ASN.1, OpenSSH key params & utilities
+-keep class org.bouncycastle.openssl.** { *; }
+-keep class org.bouncycastle.pkcs.** { *; }
+-keep class org.bouncycastle.asn1.** { *; }
+-keep class org.bouncycastle.crypto.params.** { *; }
+-keep class org.bouncycastle.crypto.util.OpenSSH* { *; }
+-keep class org.bouncycastle.util.** { *; }
+
+# Suppress R8 warnings for optional desktop-JDK / reflection-only references
 -dontwarn org.bouncycastle.**
 -dontwarn net.schmizz.**
 -dontwarn com.hierynomus.**
+-dontwarn net.i2p.crypto.eddsa.**
+-dontwarn org.slf4j.**
 -dontwarn javax.naming.**
 -dontwarn java.lang.management.**
+-dontwarn com.jcraft.jzlib.**
+-dontwarn org.ietf.jgss.**
+-dontwarn javax.security.auth.**

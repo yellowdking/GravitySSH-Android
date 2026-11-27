@@ -25,7 +25,9 @@ import com.gravityssh.app.ui.theme.*
 @Composable
 fun ServerBasicTab(
     draft: ServerConfig,
+    portText: String,
     keys: List<SSHKeyRecord>,
+    onPortTextChange: (String) -> Unit,
     onChange: (ServerConfig) -> Unit
 ) {
     AgTextField(draft.name, { onChange(draft.copy(name = it)) }, "主机名称", placeholder = "例如 生产节点-01")
@@ -33,9 +35,10 @@ fun ServerBasicTab(
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AgTextField(draft.host, { onChange(draft.copy(host = it)) }, "主机地址 (IP / 域名)", mono = true, modifier = Modifier.weight(2.2f))
         AgTextField(
-            draft.port.toString(),
-            { onChange(draft.copy(port = it.filter(Char::isDigit).toIntOrNull() ?: 22)) },
+            portText,
+            onPortTextChange,
             "端口",
+            placeholder = "22",
             mono = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.weight(1f)

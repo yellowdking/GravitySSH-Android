@@ -10,6 +10,7 @@ from pathlib import Path
 
 ZIP_URL = "https://github.com/atelier-anchor/smiley-sans/releases/download/v2.0.1/smiley-sans-v2.0.1.zip"
 EXPECTED_ZIP_SHA256 = "299c0be6c960ae37361762eca76f7d0cd516615435bb96c0d4b98a1e70178a07"
+EXPECTED_TTF_SHA256 = "b447d7e781f08bc95c4c9f23ba71ed2b8ebb639aa7184485c71c4ca5afcd25c4"
 LICENSE_URL = "https://raw.githubusercontent.com/atelier-anchor/smiley-sans/v2.0.1/LICENSE"
 EXPECTED_LICENSE_SHA256 = "9401f4050f1b66c26b6ccdc8b0e14a3c1cc37aac122eda84386f25854a9bec72"
 
@@ -39,11 +40,18 @@ def download(url: str, dest: Path) -> None:
 
 def ensure_font() -> int:
     FONT_DIR.mkdir(parents=True, exist_ok=True)
-    if TTF_DEST.exists() and TTF_DEST.stat().st_size > 1_000_000:
-        print(f"[fetch_fonts] font already present: {TTF_DEST}")
-        return 0
+    if TTF_DEST.exists():
+        existing_digest = sha256_file(TTF_DEST).lower()
+        if existing_digest == EXPECTED_TTF_SHA256:
+            print(f"[fetch_fonts] font already present and verified: {TTF_DEST}")
+            return 0
+        print(
+            f"[fetch_fonts] cached font SHA-256 mismatch ({existing_digest}), re-downloading...",
+            file=sys.stderr,
+        )
 
     tmp_zip = FONT_DIR / "smiley-sans-v2.0.1.zip"
+    tmp_ttf = FONT_DIR / "smiley_sans.ttf.tmp"
     print(f"[fetch_fonts] downloading {ZIP_URL} ...")
     download(ZIP_URL, tmp_zip)
     digest = sha256_file(tmp_zip)
@@ -56,14 +64,23 @@ def ensure_font() -> int:
     with zipfile.ZipFile(tmp_zip, "r") as zf:
         for name in zf.namelist():
             if os.path.basename(name) == "SmileySans-Oblique.ttf":
-                TTF_DEST.write_bytes(zf.read(name))
+                tmp_ttf.write_bytes(zf.read(name))
                 ttf_written = True
                 break
     tmp_zip.unlink(missing_ok=True)
     if not ttf_written:
+        tmp_ttf.unlink(missing_ok=True)
         print("[fetch_fonts] SmileySans-Oblique.ttf missing from zip", file=sys.stderr)
         return 1
-    print(f"[fetch_fonts] extracted {TTF_DEST} ({TTF_DEST.stat().st_size} bytes)")
+
+    ttf_digest = sha256_file(tmp_ttf).lower()
+    if ttf_digest != EXPECTED_TTF_SHA256:
+        tmp_ttf.unlink(missing_ok=True)
+        print(f"[fetch_fonts] extracted TTF SHA-256 mismatch: {ttf_digest}", file=sys.stderr)
+        return 1
+
+    tmp_ttf.replace(TTF_DEST)
+    print(f"[fetch_fonts] extracted and verified {TTF_DEST} ({TTF_DEST.stat().st_size} bytes)")
     return 0
 
 

@@ -1,5 +1,6 @@
 package com.gravityssh.app.ui.sftp
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.gravityssh.app.model.RemoteFileContent
+import com.gravityssh.app.ui.components.AgConfirmDialog
 import com.gravityssh.app.ui.theme.AgAccent
 import com.gravityssh.app.ui.theme.AgBg
 import com.gravityssh.app.ui.theme.AgBorder
@@ -55,12 +57,22 @@ fun SftpEditorDialog(
 ) {
     var content by remember(file.path) { mutableStateOf(file.content) }
     var saving by remember { mutableStateOf(false) }
+    var confirmDiscard by remember { mutableStateOf(false) }
+    val hasChanges = content != file.content
     val scope = rememberCoroutineScope()
 
+    fun requestClose() {
+        if (saving) return
+        if (hasChanges) confirmDiscard = true else onDismiss()
+    }
+
     Dialog(
-        onDismissRequest = { if (!saving) onDismiss() },
+        onDismissRequest = ::requestClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        BackHandler(enabled = !saving && hasChanges) {
+            confirmDiscard = true
+        }
         Surface(modifier = Modifier.fillMaxSize().imePadding(), color = AgBg) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(
@@ -73,7 +85,7 @@ fun SftpEditorDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = file.path.substringAfterLast('/'),
+                            text = file.path.substringAfterLast('/') + if (hasChanges) " *" else "",
                             style = MaterialTheme.typography.titleMedium,
                             color = AgText,
                             maxLines = 1,
@@ -89,7 +101,7 @@ fun SftpEditorDialog(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = onDismiss, enabled = !saving) {
+                        TextButton(onClick = ::requestClose, enabled = !saving) {
                             Text("关闭", color = AgMuted)
                         }
                         Button(
@@ -131,5 +143,16 @@ fun SftpEditorDialog(
                 )
             }
         }
+    }
+
+    if (confirmDiscard) {
+        AgConfirmDialog(
+            title = "放弃未保存修改",
+            message = "当前文件有未保存的更改，确定放弃并关闭编辑器？",
+            confirmLabel = "放弃修改",
+            dangerous = true,
+            onConfirm = { confirmDiscard = false; onDismiss() },
+            onDismiss = { confirmDiscard = false }
+        )
     }
 }

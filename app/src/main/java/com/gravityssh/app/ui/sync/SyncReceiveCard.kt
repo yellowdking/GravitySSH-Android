@@ -19,7 +19,9 @@ import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgConfirmDialog
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SyncReceiveCard(viewModel: AppViewModel) {
@@ -31,6 +33,15 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
     var showScanner by remember { mutableStateOf(false) }
     var confirmOverwrite by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    val activePreviewId = preview?.previewId
+    DisposableEffect(activePreviewId) {
+        onDispose {
+            if (activePreviewId != null) {
+                viewModel.container.syncService.discardPreview(activePreviewId)
+            }
+        }
+    }
 
     fun fetchPreview(codeOrUri: String) {
         if (codeOrUri.isBlank() || busy) return
@@ -45,9 +56,21 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
 
     fun applyImport(mode: SyncImportMode) {
         val p = preview ?: return
-        runCatching { viewModel.container.syncService.applyReceive(p.previewId, mode) }
-            .onSuccess { summary = it; preview = null; inputCode = ""; viewModel.showToast("同步导入完成") }
-            .onFailure { errorMsg = it.message ?: "导入失败" }
+        if (busy) return
+        busy = true; errorMsg = null
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    viewModel.container.syncService.applyReceive(p.previewId, mode)
+                }
+            }.onSuccess {
+                summary = it; preview = null; inputCode = ""
+                viewModel.showToast("同步导入完成")
+            }.onFailure {
+                errorMsg = it.message ?: "导入失败"
+            }
+            busy = false
+        }
     }
 
     AgCard {

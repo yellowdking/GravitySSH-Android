@@ -58,30 +58,81 @@ internal object TerminalModes {
     fun containsAltScreenEnter(rawText: String): Boolean =
         rawText.contains("\u001B[?1049h") || rawText.contains("\u001B[?1047h") || rawText.contains("\u001B[?47h")
 
-    private fun rowMatchesNano(row: Array<TerminalCell>): Boolean {
-        val line = String(CharArray(row.size) { row[it].ch })
-        return line.contains("GNU nano", ignoreCase = true) || line.contains("^X") || line.contains("^O")
+    private fun rowMatchesNano(row: Array<TerminalCell>): Boolean =
+        rowContainsAscii(row, "GNU nano", ignoreCase = true) ||
+            rowContainsAscii(row, "^X", ignoreCase = false) ||
+            rowContainsAscii(row, "^O", ignoreCase = false)
+
+    private fun rowContainsAscii(row: Array<TerminalCell>, needle: String, ignoreCase: Boolean): Boolean {
+        val nLen = needle.length
+        if (nLen == 0 || row.size < nLen) return false
+        val maxStart = row.size - nLen
+        outer@ for (i in 0..maxStart) {
+            for (j in 0 until nLen) {
+                val a = row[i + j].ch
+                val b = needle[j]
+                if (a != b && (!ignoreCase || a.lowercaseChar() != b.lowercaseChar())) continue@outer
+            }
+            return true
+        }
+        return false
     }
 }
 
-fun TerminalBuffer.scrollUp(count: Int) =
-    E.scrollUp(activeGrid(), scrollback, topMargin, bottomMargin, cols, rows, isAltScreen, maxScrollback, count)
+fun TerminalBuffer.scrollUp(count: Int) {
+    E.scrollUp(activeGrid(), scrollback, topMargin, bottomMargin, cols, rows, isAltScreen, maxScrollback, style, count)
+    markAltNanoDirty()
+}
 
-fun TerminalBuffer.scrollDown(count: Int) =
-    E.scrollDown(activeGrid(), topMargin, bottomMargin, cols, count)
+fun TerminalBuffer.scrollDown(count: Int) {
+    E.scrollDown(activeGrid(), topMargin, bottomMargin, cols, style, count)
+    markAltNanoDirty()
+}
 
-fun TerminalBuffer.eraseDisplay(mode: Int) =
+fun TerminalBuffer.eraseDisplay(mode: Int) {
+    clearWrapPending()
     E.eraseDisplay(activeGrid(), cursorRow, cursorCol, cols, rows, style, mode) { if (!isAltScreen) scrollback.clear() }
+    markAltNanoDirty()
+}
 
-fun TerminalBuffer.eraseLine(mode: Int) = E.eraseLine(currentRowCells(), cursorCol, cols, style, mode)
-fun TerminalBuffer.eraseChars(count: Int) = E.eraseChars(currentRowCells(), cursorCol, cols, style, count)
-fun TerminalBuffer.deleteChars(count: Int) = E.deleteChars(currentRowCells(), cursorCol, cols, style, count)
-fun TerminalBuffer.insertChars(count: Int) = E.insertChars(currentRowCells(), cursorCol, cols, style, count)
+fun TerminalBuffer.eraseLine(mode: Int) {
+    clearWrapPending()
+    E.eraseLine(currentRowCells(), cursorCol, cols, style, mode)
+    markAltRowDirty(cursorRow)
+}
+
+fun TerminalBuffer.eraseChars(count: Int) {
+    clearWrapPending()
+    E.eraseChars(currentRowCells(), cursorCol, cols, style, count)
+    markAltRowDirty(cursorRow)
+}
+
+fun TerminalBuffer.deleteChars(count: Int) {
+    clearWrapPending()
+    E.deleteChars(currentRowCells(), cursorCol, cols, style, count)
+    markAltRowDirty(cursorRow)
+}
+
+fun TerminalBuffer.insertChars(count: Int) {
+    clearWrapPending()
+    E.insertChars(currentRowCells(), cursorCol, cols, style, count)
+    markAltRowDirty(cursorRow)
+}
 
 fun TerminalBuffer.insertLines(count: Int) {
-    if (cursorRow in topMargin..bottomMargin) E.scrollDown(activeGrid(), cursorRow, bottomMargin, cols, count)
+    clearWrapPending()
+    if (cursorRow in topMargin..bottomMargin) {
+        carriageReturn()
+        E.scrollDown(activeGrid(), cursorRow, bottomMargin, cols, style, count)
+        markAltNanoDirty()
+    }
 }
 
 fun TerminalBuffer.deleteLines(count: Int) {
-    if (cursorRow in topMargin..bottomMargin) E.scrollUp(activeGrid(), scrollback, cursorRow, bottomMargin, cols, rows, true, maxScrollback, count)
+    clearWrapPending()
+    if (cursorRow in topMargin..bottomMargin) {
+        carriageReturn()
+        E.scrollUp(activeGrid(), scrollback, cursorRow, bottomMargin, cols, rows, true, maxScrollback, style, count)
+        markAltNanoDirty()
+    }
 }

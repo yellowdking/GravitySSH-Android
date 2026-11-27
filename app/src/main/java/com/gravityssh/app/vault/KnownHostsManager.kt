@@ -1,11 +1,18 @@
 package com.gravityssh.app.vault
 
+import android.util.Log
+import com.gravityssh.app.model.AppJson
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import net.schmizz.sshj.common.KeyType
 import net.schmizz.sshj.common.SecurityUtils
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.PublicKey
 import java.time.Instant
 
@@ -24,8 +31,14 @@ class KnownHostsManager(
 ) : HostKeyVerifier {
 
     private val lock = Any()
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
+    private val json = AppJson.json
     private val entries = LinkedHashMap<String, KnownHostEntry>()
+
+    private val _knownHosts = MutableStateFlow<List<KnownHostEntry>>(emptyList())
+    val knownHosts: StateFlow<List<KnownHostEntry>> = _knownHosts.asStateFlow()
+
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     init {
         load()
@@ -36,15 +49,18 @@ class KnownHostsManager(
         val fp = SecurityUtils.getFingerprint(key)
         val existing = entries[hostKey]
         if (existing == null) {
+            val keyType = KeyType.fromKey(key)
+            val sshAlgo = if (keyType != KeyType.UNKNOWN) keyType.toString() else key.algorithm
             entries[hostKey] = KnownHostEntry(
                 hostPort = hostKey,
                 host = hostname,
                 port = port,
-                algorithm = key.algorithm,
+                algorithm = sshAlgo,
                 fingerprint = fp,
                 firstSeenAt = Instant.now().toString()
             )
             saveLocked()
+            emitLocked()
             return true
         }
         return existing.fingerprint == fp
@@ -52,7 +68,8 @@ class KnownHostsManager(
 
     override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = synchronized(lock) {
         val entry = entries[keyFor(hostname, port)] ?: return emptyList()
-        listOf(entry.algorithm)
+        // Only advertise valid RFC 4253 SSH key type names (e.g. ssh-ed25519, ssh-rsa, ecdsa-sha2-*)
+        if (entry.algorithm.contains('-')) listOf(entry.algorithm) else emptyList()
     }
 
     fun listKnownHosts(): List<KnownHostEntry> = synchronized(lock) {
@@ -61,13 +78,19 @@ class KnownHostsManager(
 
     fun clearHost(host: String, port: Int): Boolean = synchronized(lock) {
         val removed = entries.remove(keyFor(host, port)) != null
-        if (removed) saveLocked()
+        if (removed) {
+            saveLocked()
+            emitLocked()
+        }
         removed
     }
 
     fun clearHostByKey(hostPort: String): Boolean = synchronized(lock) {
         val removed = entries.remove(hostPort) != null
-        if (removed) saveLocked()
+        if (removed) {
+            saveLocked()
+            emitLocked()
+        }
         removed
     }
 
@@ -75,6 +98,7 @@ class KnownHostsManager(
         val count = entries.size
         entries.clear()
         saveLocked()
+        emitLocked()
         count
     }
 
@@ -82,17 +106,38 @@ class KnownHostsManager(
 
     private fun load() {
         synchronized(lock) {
-            if (!storageFile.exists()) return
-            runCatching {
+            if (!storageFile.exists()) {
+                emitLocked()
+                return
+            }
+            try {
                 val list = json.decodeFromString<List<KnownHostEntry>>(storageFile.readText(Charsets.UTF_8))
                 entries.clear()
                 list.forEach { entries[it.hostPort] = it }
+                _lastError.value = null
+            } catch (e: Exception) {
+                runCatching { Log.e(TAG, "Corrupt known_hosts file, backing up", e) }
+                val backup = File(storageFile.parentFile ?: File("."), "${storageFile.name}.corrupt")
+                runCatching {
+                    Files.move(storageFile.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+                entries.clear()
+                _lastError.value = "主机指纹缓存已损坏，已备份至 ${backup.name}：${e.message ?: e.javaClass.simpleName}"
             }
+            emitLocked()
         }
     }
 
     private fun saveLocked() {
-        storageFile.parentFile?.mkdirs()
-        storageFile.writeText(json.encodeToString(entries.values.toList()), Charsets.UTF_8)
+        val bytes = json.encodeToString(entries.values.toList()).toByteArray(Charsets.UTF_8)
+        AtomicFileOps.writeBytesAtomic(storageFile, bytes)
+    }
+
+    private fun emitLocked() {
+        _knownHosts.value = entries.values.toList()
+    }
+
+    companion object {
+        private const val TAG = "KnownHostsManager"
     }
 }

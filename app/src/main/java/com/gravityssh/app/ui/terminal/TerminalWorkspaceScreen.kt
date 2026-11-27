@@ -1,5 +1,6 @@
 package com.gravityssh.app.ui.terminal
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.HorizontalDivider
@@ -37,7 +38,7 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
  val sid = tab.sessionId; val cwd = tab.currentDir.trimEnd('/').ifBlank { "/" }
  LaunchedEffect(sid, ctrl) { off = 0; dis = null; sel = null; ctrl.setInputSender { mgr.sendInput(sid, it) } }
 
- val fv by ctrl.frameVersion.collectState(); val ln by ctrl.currentInputLine.collectState()
+ val ln by ctrl.currentInputLine.collectState()
  val bk by ctrl.bracketedPaste.collectState(); val alt by ctrl.alternateScreen.collectState()
  val nn by ctrl.nanoDetected.collectState()
  LaunchedEffect(alt) { sel = null }
@@ -52,7 +53,6 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
 
  val tm = remember(cfg.touchCursorMode) { TouchCursorMode.fromId(cfg.touchCursorMode) }
  val ts = remember(cfg.touchCursorSensitivity) { TouchSensitivity.fromId(cfg.touchCursorSensitivity) }
- val sn = remember(fv, off, sid) { ctrl.snapshot(off) }
  val re = if (td != null) te else ce; val hist = vault.data.history
  val sg = remember(ln, hist, cfg, re, ce, cwd, tab.homeDir, tab.serverId) {
   Ac.suggest(ln, emptyList(), hist, cfg, 3, re, cwd, tab.homeDir, tab.serverId, ce)
@@ -60,15 +60,29 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
 
  fun send(t: String) { if (sel != null) sel = null; mgr.sendInput(sid, t) }
  fun deliverPaste(t: String) = send(formatPastePayload(t, bk))
- val ac = FloatingAutocompleteState(
-  !alt && dis != ln, sg,
-  {
-   val e = Ac.computeCompletionInsert(ln, it.insertText)
-   dis = if (it.insertText.endsWith("/") || it.insertText.endsWith(" ")) null else it.insertText
-   send("\u007F".repeat(e.backspaces) + e.insertText)
-  },
-  { dis = ln }, Ap.activeTokenPrefix(ln, sg.firstOrNull()?.source.orEmpty()), ln
- )
+ val onPickSuggestion = remember(sid, ln, mgr) {
+  { item: CompletionItem ->
+   val e = Ac.computeCompletionInsert(ln, item.insertText)
+   dis = if (item.insertText.endsWith("/") || item.insertText.endsWith(" ")) null else item.insertText
+   if (sel != null) sel = null
+   mgr.sendInput(sid, "\u007F".repeat(e.backspaces) + e.insertText)
+  }
+ }
+ val onDismissSuggestion = remember(ln) { { dis = ln } }
+ val activePrefix = remember(ln, sg) { Ap.activeTokenPrefix(ln, sg.firstOrNull()?.source.orEmpty()) }
+ val ac = remember(alt, dis, ln, sg, onPickSuggestion, onDismissSuggestion, activePrefix) {
+  FloatingAutocompleteState(!alt && dis != ln, sg, onPickSuggestion, onDismissSuggestion, activePrefix, ln)
+ }
+
+ val acPopupOpen = ac.visible && ac.suggestions.isNotEmpty() && off == 0 && sel == null
+ BackHandler(enabled = sel != null || sr || mk || acPopupOpen) {
+  when {
+   sel != null -> sel = null
+   sr -> { sr = false; sq = "" }
+   mk -> mk = false
+   acPopupOpen -> dis = ln
+  }
+ }
 
  Column(Modifier.fillMaxSize().background(AgBg).imePadding()) {
   SessionTabsStrip(tabs, sid, mgr::selectSession, mgr::closeSession)
@@ -82,13 +96,27 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
   if (sr) TerminalSearchStrip(sq) { sq = it }
   if (cfg.monitorBarEnabled && tab.metrics != null) MonitorBar(tab.metrics)
   HorizontalDivider(color = AgBorder)
-  TerminalCanvas(
-   sn, ctrl, tm, ts, cfg.touchCursorFling, fSp, sq, off, ac, sel,
-   { off = it }, { fSp = it }, { c, r -> mgr.resizeSession(sid, c, r) },
-   { raw -> val o = applyTerminalModifiers(raw, cOn, aOn); cOn = false; aOn = false; off = 0; send(o) },
-   { sel = it },
-   { t -> if (t.isNotEmpty()) { clip.setText(AnnotatedString(t)); vm.showToast("已复制") } else vm.showToast("选中内容为空") },
-   Modifier.weight(1f)
+  TerminalLiveCanvas(
+   controller = ctrl,
+   sessionId = sid,
+   touchMode = tm,
+   touchSensitivity = ts,
+   touchFlingEnabled = cfg.touchCursorFling,
+   fontSizeSp = fSp,
+   searchQuery = sq,
+   scrollOffset = off,
+   autocomplete = ac,
+   selection = sel,
+   onScrollOffsetChange = { off = it },
+   onFontSizeChange = { fSp = it },
+   onFontSizeCommit = { sz ->
+    if (sz != cfg.terminalFontSize) vm.updateSettings { it.copy(terminalFontSize = sz) }
+   },
+   onResize = { c, r -> mgr.resizeSession(sid, c, r) },
+   onImeInput = { raw -> val o = applyTerminalModifiers(raw, cOn, aOn); cOn = false; aOn = false; off = 0; send(o) },
+   onSelectionChange = { sel = it },
+   onCopySelection = { t -> if (t.isNotEmpty()) { clip.setText(AnnotatedString(t)); vm.showToast("已复制") } else vm.showToast("选中内容为空") },
+   modifier = Modifier.weight(1f)
   )
   TerminalBottomAccessory(
    alt, nn, { d -> off = 0; sel = null; ctrl.sendArrow(d, 1) },
@@ -98,5 +126,50 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
  TerminalOverlays(
   vm, tab, vault.data, sf, dt, ps, { sf = false },
   { cmd, ex -> mgr.runScript(sid, cmd, ex); dt = null }, { dt = null }, { deliverPaste(it); ps = null }, { ps = null }
+ )
+}
+
+@Composable
+private fun TerminalLiveCanvas(
+ controller: TerminalSessionController,
+ sessionId: String,
+ touchMode: TouchCursorMode,
+ touchSensitivity: TouchSensitivity,
+ touchFlingEnabled: Boolean,
+ fontSizeSp: Float,
+ searchQuery: String,
+ scrollOffset: Int,
+ autocomplete: FloatingAutocompleteState,
+ selection: TextSelection?,
+ onScrollOffsetChange: (Int) -> Unit,
+ onFontSizeChange: (Float) -> Unit,
+ onFontSizeCommit: (Int) -> Unit,
+ onResize: (cols: Int, rows: Int) -> Unit,
+ onImeInput: (String) -> Unit,
+ onSelectionChange: (TextSelection?) -> Unit,
+ onCopySelection: (String) -> Unit,
+ modifier: Modifier = Modifier
+) {
+ val frameVersion by controller.frameVersion.collectState()
+ val snapshot = remember(frameVersion, scrollOffset, sessionId) { controller.snapshot(scrollOffset) }
+ TerminalCanvas(
+  snapshot = snapshot,
+  controller = controller,
+  touchMode = touchMode,
+  touchSensitivity = touchSensitivity,
+  touchFlingEnabled = touchFlingEnabled,
+  fontSizeSp = fontSizeSp,
+  searchQuery = searchQuery,
+  scrollOffset = scrollOffset,
+  autocomplete = autocomplete,
+  selection = selection,
+  onScrollOffsetChange = onScrollOffsetChange,
+  onFontSizeChange = onFontSizeChange,
+  onFontSizeCommit = onFontSizeCommit,
+  onResize = onResize,
+  onImeInput = onImeInput,
+  onSelectionChange = onSelectionChange,
+  onCopySelection = onCopySelection,
+  modifier = modifier
  )
 }

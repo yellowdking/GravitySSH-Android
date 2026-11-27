@@ -30,7 +30,35 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit) {
     var search by remember { mutableStateOf("") }
     var editingShortcut by remember { mutableStateOf<CommandShortcut?>(null) }
     var editingTemplate by remember { mutableStateOf<BuiltinTemplate?>(null) }
+    var deletingShortcut by remember { mutableStateOf<CommandShortcut?>(null) }
+    var deletingTemplate by remember { mutableStateOf<BuiltinTemplate?>(null) }
     var confirmClearHistory by remember { mutableStateOf(false) }
+
+    val q = remember(search) { search.trim().lowercase() }
+    val filteredShortcuts = remember(shortcuts, q) {
+        shortcuts.filter {
+            q.isEmpty() ||
+                it.name.lowercase().contains(q) ||
+                it.command.lowercase().contains(q) ||
+                it.category.lowercase().contains(q)
+        }.sortedByDescending { it.pinned }
+    }
+    val filteredTemplates = remember(templates, q) {
+        templates.filter {
+            q.isEmpty() ||
+                it.name.lowercase().contains(q) ||
+                it.description.lowercase().contains(q) ||
+                it.command.lowercase().contains(q) ||
+                it.category.lowercase().contains(q)
+        }
+    }
+    val filteredHistory = remember(history, q) {
+        history.filter {
+            q.isEmpty() ||
+                it.command.lowercase().contains(q) ||
+                it.serverName.lowercase().contains(q)
+        }.take(200)
+    }
 
     fun execOrWarn(cmd: String, autoExec: Boolean = true) {
         if (viewModel.runCommandInActive(cmd, autoExec)) onJumpToTerminal()
@@ -65,18 +93,17 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
                 AgTextField(search, { search = it }, "筛选关键字", placeholder = "名称 / 命令 / 分类")
             }
-            val q = search.trim().lowercase()
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (tabIndex) {
-                    0 -> items(shortcuts.filter { q.isEmpty() || it.name.lowercase().contains(q) || it.command.lowercase().contains(q) }.sortedByDescending { it.pinned }, key = { it.id }) { sc ->
+                    0 -> items(filteredShortcuts, key = { it.id }) { sc ->
                         ShortcutItemCard(sc, { viewModel.saveShortcut(sc.copy(pinned = !sc.pinned)) }, {
                             if (viewModel.runShortcutInActive(sc)) onJumpToTerminal() else viewModel.showToast("请先连接 SSH 终端")
-                        }, { editingShortcut = sc }, { viewModel.deleteShortcut(sc.id) })
+                        }, { editingShortcut = sc }, { deletingShortcut = sc })
                     }
-                    1 -> items(templates.filter { q.isEmpty() || it.name.lowercase().contains(q) || it.description.lowercase().contains(q) || it.command.lowercase().contains(q) }, key = { it.id }) { tpl ->
-                        TemplateItemCard(tpl, { execOrWarn(tpl.command) }, { editingTemplate = tpl }, { viewModel.deleteTemplate(tpl.id) })
+                    1 -> items(filteredTemplates, key = { it.id }) { tpl ->
+                        TemplateItemCard(tpl, { execOrWarn(tpl.command) }, { editingTemplate = tpl }, { deletingTemplate = tpl })
                     }
-                    else -> items(history.filter { q.isEmpty() || it.command.lowercase().contains(q) || it.serverName.lowercase().contains(q) }.take(200), key = { it.id }) { rec ->
+                    else -> items(filteredHistory, key = { it.id }) { rec ->
                         HistoryItemCard(rec, { editingShortcut = CommandShortcut(name = rec.command.take(24), command = rec.command, autoExecute = true) }, { execOrWarn(rec.command) })
                     }
                 }
@@ -86,6 +113,26 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit) {
 
     editingShortcut?.let { ShortcutEditorDialog(it, { s -> viewModel.saveShortcut(s); editingShortcut = null }, { editingShortcut = null }) }
     editingTemplate?.let { TemplateEditorDialog(it, { t -> viewModel.saveTemplate(t); editingTemplate = null }, { editingTemplate = null }) }
+    deletingShortcut?.let { sc ->
+        AgConfirmDialog(
+            title = "删除快捷命令",
+            message = "确定删除快捷命令「${sc.name}」？",
+            confirmLabel = "删除",
+            dangerous = true,
+            onConfirm = { viewModel.deleteShortcut(sc.id); deletingShortcut = null },
+            onDismiss = { deletingShortcut = null }
+        )
+    }
+    deletingTemplate?.let { tpl ->
+        AgConfirmDialog(
+            title = "删除运维模板",
+            message = "确定删除运维模板「${tpl.name}」？",
+            confirmLabel = "删除",
+            dangerous = true,
+            onConfirm = { viewModel.deleteTemplate(tpl.id); deletingTemplate = null },
+            onDismiss = { deletingTemplate = null }
+        )
+    }
     if (confirmClearHistory) {
         AgConfirmDialog("清空命令历史", "确定清空所有本地命令历史？", "清空", dangerous = true, onConfirm = { viewModel.clearHistory(); confirmClearHistory = false }, onDismiss = { confirmClearHistory = false })
     }

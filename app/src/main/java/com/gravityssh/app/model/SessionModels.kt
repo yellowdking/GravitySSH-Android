@@ -1,8 +1,5 @@
 package com.gravityssh.app.model
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-
 enum class SessionStatus {
     CONNECTING,
     CONNECTED,
@@ -23,40 +20,37 @@ data class SessionTab(
     val currentDir: String = "/",
     val viaSummary: String = "",
     val error: String? = null,
-    val metrics: HostMetrics? = null,
-    val createdAtMs: Long = System.currentTimeMillis()
+    val metrics: HostMetrics? = null
 )
 
-@Serializable
 data class HostMetrics(
-    @SerialName("sessionId") val sessionId: String = "",
-    @SerialName("supported") val supported: Boolean = false,
-    @SerialName("latencyMs") val latencyMs: Long = 0,
-    @SerialName("cpuPercent") val cpuPercent: Double = 0.0,
-    @SerialName("memUsedMb") val memUsedMb: Long = 0,
-    @SerialName("memTotalMb") val memTotalMb: Long = 0,
-    @SerialName("memPercent") val memPercent: Double = 0.0,
-    @SerialName("diskMount") val diskMount: String = "/",
-    @SerialName("diskPercent") val diskPercent: Double = 0.0,
-    @SerialName("netRxKbps") val netRxKbps: Double = 0.0,
-    @SerialName("netTxKbps") val netTxKbps: Double = 0.0,
-    @SerialName("load1") val load1: Double = 0.0,
-    @SerialName("cores") val cores: Int = 1,
-    @SerialName("hasGpu") val hasGpu: Boolean = false,
-    @SerialName("gpuUtil") val gpuUtil: Double = 0.0,
-    @SerialName("gpuName") val gpuName: String = "",
-    @SerialName("updatedAt") val updatedAt: String = ""
+    val sessionId: String = "",
+    val supported: Boolean = false,
+    val latencyMs: Long = 0,
+    val cpuPercent: Double = 0.0,
+    val memUsedMb: Long = 0,
+    val memTotalMb: Long = 0,
+    val memPercent: Double = 0.0,
+    val diskMount: String = "/",
+    val diskPercent: Double = 0.0,
+    val netRxKbps: Double = 0.0,
+    val netTxKbps: Double = 0.0,
+    val load1: Double = 0.0,
+    val cores: Int = 1,
+    val hasGpu: Boolean = false,
+    val gpuUtil: Double = 0.0,
+    val gpuName: String = "",
+    val updatedAt: String = ""
 )
 
-@Serializable
 data class SFTPFileEntry(
-    @SerialName("name") val name: String,
-    @SerialName("path") val path: String,
-    @SerialName("isDir") val isDir: Boolean,
-    @SerialName("isSymlink") val isSymlink: Boolean = false,
-    @SerialName("size") val size: Long = 0,
-    @SerialName("mode") val mode: String = "",
-    @SerialName("modTime") val modTime: String = "",
+    val name: String,
+    val path: String,
+    val isDir: Boolean,
+    val isSymlink: Boolean = false,
+    val size: Long = 0,
+    val mode: String = "",
+    val modTime: String = "",
     val modTimeEpochSec: Long = 0L
 )
 

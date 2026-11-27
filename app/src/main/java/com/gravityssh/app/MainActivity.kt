@@ -28,7 +28,7 @@ class MainActivity : FragmentActivity() {
             statusBarStyle = SystemBarStyle.dark(0xFF0B0D12.toInt()),
             navigationBarStyle = SystemBarStyle.dark(0xFF10131A.toInt())
         )
-        requestNotificationPermissionIfNeeded()
+        requestNotificationPermissionOnceIfNeeded()
 
         val container = GravitySshApp.from(this)
         val viewModel = ViewModelProvider(
@@ -43,15 +43,23 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    private fun requestNotificationPermissionIfNeeded() {
+    private fun requestNotificationPermissionOnceIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
-            if (!granted) {
+            if (granted) return
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            if (!prefs.getBoolean(KEY_NOTIF_PERM_ASKED, false)) {
+                prefs.edit().putBoolean(KEY_NOTIF_PERM_ASKED, true).apply()
                 notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+    }
+
+    companion object {
+        private const val PREFS_NAME = "gravityssh_prefs"
+        private const val KEY_NOTIF_PERM_ASKED = "post_notifications_requested"
     }
 }

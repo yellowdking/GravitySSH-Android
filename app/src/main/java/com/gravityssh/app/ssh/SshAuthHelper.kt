@@ -7,24 +7,21 @@ import com.gravityssh.app.model.ProxyConfig
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
 import net.schmizz.sshj.SSHClient
-import net.schmizz.sshj.connection.channel.direct.LocalPortForwarder
+import net.schmizz.sshj.connection.channel.direct.DirectConnection
 import net.schmizz.sshj.userauth.password.PasswordUtils
 import java.io.Closeable
 import java.io.IOException
-import java.net.ServerSocket
 
 data class ConnectedSsh(
     val client: SSHClient,
     val jumpClient: SSHClient? = null,
-    val forwarder: LocalPortForwarder? = null,
-    val forwardSocket: ServerSocket? = null,
+    val directConnection: DirectConnection? = null,
     val viaSummary: String = ""
 ) : Closeable {
     override fun close() {
         runCatching { client.disconnect() }
         runCatching { client.close() }
-        runCatching { forwarder?.close() }
-        runCatching { forwardSocket?.close() }
+        runCatching { directConnection?.close() }
         runCatching { jumpClient?.disconnect() }
         runCatching { jumpClient?.close() }
     }
@@ -60,9 +57,9 @@ internal object SshAuthHelper {
             allServers.find { it.id == jump.serverId } ?: throw IOException("未找到所选跳板服务器")
         } else {
             ServerConfig(
-                host = jump.host,
+                host = jump.host.trim(),
                 port = jump.port.coerceIn(1, 65535),
-                username = jump.username.ifBlank { "root" },
+                username = jump.username.trim().ifBlank { "root" },
                 authType = jump.authType.ifBlank { AuthType.PASSWORD },
                 password = jump.password,
                 sshKeyId = jump.sshKeyId

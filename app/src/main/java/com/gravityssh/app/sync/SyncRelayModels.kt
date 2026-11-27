@@ -55,6 +55,7 @@ internal object SyncTlsFactory {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
                 if (chain.isEmpty()) throw CertificateException("Empty server certificate chain")
+                chain[0].checkValidity()
                 val spkiHash = SyncCrypto.sha256Hex(chain[0].publicKey.encoded)
                     .lowercase()
                     .toByteArray(Charsets.UTF_8)

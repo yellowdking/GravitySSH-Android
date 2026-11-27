@@ -1,5 +1,27 @@
 package com.gravityssh.app.terminal
 
+fun charWidth(ch: Char): Int {
+    val c = ch.code
+    if (c < 0x1100) return 1
+    return when {
+        c in 0x1100..0x115F -> 2 // Hangul Jamo init. consonants
+        c == 0x2329 || c == 0x232A -> 2 // Angle brackets
+        c in 0x2E80..0x303F -> 2 // CJK Radicals, Ideographic Desc, CJK Punctuation
+        c in 0x3040..0x33FF -> 2 // Hiragana, Katakana, Bopomofo, Enclosed CJK, CJK Compat
+        c in 0x3400..0x4DBF -> 2 // CJK Unified Ideographs Ext A
+        c in 0x4E00..0x9FFF -> 2 // CJK Unified Ideographs
+        c in 0xA000..0xA4CF -> 2 // Yi Syllables & Radicals
+        c in 0xA960..0xA97F -> 2 // Hangul Jamo Extended-A
+        c in 0xAC00..0xD7A3 -> 2 // Hangul Syllables
+        c in 0xF900..0xFAFF -> 2 // CJK Compatibility Ideographs
+        c in 0xFE10..0xFE19 -> 2 // Vertical Forms
+        c in 0xFE30..0xFE6F -> 2 // CJK Compatibility Forms
+        c in 0xFF01..0xFF60 -> 2 // Fullwidth Forms
+        c in 0xFFE0..0xFFE6 -> 2 // Fullwidth Symbol Variants
+        else -> 1
+    }
+}
+
 object TerminalColors {
     const val DEFAULT_FG: Int = 0xFFE6EAF5.toInt()
     const val DEFAULT_BG: Int = 0xFF0B0D12.toInt()
@@ -59,18 +81,38 @@ data class TerminalCell(
     val bold: Boolean = false,
     val dim: Boolean = false,
     val underline: Boolean = false,
-    val inverse: Boolean = false
+    val inverse: Boolean = false,
+    val isWide: Boolean = false,
+    val isContinuation: Boolean = false
 ) {
     companion object {
         val EMPTY = TerminalCell()
-        fun blank(style: TerminalStyle) = TerminalCell(
-            ch = ' ',
+
+        fun blank(style: TerminalStyle): TerminalCell =
+            if (style.fg == TerminalColors.DEFAULT_FG && style.bg == TerminalColors.DEFAULT_BG) {
+                EMPTY
+            } else {
+                TerminalCell(
+                    ch = ' ',
+                    fg = style.fg,
+                    bg = style.bg,
+                    bold = false,
+                    dim = false,
+                    underline = false,
+                    inverse = false
+                )
+            }
+
+        fun continuation(style: TerminalStyle): TerminalCell = TerminalCell(
+            ch = '\u0000',
             fg = style.fg,
             bg = style.bg,
-            bold = false,
-            dim = false,
-            underline = false,
-            inverse = false
+            bold = style.bold,
+            dim = style.dim,
+            underline = style.underline,
+            inverse = style.inverse,
+            isWide = false,
+            isContinuation = true
         )
     }
 }

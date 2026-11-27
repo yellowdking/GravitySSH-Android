@@ -51,31 +51,23 @@ data class BuiltinTemplate(
     @SerialName("command") val command: String = ""
 )
 
-@Serializable
 data class PresetLoadResult(
-    @SerialName("added") val added: Int = 0,
-    @SerialName("skipped") val skipped: Int = 0,
-    @SerialName("templates") val templates: List<BuiltinTemplate> = emptyList()
+    val added: Int = 0,
+    val skipped: Int = 0,
+    val templates: List<BuiltinTemplate> = emptyList()
 )
 
 @Serializable
 data class AppSettings(
     @SerialName("autocompleteEnabled") val autocompleteEnabled: Boolean = true,
     @SerialName("autocompleteFromHistory") val autocompleteFromHistory: Boolean = true,
-    @SerialName("autocompleteFromShortcut") val autocompleteFromShortcut: Boolean = true,
-    @SerialName("autoOpenSftp") val autoOpenSftp: Boolean = false,
-    @SerialName("sftpPanelPosition") val sftpPanelPosition: String = "right",
-    @SerialName("terminalFontFamily") val terminalFontFamily: String = "monospace",
     @SerialName("terminalFontSize") val terminalFontSize: Int = 13,
     @SerialName("defaultKeepAliveSeconds") val defaultKeepAliveSeconds: Int = 30,
     @SerialName("maxHistoryEntries") val maxHistoryEntries: Int = 2000,
     @SerialName("recordCommands") val recordCommands: Boolean = true,
-    @SerialName("language") val language: String = "zh",
     @SerialName("monitorBarEnabled") val monitorBarEnabled: Boolean = true,
-    @SerialName("sftpFollowTerminal") val sftpFollowTerminal: Boolean = true,
     @SerialName("pasteGuardEnabled") val pasteGuardEnabled: Boolean = true,
     @SerialName("keywordHighlightEnabled") val keywordHighlightEnabled: Boolean = true,
-    @SerialName("autoSwitchEnglishIme") val autoSwitchEnglishIme: Boolean = true,
     @SerialName("checkUpdatesOnStartup") val checkUpdatesOnStartup: Boolean = true,
     @SerialName("biometricLockEnabled") val biometricLockEnabled: Boolean = false,
     @SerialName("syncRelayUrl") val syncRelayUrl: String = "",
@@ -99,8 +91,7 @@ data class VaultLockState(
     val locked: Boolean = false,
     val hasPassword: Boolean = false,
     val biometricEnabled: Boolean = false,
-    val vaultPath: String = "",
-    val schemaVersion: Int = 2
+    val startupError: String? = null
 )
 
 data class VaultState(

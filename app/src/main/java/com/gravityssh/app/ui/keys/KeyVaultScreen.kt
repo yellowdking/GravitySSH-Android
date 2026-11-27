@@ -86,13 +86,14 @@ fun KeyVaultScreen(viewModel: AppViewModel) {
 
     if (showGenerate) {
         GenerateKeyDialog(
-            onGenerate = { t, n, c -> viewModel.generateKey(t, n, c) { showGenerate = false } },
+            onGenerate = { t, n, c, done -> viewModel.generateKey(t, n, c, done) },
             onDismiss = { showGenerate = false }
         )
     }
     if (showImport) {
         ImportKeyDialog(
-            onImport = { n, p, pass, c -> viewModel.importKey(n, p, pass, c) { showImport = false } },
+            onImport = { n, p, pass, c, done -> viewModel.importKey(n, p, pass, c, done) },
+            onToast = viewModel::showToast,
             onDismiss = { showImport = false }
         )
     }

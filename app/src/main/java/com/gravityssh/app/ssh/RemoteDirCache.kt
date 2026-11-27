@@ -1,9 +1,10 @@
 package com.gravityssh.app.ssh
 
 import com.gravityssh.app.model.SFTPFileEntry
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import net.schmizz.sshj.sftp.FileMode
 import net.schmizz.sshj.sftp.SFTPClient
 import java.util.concurrent.ConcurrentHashMap
 
@@ -17,6 +18,7 @@ internal class RemoteDirCache(
     )
 
     private val cache = ConcurrentHashMap<String, CacheEntry>()
+    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<List<SFTPFileEntry>>>()
 
     fun getCached(sessionId: String, dirPath: String): List<SFTPFileEntry>? {
         val k = cacheKey(sessionId, dirPath)
@@ -34,7 +36,7 @@ internal class RemoteDirCache(
         homeDir: String = "/",
         showHidden: Boolean = true
     ): List<SFTPFileEntry>? =
-        getCached(sessionId, normalizeDir(dirPath, homeDir))?.let { filterHidden(it, showHidden) }
+        getCached(sessionId, SshPathUtils.expandHome(dirPath, homeDir))?.let { filterAndLimit(it, showHidden) }
 
     fun put(sessionId: String, dirPath: String, entries: List<SFTPFileEntry>) {
         val k = cacheKey(sessionId, dirPath)
@@ -61,27 +63,61 @@ internal class RemoteDirCache(
         showHidden: Boolean,
         sftpProvider: () -> SFTPClient?
     ): List<SFTPFileEntry> = withContext(Dispatchers.IO) {
-        val norm = normalizeDir(dirPath, homeDir)
-        getCached(sessionId, norm)?.let { return@withContext filterHidden(it, showHidden) }
-        val entries = runCatching {
-            val sftp = sftpProvider() ?: return@runCatching null
-            val resolved = SftpDeleteOps.resolvePath(sftp, norm)
-            sftp.ls(resolved).asSequence()
-                .filter { it.name != "." && it.name != ".." }
-                .map { info ->
-                    val a = info.attributes
-                    SFTPFileEntry(
-                        info.name, info.path, info.isDirectory,
-                        a.type == FileMode.Type.SYMLINK, a.size,
-                        SftpDeleteOps.formatPermissions(a.mode.mask), "", a.mtime
-                    )
+        val norm = SshPathUtils.expandHome(dirPath, homeDir)
+        getCached(sessionId, norm)?.let { return@withContext filterAndLimit(it, showHidden) }
+
+        val k = cacheKey(sessionId, norm)
+        val myDeferred = CompletableDeferred<List<SFTPFileEntry>>()
+        val existing = inFlight.putIfAbsent(k, myDeferred)
+        if (existing != null) {
+            return@withContext filterAndLimit(existing.await(), showHidden)
+        }
+
+        try {
+            val fetched = try {
+                val sftp = sftpProvider()
+                if (sftp == null) {
+                    null
+                } else {
+                    val resolved = SshPathUtils.resolvePath(sftp, norm)
+                    val sorted = sftp.ls(resolved).asSequence()
+                        .filter { it.name != "." && it.name != ".." }
+                        .map { SshPathUtils.toSftpFileEntry(it, includeModTimeIso = false) }
+                        .sortedWith(SshPathUtils.ENTRY_COMPARATOR)
+                        .toList()
+                    var visCount = 0
+                    var hidCount = 0
+                    sorted.filter { entry ->
+                        if (entry.name.startsWith(".")) {
+                            (++hidCount) <= MAX_LIST_ENTRIES
+                        } else {
+                            (++visCount) <= MAX_LIST_ENTRIES
+                        }
+                    }
                 }
-                .sortedWith(compareByDescending<SFTPFileEntry> { it.isDir }.thenBy { it.name.lowercase() })
-                .take(MAX_LIST_ENTRIES)
-                .toList()
-        }.getOrNull() ?: return@withContext emptyList()
-        put(sessionId, norm, entries)
-        filterHidden(entries, showHidden)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+
+            if (fetched != null) {
+                put(sessionId, norm, fetched)
+                myDeferred.complete(fetched)
+                filterAndLimit(fetched, showHidden)
+            } else {
+                myDeferred.complete(emptyList())
+                emptyList()
+            }
+        } catch (e: CancellationException) {
+            myDeferred.complete(emptyList())
+            throw e
+        } catch (_: Throwable) {
+            myDeferred.complete(emptyList())
+            emptyList()
+        } finally {
+            inFlight.remove(k, myDeferred)
+        }
     }
 
     private fun evictIfNeeded(now: Long) {
@@ -92,20 +128,13 @@ internal class RemoteDirCache(
         }
     }
 
-    private fun normalizeDir(dirPath: String, homeDir: String): String {
-        val raw = dirPath.trim().ifBlank { "/" }
-        val expanded = if (raw == "~" || raw.startsWith("~/")) {
-            val home = homeDir.ifBlank { "/" }
-            if (raw == "~") home else "${home.trimEnd('/')}/${raw.removePrefix("~/")}"
-        } else raw
-        return ShellPathTracker.normalizePosixPath(expanded)
+    private fun filterAndLimit(entries: List<SFTPFileEntry>, showHidden: Boolean): List<SFTPFileEntry> {
+        val filtered = if (showHidden) entries else entries.filterNot { it.name.startsWith(".") }
+        return if (filtered.size <= MAX_LIST_ENTRIES) filtered else filtered.take(MAX_LIST_ENTRIES)
     }
 
-    private fun filterHidden(entries: List<SFTPFileEntry>, showHidden: Boolean): List<SFTPFileEntry> =
-        if (showHidden) entries else entries.filterNot { it.name.startsWith(".") }
-
     private fun cacheKey(sessionId: String, dirPath: String): String =
-        "$sessionId|${ShellPathTracker.normalizePosixPath(dirPath.ifBlank { "/" })}"
+        "$sessionId|${SshPathUtils.normalizePosixPath(dirPath.ifBlank { "/" })}"
 
     companion object {
         private const val MAX_ENTRIES = 64
