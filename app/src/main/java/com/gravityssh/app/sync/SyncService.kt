@@ -182,8 +182,19 @@ class SyncService(
 
         val poll = relayClient.pairPoll(relayUrl, channelId, senderToken)
         return when (poll.state) {
-            "waiting" -> SyncSendPollResult(state = SyncSendPollState.WAITING)
+            "waiting" -> {
+                val nowApproved = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
+                if (wasApproved || nowApproved) {
+                    SyncSendPollResult(state = SyncSendPollState.APPROVED)
+                } else {
+                    SyncSendPollResult(state = SyncSendPollState.WAITING)
+                }
+            }
             "requested" -> {
+                val nowApproved = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
+                if (wasApproved || nowApproved) {
+                    return SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
+                }
                 val decoded = runCatching {
                     val payload = withContext(Dispatchers.Default) {
                         SyncCrypto.decryptPairRequest(sendCode, poll.salt, poll.nonce, poll.ciphertext)
@@ -194,28 +205,38 @@ class SyncService(
                 }
                 decoded.fold(
                     onSuccess = { (payload, formattedCode) ->
-                        SyncSendPollResult(
-                            state = SyncSendPollState.REQUESTED,
-                            requestId = poll.requestId,
-                            receiverCode = formattedCode,
-                            receiverDevice = payload.receiverDevice.ifBlank { "未知设备" },
-                            receiverPlatform = payload.receiverPlatform.ifBlank { "unknown" },
-                            requestedAt = payload.requestedAt
-                        )
+                        val approvedDuringDecrypt = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
+                        if (approvedDuringDecrypt) {
+                            SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
+                        } else {
+                            SyncSendPollResult(
+                                state = SyncSendPollState.REQUESTED,
+                                requestId = poll.requestId,
+                                receiverCode = formattedCode,
+                                receiverDevice = payload.receiverDevice.ifBlank { "未知设备" },
+                                receiverPlatform = payload.receiverPlatform.ifBlank { "unknown" },
+                                requestedAt = payload.requestedAt
+                            )
+                        }
                     },
                     onFailure = {
-                        runCatching {
-                            if (poll.requestId.isNotBlank()) {
-                                relayClient.pairReject(relayUrl, channelId, senderToken, poll.requestId)
-                            } else {
-                                relayClient.pairCancel(relayUrl, channelId, senderToken)
+                        val approvedDuringDecrypt = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
+                        if (approvedDuringDecrypt) {
+                            SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
+                        } else {
+                            runCatching {
+                                if (poll.requestId.isNotBlank()) {
+                                    relayClient.pairReject(relayUrl, channelId, senderToken, poll.requestId)
+                                } else {
+                                    relayClient.pairCancel(relayUrl, channelId, senderToken)
+                                }
                             }
+                            synchronized(sessionLock) { pendingSends.remove(sessionId) }
+                            SyncSendPollResult(
+                                state = SyncSendPollState.ERROR,
+                                errorMessage = "接收端验证请求解密失败，已自动拒绝此次配对"
+                            )
                         }
-                        synchronized(sessionLock) { pendingSends.remove(sessionId) }
-                        SyncSendPollResult(
-                            state = SyncSendPollState.ERROR,
-                            errorMessage = "接收端验证请求解密失败，已自动拒绝此次配对"
-                        )
                     }
                 )
             }
