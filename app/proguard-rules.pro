@@ -22,6 +22,9 @@
 # ZXing QR Code reader/writer (lets R8 strip unused 1D/Aztec/PDF417 codecs)
 -keep class com.google.zxing.qrcode.** { *; }
 
+# AndroidX Biometric (support fragment reflection under R8)
+-keep class androidx.biometric.** { *; }
+
 # BouncyCastle: targeted JCA/PEM/OpenSSH keep rules (avoids keeping ~4,000 unused BC classes)
 # Provider core, config & SPI base utilities
 -keep class org.bouncycastle.jce.provider.BouncyCastleProvider { *; }

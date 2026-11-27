@@ -31,10 +31,12 @@ class UpdateChecker(
     private val apiUrl: String = DEFAULT_RELEASE_API
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-    private val client = SyncHttpClients.baseClient.newBuilder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(12, TimeUnit.SECONDS)
-        .build()
+    private val client by lazy {
+        SyncHttpClients.baseClient.newBuilder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
 
     suspend fun checkLatest(): UpdateCheckResult = withContext(Dispatchers.IO) {
         val req = Request.Builder()

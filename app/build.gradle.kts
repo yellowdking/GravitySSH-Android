@@ -7,7 +7,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val appVersionName = rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { "1.0.8" } ?: "1.0.8"
+val appVersionName = rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { "1.0.9" } ?: "1.0.9"
 val appVersionCode = appVersionName.split(".").let { p ->
     val maj = p.getOrNull(0)?.toIntOrNull() ?: 1
     val min = p.getOrNull(1)?.toIntOrNull() ?: 0
@@ -113,6 +113,7 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")

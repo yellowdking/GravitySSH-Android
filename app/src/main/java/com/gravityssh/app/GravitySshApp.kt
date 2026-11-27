@@ -58,8 +58,9 @@ class GravitySshApp : Application() {
 
     private fun registerFullBouncyCastle() {
         runCatching {
+            val provider = BouncyCastleProvider()
             Security.removeProvider("BC")
-            Security.addProvider(BouncyCastleProvider())
+            Security.addProvider(provider)
         }
     }
 

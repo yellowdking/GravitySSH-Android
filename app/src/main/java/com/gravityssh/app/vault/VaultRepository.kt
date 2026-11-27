@@ -13,6 +13,7 @@ import com.gravityssh.app.model.SyncImportSummary
 import com.gravityssh.app.model.VaultData
 import com.gravityssh.app.model.VaultLockState
 import com.gravityssh.app.model.VaultState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,7 +62,9 @@ class VaultRepository(
                 biometric = res.biometric,
                 startupError = null
             )
-        } catch (e: Exception) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             runCatching { Log.e(TAG, "Failed to open vault", e) }
             clearSecretsLocked()
             currentData = VaultData()
