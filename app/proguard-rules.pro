@@ -97,10 +97,19 @@
 -keep class org.bouncycastle.jcajce.provider.digest.BCMessageDigest { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.DigestAlgorithmProvider { *; }
 
-# PEM, PKCS#8, ASN.1, OpenSSH key params & utilities
+# PEM, PKCS#8, targeted ASN.1 (avoid keeping ~1,500+ unused CMS/OCSP/GOST/PQC ASN.1 classes), OpenSSH key params & utilities
 -keep class org.bouncycastle.openssl.** { *; }
 -keep class org.bouncycastle.pkcs.** { *; }
--keep class org.bouncycastle.asn1.** { *; }
+-keep class org.bouncycastle.asn1.* { *; }
+-keep class org.bouncycastle.asn1.pkcs.** { *; }
+-keep class org.bouncycastle.asn1.x509.** { *; }
+-keep class org.bouncycastle.asn1.x9.** { *; }
+-keep class org.bouncycastle.asn1.sec.** { *; }
+-keep class org.bouncycastle.asn1.nist.** { *; }
+-keep class org.bouncycastle.asn1.edec.** { *; }
+-keep class org.bouncycastle.asn1.oiw.** { *; }
+-keep class org.bouncycastle.asn1.misc.** { *; }
+-keep class org.bouncycastle.asn1.cryptlib.** { *; }
 -keep class org.bouncycastle.crypto.params.** { *; }
 -keep class org.bouncycastle.crypto.util.OpenSSH* { *; }
 -keep class org.bouncycastle.util.** { *; }

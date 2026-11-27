@@ -74,6 +74,10 @@ android {
         buildConfig = true
     }
     packaging {
+        dex {
+            // Re-enable APK-level DEX compression (reclaims ~3.7 MB of uncompressed DEX bloat on minSdk >= 29)
+            useLegacyPackaging = true
+        }
         resources {
             excludes += setOf(
                 "/META-INF/{AL2.0,LGPL2.1}",
@@ -90,7 +94,9 @@ android {
                 "META-INF/BC1024KE.DSA",
                 "META-INF/BC1024KE.SF",
                 "META-INF/BC2048KE.DSA",
-                "META-INF/BC2048KE.SF"
+                "META-INF/BC2048KE.SF",
+                // Exclude ~1.21 MB of unused BouncyCastle Picnic PQC lookup tables
+                "org/bouncycastle/pqc/**"
             )
         }
     }

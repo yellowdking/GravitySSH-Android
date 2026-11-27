@@ -146,6 +146,71 @@ jobs:
           (cd dist && sha256sum "GravitySSH-Android-v${VER}-release.apk" > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
 
+      - name: R8 Release APK Smoke Test
+        shell: bash
+        env:
+          VER: ${{ steps.pkg.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import zipfile
+
+          ver = os.environ["VER"]
+          apk_path = f"dist/GravitySSH-Android-v{ver}-release.apk"
+          if not os.path.isfile(apk_path):
+              sys.exit(f"::error::Release APK not found: {apk_path}")
+
+          with zipfile.ZipFile(apk_path, "r") as zf:
+              names = zf.namelist()
+
+              frag_entry = "META-INF/androidx.fragment_fragment.version"
+              if frag_entry not in names:
+                  sys.exit(f"::error::Missing {frag_entry} in {apk_path}")
+              frag_ver = zf.read(frag_entry).decode("utf-8").strip()
+              if frag_ver != "1.8.5":
+                  sys.exit(f"::error::Expected {frag_entry} == 1.8.5, got {frag_ver!r}")
+
+              pqc_entries = [n for n in names if n.startswith("org/bouncycastle/pqc/")]
+              if pqc_entries:
+                  sys.exit(f"::error::Unexpected BouncyCastle PQC resources still packaged: {len(pqc_entries)} entries")
+
+              dex_entries = [n for n in names if n.startswith("classes") and n.endswith(".dex")]
+              if not dex_entries:
+                  sys.exit(f"::error::No classes*.dex entries found in {apk_path}")
+
+              dex_blob = bytearray()
+              for dex_name in sorted(dex_entries):
+                  info = zf.getinfo(dex_name)
+                  if info.compress_type != zipfile.ZIP_DEFLATED:
+                      sys.exit(
+                          f"::error::Expected {dex_name} to be ZIP_DEFLATED (useLegacyPackaging=true), "
+                          f"got compress_type={info.compress_type}"
+                      )
+                  dex_blob.extend(zf.read(dex_name))
+
+              forbidden_bug = b"Can only use lower 16 bits for requestCode"
+              if forbidden_bug in dex_blob:
+                  sys.exit("::error::Found forbidden 16-bit requestCode Fragment bug string in release DEX")
+
+              required_bc_markers = [
+                  b"Lorg/bouncycastle/jcajce/provider/symmetric/SCRYPT;",
+                  b"Lorg/bouncycastle/jcajce/provider/symmetric/SCRYPT$Mappings;",
+                  b"Lorg/bouncycastle/jcajce/provider/symmetric/OpenSSLPBKDF;",
+                  b"Lorg/bouncycastle/jcajce/provider/symmetric/OpenSSLPBKDF$Mappings;",
+                  b"Lorg/bouncycastle/jcajce/provider/symmetric/Blowfish;",
+                  b"Lorg/bouncycastle/jcajce/provider/symmetric/Blowfish$Mappings;",
+              ]
+              missing = [m.decode("ascii") for m in required_bc_markers if m not in dex_blob]
+              if missing:
+                  sys.exit(f"::error::R8 stripped required BouncyCastle classes from release DEX: {', '.join(missing)}")
+
+              print(
+                  f"R8 Release APK Smoke Test PASSED: {apk_path} "
+                  f"(fragment={frag_ver}, dex_files={len(dex_entries)}, compressed_dex=true, pqc_resources=0, bc_providers=ok)"
+              )
+          PY
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
