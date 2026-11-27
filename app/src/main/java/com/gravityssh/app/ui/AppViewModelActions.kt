@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.lifecycle.viewModelScope
+import com.gravityssh.app.GravitySshApp
 import com.gravityssh.app.model.AppSettings
 import com.gravityssh.app.model.BuiltinTemplate
 import com.gravityssh.app.model.CommandShortcut
@@ -82,6 +83,7 @@ fun AppViewModel.generateKey(type: String, name: String, comment: String, onResu
     viewModelScope.launch {
         val ok = runCatching {
             val key = withContext(Dispatchers.Default) {
+                GravitySshApp.ensureBouncyCastleRegistered()
                 if (type == "rsa") SshKeyGenerator.generateRsa4096(name, comment)
                 else SshKeyGenerator.generateEd25519(name, comment)
             }
@@ -100,6 +102,7 @@ fun AppViewModel.importKey(name: String, pem: String, passphrase: String, commen
     viewModelScope.launch {
         val ok = runCatching {
             val key = withContext(Dispatchers.Default) {
+                GravitySshApp.ensureBouncyCastleRegistered()
                 SshKeyGenerator.importKey(name, pem, passphrase, comment)
             }
             withContext(Dispatchers.IO) { container.vaultRepository.saveSshKey(key) }
@@ -121,8 +124,15 @@ fun AppViewModel.deleteKey(id: String) {
     }
 }
 
-suspend fun AppViewModel.deployKey(key: SSHKeyRecord, targets: List<ServerConfig>): List<KeyDeployResult> =
-    vaultState.value.data.let { container.keyDeployer.deployToServers(key, targets, it.servers, it.sshKeys) }
+suspend fun AppViewModel.testServerConnection(server: ServerConfig): Result<String> {
+    withContext(Dispatchers.Default) { GravitySshApp.ensureBouncyCastleRegistered() }
+    return container.sshSessionManager.testConnection(server)
+}
+
+suspend fun AppViewModel.deployKey(key: SSHKeyRecord, targets: List<ServerConfig>): List<KeyDeployResult> {
+    withContext(Dispatchers.Default) { GravitySshApp.ensureBouncyCastleRegistered() }
+    return vaultState.value.data.let { container.keyDeployer.deployToServers(key, targets, it.servers, it.sshKeys) }
+}
 
 fun AppViewModel.saveShortcut(sc: CommandShortcut) {
     viewModelScope.launch(Dispatchers.IO) {
