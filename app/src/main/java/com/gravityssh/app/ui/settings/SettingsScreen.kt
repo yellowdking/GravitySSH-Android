@@ -18,7 +18,16 @@ import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.theme.*
 import com.gravityssh.app.ui.updateSettings
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlin.math.roundToInt
+
+private data class SettingsNavCounts(
+    val keyCount: Int,
+    val shortcutCount: Int,
+    val templateCount: Int,
+    val historyCount: Int
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,8 +37,25 @@ fun SettingsScreen(
     onOpenKeys: () -> Unit,
     onOpenTools: () -> Unit
 ) {
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-    val settings = vaultState.data.settings
+    val settings by remember(viewModel) {
+        viewModel.vaultState.map { it.data.settings }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = viewModel.vaultState.value.data.settings)
+    val navCounts by remember(viewModel) {
+        viewModel.vaultState
+            .map {
+                SettingsNavCounts(
+                    keyCount = it.data.sshKeys.size,
+                    shortcutCount = it.data.shortcuts.size,
+                    templateCount = it.data.templates.size,
+                    historyCount = it.data.history.size
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(
+        initialValue = viewModel.vaultState.value.data.let {
+            SettingsNavCounts(it.sshKeys.size, it.shortcuts.size, it.templates.size, it.history.size)
+        }
+    )
     var fontSizeSlider by remember(settings.terminalFontSize) {
         mutableFloatStateOf(settings.terminalFontSize.toFloat())
     }
@@ -66,14 +92,14 @@ fun SettingsScreen(
                 icon = AgIcons.Key,
                 tint = AgAccent,
                 title = "密钥",
-                subtitle = "${vaultState.data.sshKeys.size} 把 SSH 密钥 · 硬件级加密存储与主机部署",
+                subtitle = "${navCounts.keyCount} 把 SSH 密钥 · 硬件级加密存储与主机部署",
                 onClick = onOpenKeys
             )
             SettingsNavCard(
                 icon = AgIcons.Bolt,
                 tint = AgCyan,
                 title = "快捷",
-                subtitle = "${vaultState.data.shortcuts.size} 快捷命令 · ${vaultState.data.templates.size} 模板 · ${vaultState.data.history.size} 历史",
+                subtitle = "${navCounts.shortcutCount} 快捷命令 · ${navCounts.templateCount} 模板 · ${navCounts.historyCount} 历史",
                 onClick = onOpenTools
             )
 

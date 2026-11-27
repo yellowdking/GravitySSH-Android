@@ -1,7 +1,9 @@
 package com.gravityssh.app.ui.settings
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
@@ -16,25 +18,64 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gravityssh.app.model.VaultLockState
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgFilterChip
 import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.components.BiometricHelper
 import com.gravityssh.app.ui.setBiometricLockEnabled
 import com.gravityssh.app.ui.setMasterPassword
 import com.gravityssh.app.ui.theme.*
+import com.gravityssh.app.ui.updateSettings
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+private data class SecurityVaultSlice(
+    val lockState: VaultLockState,
+    val biometricLockEnabled: Boolean,
+    val autoLockMinutes: Int
+)
+
+private val AUTO_LOCK_OPTIONS = listOf(
+    0 to "关闭",
+    1 to "1分钟",
+    5 to "5分钟",
+    15 to "15分钟",
+    30 to "30分钟"
+)
 
 @Composable
 fun SettingsSecuritySection(viewModel: AppViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
+    val securitySlice by remember(viewModel) {
+        viewModel.vaultState
+            .map {
+                SecurityVaultSlice(
+                    lockState = it.lockState,
+                    biometricLockEnabled = it.data.settings.biometricLockEnabled,
+                    autoLockMinutes = it.data.settings.autoLockMinutes
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(
+        initialValue = viewModel.vaultState.value.let {
+            SecurityVaultSlice(
+                lockState = it.lockState,
+                biometricLockEnabled = it.data.settings.biometricLockEnabled,
+                autoLockMinutes = it.data.settings.autoLockMinutes
+            )
+        }
+    )
     val knownHosts by viewModel.knownHosts.collectAsStateWithLifecycle()
     val knownHostsError by viewModel.knownHostsError.collectAsStateWithLifecycle()
-    val lockState = vaultState.lockState
-    val settings = vaultState.data.settings
+    val lockState = securitySlice.lockState
+    val biometricLockEnabled = securitySlice.biometricLockEnabled
+    val autoLockMinutes = securitySlice.autoLockMinutes
+    val lockActive = lockState.hasPassword || lockState.biometricEnabled
     var canBiometric by remember(context) { mutableStateOf(BiometricHelper.canAuthenticate(context)) }
     var biometricBusy by remember { mutableStateOf(false) }
 
@@ -62,8 +103,8 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
         Spacer(Modifier.height(8.dp))
         AgSwitchRow(
             label = "生物识别指纹解锁",
-            checked = !lockState.hasPassword && settings.biometricLockEnabled,
-            enabled = !biometricBusy && !lockState.hasPassword && (canBiometric || settings.biometricLockEnabled)
+            checked = !lockState.hasPassword && biometricLockEnabled,
+            enabled = !biometricBusy && !lockState.hasPassword && (canBiometric || biometricLockEnabled)
         ) { enabled ->
             if (biometricBusy) return@AgSwitchRow
             if (enabled) {
@@ -104,6 +145,42 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
                 color = AgMuted
             )
         }
+        Spacer(Modifier.height(10.dp))
+        val autoLockLabel = AUTO_LOCK_OPTIONS.firstOrNull { it.first == autoLockMinutes }?.second
+            ?: "${autoLockMinutes}分钟"
+        Text(
+            "后台自动锁定：$autoLockLabel",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (lockActive) AgText else AgMuted
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            AUTO_LOCK_OPTIONS.forEach { (minutes, label) ->
+                AgFilterChip(
+                    selected = autoLockMinutes == minutes,
+                    onClick = {
+                        if (lockActive && autoLockMinutes != minutes) {
+                            viewModel.updateSettings { it.copy(autoLockMinutes = minutes) }
+                        }
+                    },
+                    label = label,
+                    enabled = lockActive,
+                    selectedColor = AgCyan
+                )
+            }
+        }
+        if (!lockActive) {
+            Text(
+                "开启主密码或生物识别锁后可配置后台自动锁定",
+                style = MaterialTheme.typography.bodySmall,
+                color = AgMuted
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
@@ -112,7 +189,7 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.weight(1f)
             ) { Text(if (lockState.hasPassword) "修改/移除主密码" else "设置主密码", color = AgCyan) }
-            if (lockState.hasPassword || lockState.biometricEnabled) {
+            if (lockActive) {
                 OutlinedButton(
                     onClick = { viewModel.lockVault() },
                     border = BorderStroke(1.dp, AgAccent),

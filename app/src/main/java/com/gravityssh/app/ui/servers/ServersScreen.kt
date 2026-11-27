@@ -10,14 +10,24 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.ui.*
 import com.gravityssh.app.ui.components.*
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+private data class ServersVaultSlice(
+    val servers: List<ServerConfig>,
+    val keys: List<SSHKeyRecord>,
+    val canLock: Boolean
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -25,14 +35,45 @@ fun ServersScreen(
     viewModel: AppViewModel,
     onConnectAndOpenTerminal: (ServerConfig) -> Unit
 ) {
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-    val servers = vaultState.data.servers
-    val keys = vaultState.data.sshKeys
-    val lockState = vaultState.lockState
+    val slice by remember(viewModel) {
+        viewModel.vaultState
+            .map {
+                ServersVaultSlice(
+                    servers = it.data.servers,
+                    keys = it.data.sshKeys,
+                    canLock = it.lockState.hasPassword || it.lockState.biometricEnabled
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(
+        initialValue = viewModel.vaultState.value.let {
+            ServersVaultSlice(
+                servers = it.data.servers,
+                keys = it.data.sshKeys,
+                canLock = it.lockState.hasPassword || it.lockState.biometricEnabled
+            )
+        }
+    )
+    val servers = slice.servers
+    val keys = slice.keys
 
-    var query by remember { mutableStateOf("") }
-    var editingServer by remember { mutableStateOf<ServerConfig?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var editingServerOpen by rememberSaveable { mutableStateOf(false) }
+    var editingServerId by rememberSaveable { mutableStateOf<String?>(null) }
     var deletingServer by remember { mutableStateOf<ServerConfig?>(null) }
+
+    val editingServer = if (!editingServerOpen) {
+        null
+    } else {
+        val id = editingServerId
+        if (id.isNullOrBlank()) ServerConfig() else servers.find { it.id == id }
+    }
+    LaunchedEffect(editingServerOpen, editingServerId, servers) {
+        if (editingServerOpen && !editingServerId.isNullOrBlank() && servers.none { it.id == editingServerId }) {
+            editingServerOpen = false
+            editingServerId = null
+        }
+    }
 
     val filtered = remember(servers, query) {
         val q = query.trim().lowercase()
@@ -55,7 +96,7 @@ fun ServersScreen(
                     }
                 },
                 actions = {
-                    if (lockState.hasPassword || lockState.biometricEnabled) {
+                    if (slice.canLock) {
                         IconButton(onClick = { viewModel.lockVault() }) { Icon(Icons.Rounded.Lock, "锁定", tint = AgMuted) }
                     }
                 },
@@ -64,7 +105,10 @@ fun ServersScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { editingServer = ServerConfig() },
+                onClick = {
+                    editingServerId = null
+                    editingServerOpen = true
+                },
                 containerColor = AgAccent,
                 contentColor = Color.White,
                 shape = RoundedCornerShape(16.dp)
@@ -81,7 +125,12 @@ fun ServersScreen(
                     title = if (servers.isEmpty()) "还没有配置任何主机" else "没有匹配的主机",
                     subtitle = if (servers.isEmpty()) "点击右下角新建主机，或在设置中从电脑端同步" else "尝试更改搜索关键字",
                     actionLabel = if (servers.isEmpty()) "添加第一台主机" else null,
-                    onAction = if (servers.isEmpty()) { { editingServer = ServerConfig() } } else null
+                    onAction = if (servers.isEmpty()) {
+                        {
+                            editingServerId = null
+                            editingServerOpen = true
+                        }
+                    } else null
                 )
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 84.dp)) {
@@ -90,7 +139,15 @@ fun ServersScreen(
                             Text("$groupName (${list.size})", style = MaterialTheme.typography.labelMedium, color = AgMuted, modifier = Modifier.padding(top = 6.dp, bottom = 2.dp))
                         }
                         items(list, key = { it.id }) { server ->
-                            ServerCardItem(server, { onConnectAndOpenTerminal(server) }, { editingServer = server }, { deletingServer = server })
+                            ServerCardItem(
+                                server = server,
+                                onConnect = { onConnectAndOpenTerminal(server) },
+                                onEdit = {
+                                    editingServerId = server.id
+                                    editingServerOpen = true
+                                },
+                                onDelete = { deletingServer = server }
+                            )
                         }
                     }
                 }
@@ -101,10 +158,17 @@ fun ServersScreen(
     editingServer?.let { server ->
         ServerEditorSheet(
             server, servers, keys,
-            onSave = { viewModel.saveServer(it); editingServer = null },
-            onTest = { viewModel.container.sshSessionManager.testConnection(it) },
+            onSave = {
+                viewModel.saveServer(it)
+                editingServerOpen = false
+                editingServerId = null
+            },
+            onTest = { viewModel.testServerConnection(it) },
             onClearHostCache = { h, p -> viewModel.clearHostKnownKey(h, p) },
-            onDismiss = { editingServer = null }
+            onDismiss = {
+                editingServerOpen = false
+                editingServerId = null
+            }
         )
     }
     deletingServer?.let { t ->
