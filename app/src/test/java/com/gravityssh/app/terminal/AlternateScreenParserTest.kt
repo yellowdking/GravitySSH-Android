@@ -15,7 +15,7 @@ class AlternateScreenParserTest {
         val savedCursor = ctrl.cursorPosition()
         assertEquals(1 to 15, savedCursor)
         assertEquals(10 to 40, ctrl.screenSize())
-        assertFalse(ctrl.buffer.isAlternateScreen)
+        assertFalse(ctrl.buffer.isAltScreen)
         assertFalse(ctrl.buffer.isNanoScreenHint())
         assertFalse(ctrl.isNanoDetected())
 
@@ -27,7 +27,7 @@ class AlternateScreenParserTest {
                 "\u001B[10;1H^X Exit  ^O Write Out" +
                 "\u001B[3;11H"
         )
-        assertTrue(ctrl.buffer.isAlternateScreen)
+        assertTrue(ctrl.buffer.isAltScreen)
         assertTrue(ctrl.isAlternateScreen())
         assertTrue(ctrl.alternateScreen.value)
         assertTrue(ctrl.buffer.isNanoScreenHint())
@@ -39,7 +39,7 @@ class AlternateScreenParserTest {
 
         // Exit alternate screen (?1049l) -> restores normal screen & cursor
         ctrl.onRemoteOutput("\u001B[?1049l")
-        assertFalse(ctrl.buffer.isAlternateScreen)
+        assertFalse(ctrl.buffer.isAltScreen)
         assertFalse(ctrl.isAlternateScreen())
         assertFalse(ctrl.alternateScreen.value)
         assertFalse(ctrl.buffer.isNanoScreenHint())

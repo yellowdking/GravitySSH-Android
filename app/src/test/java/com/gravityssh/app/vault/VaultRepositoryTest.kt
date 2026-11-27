@@ -21,10 +21,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.KeyPairGenerator
+import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import javax.crypto.Cipher
 import javax.crypto.SecretKey
 
 class VaultRepositoryTest {
@@ -253,15 +256,16 @@ class VaultRepositoryTest {
 
     @Test
     fun vaultCryptoV1BackwardCompatAndV2HeaderAuthentication() {
-        val crypto = VaultCrypto(InMemoryMasterKeyProvider())
+        val kp = InMemoryMasterKeyProvider()
+        val crypto = VaultCrypto(kp)
         val payload = """{"hello":"world"}""".toByteArray(Charsets.UTF_8)
 
         // Legacy v1 blobs (keyless and password) still open cleanly
-        val v1Keyless = crypto.sealV1(payload, password = null)
+        val v1Keyless = sealV1ForTest(kp, payload, password = null)
         assertEquals(VaultCrypto.VERSION_V1, v1Keyless[4])
         assertArrayEquals(payload, crypto.open(v1Keyless, password = null))
 
-        val v1Password = crypto.sealV1(payload, password = "pw-v1")
+        val v1Password = sealV1ForTest(kp, payload, password = "pw-v1")
         assertEquals(VaultCrypto.VERSION_V1, v1Password[4])
         assertArrayEquals(payload, crypto.open(v1Password, password = "pw-v1"))
 
@@ -341,5 +345,41 @@ class VaultRepositoryTest {
         assertTrue(mgr2.knownHosts.value.isEmpty())
         assertNotNull(mgr2.lastError.value)
         assertTrue(File(tempFolder.root, "known_hosts.json.corrupt").exists())
+    }
+
+    private fun sealV1ForTest(
+        keyProvider: MasterKeyProvider,
+        plaintext: ByteArray,
+        password: String? = null
+    ): ByteArray {
+        val rng = SecureRandom()
+        val (mode, innerPayload) = if (!password.isNullOrEmpty()) {
+            val salt = ByteArray(16).also { rng.nextBytes(it) }
+            val iv = ByteArray(12).also { rng.nextBytes(it) }
+            val keyBytes = CryptoUtils.pbkdf2Sha256(password, salt, 200_000, 256)
+            val enc = try {
+                CryptoUtils.aesGcmEncrypt(keyBytes, iv, plaintext, "gssh-android-vault-pw-v1".toByteArray(Charsets.UTF_8))
+            } finally {
+                CryptoUtils.zero(keyBytes)
+            }
+            val inner = ByteArrayOutputStream(salt.size + iv.size + enc.size).apply {
+                write(salt)
+                write(iv)
+                write(enc)
+            }.toByteArray()
+            VaultCrypto.MODE_PASSWORD to inner
+        } else {
+            VaultCrypto.MODE_KEYSTORE to plaintext
+        }
+        val cipher = Cipher.getInstance(CryptoUtils.AES_GCM)
+        cipher.init(Cipher.ENCRYPT_MODE, keyProvider.getOrCreateKey())
+        cipher.updateAAD("gssh-android-vault-v1".toByteArray(Charsets.UTF_8))
+        val outerIv = cipher.iv
+        val outerCt = cipher.doFinal(innerPayload)
+        return ByteArrayOutputStream(7 + outerIv.size + outerCt.size).apply {
+            write(byteArrayOf('G'.code.toByte(), 'S'.code.toByte(), 'V'.code.toByte(), 'A'.code.toByte(), VaultCrypto.VERSION_V1, mode, outerIv.size.toByte()))
+            write(outerIv)
+            write(outerCt)
+        }.toByteArray()
     }
 }

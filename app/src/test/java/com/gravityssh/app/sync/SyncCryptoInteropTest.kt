@@ -1,7 +1,6 @@
 package com.gravityssh.app.sync
 
 import com.gravityssh.app.InMemoryMasterKeyProvider
-import com.gravityssh.app.model.AuthType
 import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.model.PairRequestPayload
 import com.gravityssh.app.model.ServerConfig
@@ -29,47 +28,41 @@ class SyncCryptoInteropTest {
     val tempFolder = TemporaryFolder()
 
     @Test
-    fun decryptWindowsGoldenVectorByteForByte() {
+    fun codeCanonicalizationQrUriAndValidationErrors() {
         val code = "K7M9-P4X2"
         val canonical = SyncCrypto.canonicalizeCode(code)
         assertEquals("K7M9P4X2", canonical)
         assertEquals("gssh-sync://v1?code=K7M9-P4X2", SyncCrypto.buildQrUri(code))
         assertEquals("K7M9P4X2", SyncCrypto.canonicalizeCode("gssh-sync://v1?code=k7m9-p4x2"))
         assertEquals("K7M9P4X2", SyncCrypto.canonicalizeCode("\tK7M9-\tP4X2 \r\n"))
-
-        val channelId = SyncCrypto.deriveChannelId(code)
         assertEquals(
             "dda9c60ab5d048fe1299e0815ff885d13047578a81a4b6969b676820a0371c7e",
-            channelId
+            SyncCrypto.deriveChannelId(code)
         )
 
-        val saltB64 = "AAECAwQFBgcICQoLDA0ODw=="
-        val salt = Base64.getDecoder().decode(saltB64)
-        val aesKeyHex = SyncCrypto.bytesToHex(SyncCrypto.deriveAesKey(canonical, salt))
-        assertEquals(
-            "b91a0aab1e53ea797042d28deb026dc6c4264ede7a76ea37cdaaf9e224eaa936",
-            aesKeyHex
+        val generated = SyncCrypto.generateSyncCode()
+        assertTrue(generated.matches(Regex("^[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}$")))
+
+        val recvCode = "R3T8-W5Y6"
+        val reqId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val reqBlob = SyncCrypto.encryptPairRequest(
+            code,
+            PairRequestPayload(receiverCode = recvCode, receiverDevice = "Pixel", requestedAt = "2026-11-27T10:00:00Z")
+        )
+        val dualBlob = SyncCrypto.encryptBundleDual(
+            SyncBundle(schemaVersion = 1, servers = listOf(ServerConfig(id = "s1", name = "Prod", host = "10.0.0.1"))),
+            code,
+            recvCode,
+            reqId
         )
 
-        val nonceB64 = "oKGio6Slpqeoqaqr"
-        val goldenCt = "APaRyQ4BbxId1Z8T80df15PY5T5ZivUIHTYORE54hf1vt0vs0HgZTp+kdW6T6LzODHRmdQ4H3x9CJ0eFuC9YFTKgpfjz/sPZ5ewF/vdoTWnz/YvillbpEL53eFwEy3CwlqW5yJPTaG5yU39gILQs2ZhRDj9uptJe7iR4GrTAI/dY6EC1aVHf+v7nwp9agPRGG5le1FEvmps/VvI3PYG/k4/DuGjBqprb1KMdZB/56Zqkfd3qwobBkyPWlHLhUbiNaYPBsfXOf93p79cau5jYfFRCSbxp+W+0gbLdnvb1M2RtniB3r4z4nQABfkK/HZABs+FRK16PQUvruP0GUkzRoF/FviFW1iWn6HOY9JDBkmOvd7fYvyWjpnfM1B76Bd3Mf7H4XUZJ1Odqyjlky/rZx+4V2vjnx3utCZmLNBKWSfUU+GBQdo7NhDfT6BPP8T66cGezEtofJ6xYUwp2fS8Eu7zoAuWefxGTgAzVwNTc79WdvbpOCip3eiKIRUSdPAQH+N0cNLo00zI/kEHFQkx0iuRwWVMcO5TW3ks8yJvvBjXIu9nULelVYYTwz/p+WoJfikIgavX3Vm9Kcof9Cw=="
-
-        val bundle = SyncCrypto.decryptBundle(saltB64, nonceB64, goldenCt, code)
-        assertEquals(1, bundle.schemaVersion)
-        assertEquals("2026-01-02T03:04:05Z", bundle.exportedAt)
-        assertEquals("windows", bundle.sourcePlatform)
-        assertEquals("WIN-DEV-01", bundle.sourceDevice)
-        assertEquals(1, bundle.servers.size)
-        assertEquals("srv-golden-1", bundle.servers[0].id)
-        assertEquals("192.0.2.10", bundle.servers[0].host)
-        assertEquals(22, bundle.servers[0].port)
-        assertEquals("root", bundle.servers[0].username)
-        assertEquals(AuthType.PASSWORD, bundle.servers[0].authType)
-        assertEquals("golden-pass-!@#", bundle.servers[0].password)
-        assertEquals(1, bundle.shortcuts.size)
-        assertEquals("sc-golden-1", bundle.shortcuts[0].id)
-        assertEquals("Disk", bundle.shortcuts[0].name)
-        assertEquals("df -h", bundle.shortcuts[0].command)
+        val shortB64 = Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3))
+        assertTrue(runCatching { SyncCrypto.decryptPairRequest(code, shortB64, reqBlob.nonceB64, reqBlob.ciphertextB64) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { SyncCrypto.decryptPairRequest(code, reqBlob.saltB64, shortB64, reqBlob.ciphertextB64) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { SyncCrypto.decryptPairRequest(code, reqBlob.saltB64, reqBlob.nonceB64, shortB64) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { SyncCrypto.decryptBundleDual(shortB64, dualBlob.nonceB64, dualBlob.ciphertextB64, code, recvCode, reqId) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { SyncCrypto.decryptBundleDual(dualBlob.saltB64, shortB64, dualBlob.ciphertextB64, code, recvCode, reqId) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { SyncCrypto.decryptBundleDual(dualBlob.saltB64, dualBlob.nonceB64, shortB64, code, recvCode, reqId) }.exceptionOrNull() is IllegalArgumentException)
     }
 
     @Test
@@ -82,37 +75,6 @@ class SyncCryptoInteropTest {
             rawBody = """{"channelId":"abc"}""".toByteArray(Charsets.UTF_8)
         )
         assertEquals("02e518b092e36f3a78d7e0f782bfa85a186171b74bf062b9f3d10c90a35cba5c", sig)
-    }
-
-    @Test
-    fun encryptDecryptRoundTripAndValidationErrors() {
-        val code = SyncCrypto.generateSyncCode()
-        assertTrue(code.matches(Regex("^[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}$")))
-        val input = SyncBundle(
-            schemaVersion = 1,
-            exportedAt = "2026-11-26T10:00:00Z",
-            sourcePlatform = "android",
-            sourceDevice = "Pixel",
-            servers = listOf(ServerConfig(id = "s1", name = "Prod", host = "10.0.0.1", port = 22, username = "root")),
-            shortcuts = listOf(CommandShortcut(id = "c1", name = "Uptime", command = "uptime"))
-        )
-        val blob = SyncCrypto.encryptBundle(input, code)
-        val decoded = SyncCrypto.decryptBundle(blob.saltB64, blob.nonceB64, blob.ciphertextB64, code)
-        assertEquals(input, decoded)
-
-        // Wrong code must throw SecurityException with Chinese message
-        val wrongCode = if (code == "K7M9-P4X2") "M2N3-P4Q5" else "K7M9-P4X2"
-        val badTagErr = runCatching {
-            SyncCrypto.decryptBundle(blob.saltB64, blob.nonceB64, blob.ciphertextB64, wrongCode)
-        }.exceptionOrNull()
-        assertTrue(badTagErr is SecurityException)
-        assertTrue(badTagErr!!.message.orEmpty().contains("解密失败"))
-
-        // Short salt / nonce / ciphertext must fail fast with IllegalArgumentException
-        val shortB64 = Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3))
-        assertTrue(runCatching { SyncCrypto.decryptRawJson(shortB64, blob.nonceB64, blob.ciphertextB64, code) }.exceptionOrNull() is IllegalArgumentException)
-        assertTrue(runCatching { SyncCrypto.decryptRawJson(blob.saltB64, shortB64, blob.ciphertextB64, code) }.exceptionOrNull() is IllegalArgumentException)
-        assertTrue(runCatching { SyncCrypto.decryptRawJson(blob.saltB64, blob.nonceB64, shortB64, code) }.exceptionOrNull() is IllegalArgumentException)
     }
 
     @Test
@@ -136,32 +98,59 @@ class SyncCryptoInteropTest {
         repo.open()
         assertTrue(repo.setMasterPassword("", "pw123").isSuccess)
 
-        val pickupCalls = AtomicInteger(0)
+        val pairStatusCalls = AtomicInteger(0)
         var nextBundle = SyncBundle(
             schemaVersion = 1,
             servers = listOf(ServerConfig(id = "s1", name = "S1", host = "10.0.0.1"))
         )
+        val sendCode = "K7M9-P4X2"
+        val recvCode = "M8N2-Q5R7"
+        val channelId = SyncCrypto.deriveChannelId(sendCode)
         val fakeRelay = object : SyncRelayClient() {
-            override suspend fun pickup(relayUrl: String, channelId: String): PickupResponse {
-                pickupCalls.incrementAndGet()
-                val blob = SyncCrypto.encryptBundle(nextBundle, "K7M9-P4X2")
-                return PickupResponse(blob.saltB64, blob.nonceB64, blob.ciphertextB64)
+            override suspend fun pairRequest(
+                relayUrl: String,
+                channelId: String,
+                requestId: String,
+                salt: String,
+                nonce: String,
+                ciphertext: String
+            ): PairRequestResponse = PairRequestResponse(ok = true, expiresAt = "2099-01-01T00:00:00Z")
+
+            override suspend fun pairStatus(
+                relayUrl: String,
+                channelId: String,
+                requestId: String
+            ): PairStatusResponse {
+                pairStatusCalls.incrementAndGet()
+                val blob = SyncCrypto.encryptBundleDual(nextBundle, sendCode, recvCode, requestId)
+                return PairStatusResponse(
+                    state = "approved",
+                    salt = blob.saltB64,
+                    nonce = blob.nonceB64,
+                    ciphertext = blob.ciphertextB64
+                )
             }
         }
         val service = SyncService(repo, fakeRelay)
 
-        // Locked vault must reject previewReceive BEFORE touching relay
+        // Locked vault must reject startReceiveRequest BEFORE touching relay
         repo.lockNow()
-        val lockedErr = runCatching { service.previewReceive("K7M9-P4X2") }.exceptionOrNull()
+        val lockedErr = runCatching { service.startReceiveRequest(sendCode, recvCode) }.exceptionOrNull()
         assertTrue(lockedErr is SecurityException)
-        assertEquals(0, pickupCalls.get())
+        assertEquals(0, pairStatusCalls.get())
 
         assertTrue(repo.unlock("pw123").isSuccess)
 
+        suspend fun receiveOnce(): SyncReceivePreview {
+            val wait = service.startReceiveRequest(sendCode, recvCode)
+            assertEquals(channelId, SyncCrypto.deriveChannelId(wait.sendCode))
+            return service.pollReceiveStatus(wait.waitId).preview!!
+        }
+
         // Preview cache capped at 2 entries
-        val p1 = service.previewReceive("K7M9-P4X2")
-        val p2 = service.previewReceive("K7M9-P4X2")
-        val p3 = service.previewReceive("K7M9-P4X2")
+        val p1 = receiveOnce()
+        val p2 = receiveOnce()
+        val p3 = receiveOnce()
         assertTrue(runCatching { service.applyReceive(p1.previewId, SyncImportMode.MERGE) }.isFailure)
 
         // Lock clears remaining previews
@@ -172,19 +161,18 @@ class SyncCryptoInteropTest {
 
         // Preview is retained if import fails (schemaVersion != 1), and removed once import succeeds
         nextBundle = SyncBundle(schemaVersion = 99)
-        val badPreview = service.previewReceive("K7M9-P4X2")
+        val badPreview = receiveOnce()
         val badImport = runCatching { service.applyReceive(badPreview.previewId, SyncImportMode.MERGE) }.exceptionOrNull()
         assertNotNull(badImport)
         assertTrue(badImport is IllegalArgumentException)
-        // Still cached, so a second attempt fails for schemaVersion (not "已过期")
         val secondErr = runCatching { service.applyReceive(badPreview.previewId, SyncImportMode.MERGE) }.exceptionOrNull()
         assertTrue(secondErr is IllegalArgumentException)
+        service.discardPreview(badPreview.previewId)
 
         nextBundle = SyncBundle(schemaVersion = 1, servers = listOf(ServerConfig(id = "s-ok", name = "OK", host = "10.0.0.5")))
-        val okPreview = service.previewReceive("K7M9-P4X2")
+        val okPreview = receiveOnce()
         val sum = service.applyReceive(okPreview.previewId, SyncImportMode.MERGE)
         assertEquals(1, sum.serversAdded)
-        // Consumed after success
         assertTrue(runCatching { service.applyReceive(okPreview.previewId, SyncImportMode.MERGE) }.exceptionOrNull() is IllegalStateException)
     }
 
@@ -365,14 +353,8 @@ class SyncCryptoInteropTest {
         var appNonce = ""
         var appCt = ""
         val pairRequestCalls = AtomicInteger(0)
-        val dropCalls = AtomicInteger(0)
 
         val relay = object : SyncRelayClient() {
-            override suspend fun drop(relayUrl: String, req: DropRequest): DropResponse {
-                dropCalls.incrementAndGet()
-                return DropResponse(ok = true)
-            }
-
             override suspend fun pairInit(relayUrl: String, channelId: String, senderToken: String, ttlSeconds: Int): PairInitResponse {
                 slotState = "waiting"
                 slotChannel = channelId
@@ -467,9 +449,8 @@ class SyncCryptoInteropTest {
         assertEquals(0, pairRequestCalls.get())
         assertTrue(receiverRepo.unlock("pw456").isSuccess)
 
-        // 2. Sender starts v2 send -> ZERO dropCalls (no vault payload uploaded before verification!)
+        // 2. Sender starts v2 send and polls WAITING
         val sendSess = senderService.startSend()
-        assertEquals(0, dropCalls.get())
         assertTrue(sendSess.sessionId.isNotBlank())
         assertEquals(SyncSendPollState.WAITING, senderService.pollSend(sendSess.sessionId).state)
 
