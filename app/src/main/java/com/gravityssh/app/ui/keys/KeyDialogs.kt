@@ -12,8 +12,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.gravityssh.app.ui.components.AgFilterChip
+import com.gravityssh.app.ui.components.AgPasswordField
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -40,11 +41,21 @@ fun GenerateKeyDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = keyType == "ed25519", onClick = { if (!busy) keyType = "ed25519" }, label = { Text("Ed25519 (推荐)") })
-                    FilterChip(selected = keyType == "rsa", onClick = { if (!busy) keyType = "rsa" }, label = { Text("RSA-4096") })
+                    AgFilterChip(
+                        selected = keyType == "ed25519",
+                        onClick = { if (!busy) keyType = "ed25519" },
+                        label = "Ed25519 (推荐)",
+                        enabled = !busy
+                    )
+                    AgFilterChip(
+                        selected = keyType == "rsa",
+                        onClick = { if (!busy) keyType = "rsa" },
+                        label = "RSA-4096",
+                        enabled = !busy
+                    )
                 }
-                AgTextField(name, { name = it }, "密钥名称", placeholder = "例如 生产主密钥")
-                AgTextField(comment, { comment = it }, "公钥注释", mono = true)
+                AgTextField(name, { name = it }, "密钥名称", placeholder = "例如 生产主密钥", enabled = !busy)
+                AgTextField(comment, { comment = it }, "公钥注释", mono = true, enabled = !busy)
             }
         },
         confirmButton = {
@@ -137,10 +148,10 @@ fun ImportKeyDialog(
                     }
                     Text(if (readingFile) "读取文件中..." else "从本地文件读取私钥 (id_ed25519 / .pem)", color = AgCyan)
                 }
-                AgTextField(name, { name = it }, "密钥名称", placeholder = "例如 阿里云密钥")
-                AgTextField(pem, { pem = it }, "私钥内容 (PEM / OpenSSH)", mono = true, singleLine = false, maxLines = 6)
-                AgTextField(passphrase, { passphrase = it }, "私钥口令（未加密可留空）", visualTransformation = PasswordVisualTransformation())
-                AgTextField(comment, { comment = it }, "备注 / 注释（可选）", mono = true)
+                AgTextField(name, { name = it }, "密钥名称", placeholder = "例如 阿里云密钥", enabled = !busy)
+                AgTextField(pem, { pem = it }, "私钥内容 (PEM / OpenSSH)", mono = true, singleLine = false, maxLines = 6, enabled = !busy)
+                AgPasswordField(passphrase, { passphrase = it }, "私钥口令（未加密可留空）", enabled = !busy)
+                AgTextField(comment, { comment = it }, "备注 / 注释（可选）", mono = true, enabled = !busy)
             }
         },
         confirmButton = {

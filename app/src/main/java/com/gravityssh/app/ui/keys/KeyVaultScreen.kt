@@ -4,7 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -16,6 +16,7 @@ import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.ui.*
 import com.gravityssh.app.ui.components.AgConfirmDialog
 import com.gravityssh.app.ui.components.AgEmptyState
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,7 +44,7 @@ fun KeyVaultScreen(viewModel: AppViewModel) {
                 },
                 actions = {
                     IconButton(onClick = { showImport = true }) {
-                        Icon(Icons.Rounded.FileUpload, contentDescription = "导入私钥", tint = AgCyan)
+                        Icon(AgIcons.FileUpload, contentDescription = "导入私钥", tint = AgCyan)
                     }
                     IconButton(onClick = { showGenerate = true }) {
                         Icon(Icons.Rounded.Add, contentDescription = "生成密钥", tint = AgAccent)
@@ -56,7 +57,7 @@ fun KeyVaultScreen(viewModel: AppViewModel) {
         if (keys.isEmpty()) {
             Column(modifier = Modifier.fillMaxSize().padding(padding)) {
                 AgEmptyState(
-                    icon = Icons.Rounded.Key,
+                    icon = AgIcons.Key,
                     title = "暂无 SSH 密钥",
                     subtitle = "可本地生成 Ed25519 / RSA-4096 密钥对，或导入 PEM/OpenSSH 私钥",
                     actionLabel = "生成新密钥",

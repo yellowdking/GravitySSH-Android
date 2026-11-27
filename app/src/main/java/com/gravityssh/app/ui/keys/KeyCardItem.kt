@@ -2,9 +2,7 @@ package com.gravityssh.app.ui.keys
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.RocketLaunch
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -15,6 +13,7 @@ import androidx.compose.ui.unit.sp
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.ui.components.AgBadge
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
 
 @Composable
@@ -40,10 +39,10 @@ fun KeyCardItem(
             }
             Row {
                 IconButton(onClick = onCopy, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Rounded.ContentCopy, "复制公钥", tint = AgCyan, modifier = Modifier.size(18.dp))
+                    Icon(AgIcons.ContentCopy, "复制公钥", tint = AgCyan, modifier = Modifier.size(18.dp))
                 }
                 IconButton(onClick = onDeploy, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Rounded.RocketLaunch, "部署到主机", tint = AgAccent, modifier = Modifier.size(18.dp))
+                    Icon(AgIcons.RocketLaunch, "部署到主机", tint = AgAccent, modifier = Modifier.size(18.dp))
                 }
                 IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
                     Icon(Icons.Rounded.Delete, "删除", tint = AgDanger.copy(alpha = 0.85f), modifier = Modifier.size(18.dp))

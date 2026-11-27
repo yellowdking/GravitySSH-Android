@@ -4,12 +4,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.model.*
+import com.gravityssh.app.ui.components.AgPasswordField
+import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
 
@@ -40,7 +40,7 @@ fun ServerProxyTab(
             )
         }
         AgTextField(p.username, { onChange(draft.copy(proxy = p.copy(username = it))) }, "代理用户名（可选）", mono = true)
-        AgTextField(p.password, { onChange(draft.copy(proxy = p.copy(password = it))) }, "代理密码（可选）", visualTransformation = PasswordVisualTransformation())
+        AgPasswordField(p.password, { onChange(draft.copy(proxy = p.copy(password = it))) }, "代理密码（可选）")
     }
 }
 
@@ -86,15 +86,12 @@ fun ServerJumpTab(
                 onChange(draft.copy(jumpHost = j.copy(authType = it)))
             }
             if (j.authType != AuthType.KEY) {
-                AgTextField(j.password, { onChange(draft.copy(jumpHost = j.copy(password = it))) }, "跳板密码", visualTransformation = PasswordVisualTransformation())
+                AgPasswordField(j.password, { onChange(draft.copy(jumpHost = j.copy(password = it))) }, "跳板密码")
             }
             if (j.authType != AuthType.PASSWORD) {
                 KeySelectorRow("跳板 SSH 密钥", keys, j.sshKeyId) { onChange(draft.copy(jumpHost = j.copy(sshKeyId = it))) }
             }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("跳板机复用主代理配置", style = MaterialTheme.typography.bodyMedium, color = AgText)
-                Switch(checked = j.useMainProxy, onCheckedChange = { onChange(draft.copy(jumpHost = j.copy(useMainProxy = it))) })
-            }
+            AgSwitchRow("跳板机复用主代理配置", j.useMainProxy) { onChange(draft.copy(jumpHost = j.copy(useMainProxy = it))) }
         }
     }
 }

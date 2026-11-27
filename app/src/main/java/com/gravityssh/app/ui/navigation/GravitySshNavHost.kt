@@ -26,6 +26,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.gravityssh.app.model.SessionStatus
 import com.gravityssh.app.ui.AppViewModel
+import com.gravityssh.app.ui.resetCorruptedVault
+import com.gravityssh.app.ui.unlockVault
+import com.gravityssh.app.ui.unlockVaultWithBiometric
 import com.gravityssh.app.ui.keys.KeyVaultScreen
 import com.gravityssh.app.ui.lock.VaultLockScreen
 import com.gravityssh.app.ui.servers.ServersScreen
@@ -70,8 +73,9 @@ fun GravitySshRoot(viewModel: AppViewModel) {
     if (lockState.locked) {
         VaultLockScreen(
             lockState = lockState,
-            onUnlockPassword = { viewModel.container.vaultRepository.unlock(it) },
-            onUnlockBiometric = { viewModel.container.vaultRepository.unlockWithBiometric() }
+            onUnlockPassword = { pw, done -> viewModel.unlockVault(pw, done) },
+            onUnlockBiometric = { done -> viewModel.unlockVaultWithBiometric(done) },
+            onResetCorruptedVault = { done -> viewModel.resetCorruptedVault(done) }
         )
         return
     }

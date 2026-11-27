@@ -1,11 +1,7 @@
 package com.gravityssh.app.ui.navigation
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Bolt
-import androidx.compose.material.icons.rounded.Dns
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
@@ -17,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.AgAccent
 import com.gravityssh.app.ui.theme.AgMuted
 import com.gravityssh.app.ui.theme.AgSurface
@@ -24,10 +21,10 @@ import com.gravityssh.app.ui.theme.AgSurface
 private data class NavTab(val route: String, val label: String, val icon: ImageVector)
 
 private val BOTTOM_TABS = listOf(
-    NavTab(Routes.SERVERS, "主机", Icons.Rounded.Dns),
-    NavTab(Routes.TERMINAL, "终端", Icons.Rounded.Terminal),
-    NavTab(Routes.KEYS, "密钥", Icons.Rounded.Key),
-    NavTab(Routes.TOOLS, "效率", Icons.Rounded.Bolt),
+    NavTab(Routes.SERVERS, "主机", AgIcons.Dns),
+    NavTab(Routes.TERMINAL, "终端", AgIcons.Terminal),
+    NavTab(Routes.KEYS, "密钥", AgIcons.Key),
+    NavTab(Routes.TOOLS, "效率", AgIcons.Bolt),
     NavTab(Routes.SETTINGS, "设置", Icons.Rounded.Settings)
 )
 

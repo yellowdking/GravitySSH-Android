@@ -1,5 +1,6 @@
 package com.gravityssh.app.ui.servers
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -19,6 +20,8 @@ import com.gravityssh.app.model.JumpMode
 import com.gravityssh.app.model.ProxyType
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
+import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -33,19 +36,37 @@ fun ServerEditorSheet(
     onDismiss: () -> Unit
 ) {
     var draft by remember(initial) { mutableStateOf(initial) }
-    var portText by remember(initial) { mutableStateOf(initial.port.toString()) }
-    var proxyPortText by remember(initial) { mutableStateOf(if (initial.proxy.port > 0) initial.proxy.port.toString() else "") }
-    var jumpPortText by remember(initial) { mutableStateOf(initial.jumpHost.port.toString()) }
-    var timeoutText by remember(initial) { mutableStateOf(initial.timeoutSeconds.toString()) }
-    var keepAliveText by remember(initial) { mutableStateOf(initial.keepAliveSeconds.toString()) }
+    val initPort = remember(initial) { initial.port.toString() }
+    val initProxyPort = remember(initial) { if (initial.proxy.port > 0) initial.proxy.port.toString() else "" }
+    val initJumpPort = remember(initial) { initial.jumpHost.port.toString() }
+    val initTimeout = remember(initial) { initial.timeoutSeconds.toString() }
+    val initKeepAlive = remember(initial) { initial.keepAliveSeconds.toString() }
+
+    var portText by remember(initial) { mutableStateOf(initPort) }
+    var proxyPortText by remember(initial) { mutableStateOf(initProxyPort) }
+    var jumpPortText by remember(initial) { mutableStateOf(initJumpPort) }
+    var timeoutText by remember(initial) { mutableStateOf(initTimeout) }
+    var keepAliveText by remember(initial) { mutableStateOf(initKeepAlive) }
 
     var tabIndex by remember { mutableIntStateOf(0) }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
+    var confirmDiscard by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
     val tabs = listOf("基础", "代理", "跳板机", "高级")
+
+    val hasChanges = draft != initial ||
+        portText != initPort ||
+        proxyPortText != initProxyPort ||
+        jumpPortText != initJumpPort ||
+        timeoutText != initTimeout ||
+        keepAliveText != initKeepAlive
+
+    fun requestDismiss() {
+        if (hasChanges) confirmDiscard = true else onDismiss()
+    }
 
     LaunchedEffect(tabIndex) {
         scrollState.scrollTo(0)
@@ -100,7 +121,10 @@ fun ServerEditorSheet(
         )
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        BackHandler(enabled = hasChanges) {
+            confirmDiscard = true
+        }
         Surface(modifier = Modifier.fillMaxSize().imePadding(), color = AgBg) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(
@@ -110,7 +134,7 @@ fun ServerEditorSheet(
                 ) {
                     Text(if (initial.id.isBlank()) "新建主机" else "编辑主机", style = MaterialTheme.typography.titleLarge, color = AgText)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = onDismiss) { Text("取消", color = AgMuted) }
+                        TextButton(onClick = ::requestDismiss) { Text("取消", color = AgMuted) }
                         Button(
                             onClick = { buildValidatedServer()?.let(onSave) },
                             enabled = draft.host.isNotBlank(),
@@ -202,20 +226,15 @@ fun ServerEditorSheet(
                             }
                         )
                     }
-                    validationError?.let { msg ->
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = AgDanger.copy(alpha = 0.14f),
-                            border = BorderStroke(1.dp, AgDanger),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(msg, color = AgDanger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(11.dp))
-                        }
-                    }
-                    testResult?.let { (ok, msg) ->
-                        val c = if (ok) AgSuccess else AgDanger
-                        Surface(shape = RoundedCornerShape(10.dp), color = c.copy(alpha = 0.14f), border = BorderStroke(1.dp, c), modifier = Modifier.fillMaxWidth()) {
-                            Text(msg, color = c, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(11.dp))
+                }
+                if (validationError != null || testResult != null) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().background(AgPanel).padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        validationError?.let { AgStatusBanner(message = it, color = AgDanger) }
+                        testResult?.let { (ok, msg) ->
+                            AgStatusBanner(message = msg, color = if (ok) AgSuccess else AgDanger)
                         }
                     }
                 }
@@ -245,5 +264,16 @@ fun ServerEditorSheet(
                 }
             }
         }
+    }
+
+    if (confirmDiscard) {
+        AgConfirmDialog(
+            title = "放弃未保存更改",
+            message = "当前主机配置有未保存的修改，确定放弃并关闭？",
+            confirmLabel = "放弃修改",
+            dangerous = true,
+            onConfirm = { confirmDiscard = false; onDismiss() },
+            onDismiss = { confirmDiscard = false }
+        )
     }
 }

@@ -14,11 +14,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.model.AuthType
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
+import com.gravityssh.app.ui.components.AgFilterChip
+import com.gravityssh.app.ui.components.AgPasswordField
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
 
@@ -69,12 +70,10 @@ fun ServerBasicTab(
     )
 
     if (draft.authType == AuthType.PASSWORD || draft.authType == AuthType.BOTH) {
-        AgTextField(
-            draft.password,
-            { onChange(draft.copy(password = it)) },
-            "登录密码",
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+        AgPasswordField(
+            value = draft.password,
+            onValueChange = { onChange(draft.copy(password = it)) },
+            label = "登录密码"
         )
     }
     if (draft.authType == AuthType.KEY || draft.authType == AuthType.BOTH) {
@@ -99,21 +98,10 @@ internal fun ServerChipRow(options: List<Pair<String, String>>, selected: String
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         options.forEach { (id, label) ->
-            FilterChip(
+            AgFilterChip(
                 selected = selected == id,
                 onClick = { onSelect(id) },
-                label = { Text(label) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = AgAccent.copy(alpha = 0.22f),
-                    selectedLabelColor = Color.White,
-                    labelColor = AgMuted
-                ),
-                border = FilterChipDefaults.filterChipBorder(
-                    enabled = true,
-                    selected = selected == id,
-                    borderColor = AgBorder,
-                    selectedBorderColor = AgAccent
-                )
+                label = label
             )
         }
     }

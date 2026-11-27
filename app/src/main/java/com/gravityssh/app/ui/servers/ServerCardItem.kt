@@ -9,7 +9,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -52,7 +51,6 @@ fun ServerCardItem(
                     if (server.jumpHost.mode != JumpMode.NONE) AgBadge("JUMP", AgViolet)
                 }
             }
-            IconButton(onClick = onConnect) { Icon(Icons.Rounded.PlayArrow, "连接", tint = AgCyan, modifier = Modifier.size(22.dp)) }
             IconButton(onClick = onEdit) { Icon(Icons.Rounded.Edit, "编辑", tint = AgMuted, modifier = Modifier.size(18.dp)) }
             IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, "删除", tint = AgDanger.copy(alpha = 0.85f), modifier = Modifier.size(18.dp)) }
         }

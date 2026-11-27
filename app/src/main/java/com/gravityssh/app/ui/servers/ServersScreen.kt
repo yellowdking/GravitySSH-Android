@@ -5,7 +5,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -75,7 +77,7 @@ fun ServersScreen(
             Spacer(Modifier.height(10.dp))
             if (filtered.isEmpty()) {
                 AgEmptyState(
-                    icon = Icons.Rounded.Dns,
+                    icon = AgIcons.Dns,
                     title = if (servers.isEmpty()) "还没有配置任何主机" else "没有匹配的主机",
                     subtitle = if (servers.isEmpty()) "点击右下角新建主机，或在设置中从电脑端同步" else "尝试更改搜索关键字",
                     actionLabel = if (servers.isEmpty()) "添加第一台主机" else null,
