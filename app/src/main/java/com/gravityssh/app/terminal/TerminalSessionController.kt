@@ -60,9 +60,8 @@ class TerminalSessionController(
     fun onRemoteOutput(rawText: String) {
         if (rawText.isEmpty()) return
         synchronized(outputLock) {
-            val combinedCheck = highlighter.peekPending().let { p ->
-                if (p.isEmpty()) rawText else p + rawText
-            }
+            val pendingPrefix = highlighter.peekPending().ifEmpty { parser.pendingEscapePrefix() }
+            val combinedCheck = if (pendingPrefix.isEmpty()) rawText else pendingPrefix + rawText
             val skipHighlight = buffer.isAltScreen || TerminalModes.containsAltScreenEnter(combinedCheck)
             val processed = if (skipHighlight) {
                 val pending = highlighter.flushAndReset()
@@ -101,36 +100,88 @@ class TerminalSessionController(
 
     fun onLocalInput(data: String) {
         if (data.isEmpty()) return
-        val prev = _currentInputLine.value
-        val isBracketedPastePayload = data.startsWith("\u001B[200~") && data.endsWith("\u001B[201~")
-        if (!isBracketedPastePayload && prev.isEmpty() && !lineHasLeadingSpace) {
-            val first = data[0]
-            if (first == ' ' || first == '\t') {
+        var cur = _currentInputLine.value
+        val isBracketedPastePayload = data.length >= 12 &&
+            data.startsWith("\u001B[200~") &&
+            data.endsWith("\u001B[201~")
+
+        if (isBracketedPastePayload) {
+            val inner = data.substring(6, data.length - 6)
+            if (cur.isEmpty() && !lineHasLeadingSpace &&
+                inner.firstOrNull()?.let { it == ' ' || it == '\t' } == true &&
+                inner.none { it == '\r' || it == '\n' }
+            ) {
                 lineHasLeadingSpace = true
             }
+            val next = AutocompleteEngine.applyTerminalInputToLine(cur, data)
+            _currentInputLine.value = next
+            if (next.isEmpty()) {
+                lineHasLeadingSpace = false
+            }
+            return
         }
+
         val hasLineBreak = data.contains('\r') || data.contains('\n')
-        if (!isBracketedPastePayload && hasLineBreak) {
-            val firstBreak = data.indexOfFirst { it == '\r' || it == '\n' }
-            val preBreak = if (firstBreak > 0) data.substring(0, firstBreak) else ""
-            val rawLine = if (preBreak.isNotEmpty()) {
-                AutocompleteEngine.applyTerminalInputToLine(prev, preBreak)
-            } else {
-                prev
+        if (!hasLineBreak) {
+            if (cur.isEmpty() && !lineHasLeadingSpace && (data[0] == ' ' || data[0] == '\t')) {
+                lineHasLeadingSpace = true
             }
-            val hasLeadingSpace = lineHasLeadingSpace ||
-                rawLine.firstOrNull()?.let { it == ' ' || it == '\t' } == true ||
-                (prev.isEmpty() && preBreak.firstOrNull()?.let { it == ' ' || it == '\t' } == true)
-            val committed = rawLine.trim()
-            if (committed.isNotEmpty() && !buffer.isAltScreen && !hasLeadingSpace && !isSensitivePromptActive()) {
-                onCommandCommitted(committed)
+            val next = AutocompleteEngine.applyTerminalInputToLine(cur, data)
+            _currentInputLine.value = next
+            if (data.any { it == '\u0003' || it == '\u0004' || it == '\u0015' }) {
+                lineHasLeadingSpace = false
+            } else if (next.isEmpty() && !(cur.isEmpty() && data.all { it == '\t' })) {
+                lineHasLeadingSpace = false
+            }
+            return
+        }
+
+        var segStart = 0
+        var i = 0
+        val n = data.length
+        while (i < n) {
+            val ch = data[i]
+            if (ch == '\r' || ch == '\n') {
+                val seg = data.substring(segStart, i)
+                val segLeading = lineHasLeadingSpace ||
+                    (cur.isEmpty() && seg.firstOrNull()?.let { it == ' ' || it == '\t' } == true)
+                val rawLine = if (seg.isNotEmpty()) {
+                    AutocompleteEngine.applyTerminalInputToLine(cur, seg)
+                } else {
+                    cur
+                }
+                val hasLeadingSpace = segLeading ||
+                    rawLine.firstOrNull()?.let { it == ' ' || it == '\t' } == true
+                val committed = rawLine.trim()
+                if (committed.isNotEmpty() && !buffer.isAltScreen && !hasLeadingSpace && !isSensitivePromptActive()) {
+                    onCommandCommitted(committed)
+                }
+                cur = ""
+                lineHasLeadingSpace = false
+                if (ch == '\r' && i + 1 < n && data[i + 1] == '\n') {
+                    i += 2
+                } else {
+                    i++
+                }
+                segStart = i
+            } else {
+                i++
             }
         }
-        val next = AutocompleteEngine.applyTerminalInputToLine(prev, data)
-        _currentInputLine.value = next
-        if (hasLineBreak || data.any { it == '\u0003' || it == '\u0004' || it == '\u0015' }) {
-            lineHasLeadingSpace = false
-        } else if (next.isEmpty() && !(prev.isEmpty() && data.all { it == '\t' })) {
+        if (segStart < n) {
+            val tail = data.substring(segStart)
+            if (tail[0] == ' ' || tail[0] == '\t') {
+                lineHasLeadingSpace = true
+            }
+            val next = AutocompleteEngine.applyTerminalInputToLine(cur, tail)
+            _currentInputLine.value = next
+            if (tail.any { it == '\u0003' || it == '\u0004' || it == '\u0015' }) {
+                lineHasLeadingSpace = false
+            } else if (next.isEmpty() && !tail.all { it == '\t' }) {
+                lineHasLeadingSpace = false
+            }
+        } else {
+            _currentInputLine.value = ""
             lineHasLeadingSpace = false
         }
     }
