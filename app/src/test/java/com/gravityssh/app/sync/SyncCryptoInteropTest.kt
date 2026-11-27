@@ -1,8 +1,14 @@
 package com.gravityssh.app.sync
 
 import com.gravityssh.app.InMemoryMasterKeyProvider
+import com.gravityssh.app.model.AuthType
+import com.gravityssh.app.model.BuiltinTemplate
 import com.gravityssh.app.model.CommandShortcut
+import com.gravityssh.app.model.JumpHostConfig
+import com.gravityssh.app.model.JumpMode
 import com.gravityssh.app.model.PairRequestPayload
+import com.gravityssh.app.model.ProxyConfig
+import com.gravityssh.app.model.ProxyType
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
@@ -11,6 +17,8 @@ import com.gravityssh.app.model.SyncReceivePreview
 import com.gravityssh.app.model.SyncSendPollState
 import com.gravityssh.app.vault.VaultCrypto
 import com.gravityssh.app.vault.VaultRepository
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +28,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -501,5 +510,143 @@ class SyncCryptoInteropTest {
         val sendSess5 = senderService.startSend()
         slotState = "" // simulate expired/consumed on relay
         senderService.rejectSend(sendSess5.sessionId, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    }
+
+    @Test
+    fun syncMergePreventsCredentialLeakAndPresetHijack() {
+        val repo = VaultRepository(File(tempFolder.root, "merge-sec.gsv"), VaultCrypto(InMemoryMasterKeyProvider()))
+        repo.open()
+        repo.saveServer(
+            ServerConfig(
+                id = "s-corp",
+                name = "Corp",
+                host = "app.corp.local",
+                port = 22,
+                username = "ops",
+                authType = AuthType.KEY,
+                sshKeyId = "k-corp",
+                proxy = ProxyConfig(ProxyType.SOCKS5, "corp-proxy.local", 1080, "alice", "CORP-PROXY-PW"),
+                jumpHost = JumpHostConfig(
+                    mode = JumpMode.CUSTOM,
+                    host = "corp-jump.local",
+                    port = 22,
+                    username = "bastion",
+                    authType = AuthType.KEY,
+                    password = "CORP-JUMP-PW",
+                    sshKeyId = "k-jump"
+                )
+            )
+        )
+
+        val incoming = SyncBundle(
+            schemaVersion = 1,
+            servers = listOf(
+                ServerConfig(
+                    id = "s-corp",
+                    name = "Corp Changed",
+                    host = "app.corp.local",
+                    port = 22,
+                    username = "ops",
+                    authType = AuthType.PASSWORD,
+                    sshKeyId = "",
+                    proxy = ProxyConfig(ProxyType.SOCKS5, "other-proxy.local", 1080, "alice", ""),
+                    jumpHost = JumpHostConfig(mode = JumpMode.CUSTOM, host = "other-jump.local", port = 22, username = "bastion", password = "", sshKeyId = "")
+                )
+            ),
+            templates = listOf(
+                BuiltinTemplate(id = "tpl-bbr", presetId = "", name = "开启 BBR 网络加速", command = "echo hijacked"),
+                BuiltinTemplate(id = "custom-dup", presetId = "fake-preset-id", name = "Fake Preset", command = "echo fake")
+            )
+        )
+
+        repo.importSyncBundle(incoming, SyncImportMode.MERGE)
+        val updated = repo.state.value.data.servers.first { it.id == "s-corp" }
+        assertEquals("", updated.proxy.password)
+        assertEquals("", updated.jumpHost.password)
+        assertEquals("", updated.jumpHost.sshKeyId)
+        assertEquals("", updated.sshKeyId)
+
+        val bbr = repo.state.value.data.templates.first { it.presetId == "tpl-bbr" }
+        assertFalse(bbr.command.contains("hijacked"))
+        val fake = repo.state.value.data.templates.first { it.name == "Fake Preset" }
+        assertEquals("", fake.presetId)
+
+        // Overwrite mode also strips invalid/duplicate presetId
+        repo.importSyncBundle(
+            SyncBundle(
+                schemaVersion = 1,
+                templates = listOf(
+                    BuiltinTemplate(id = "t1", presetId = "tpl-bbr", name = "BBR 1", command = "echo 1"),
+                    BuiltinTemplate(id = "t2", presetId = "tpl-bbr", name = "BBR 2", command = "echo 2"),
+                    BuiltinTemplate(id = "t3", presetId = "not-real", name = "Bad", command = "echo 3")
+                )
+            ),
+            SyncImportMode.OVERWRITE
+        )
+        val tpls = repo.state.value.data.templates
+        assertEquals(1, tpls.count { it.presetId == "tpl-bbr" })
+        assertEquals("", tpls.first { it.name == "Bad" }.presetId)
+    }
+
+    @Test
+    fun syncServiceClockSkewGraceAndLockAbortToctou() = runTest {
+        val repo = VaultRepository(File(tempFolder.root, "toctou.gsv"), VaultCrypto(InMemoryMasterKeyProvider()))
+        repo.open()
+        assertTrue(repo.setMasterPassword("", "pw123").isSuccess)
+
+        val pairInitEntered = CompletableDeferred<Unit>()
+        val pairInitRelease = CompletableDeferred<Unit>()
+        val cancelCalls = AtomicInteger(0)
+        val approveCalls = AtomicInteger(0)
+        // Simulate relay clock 100s behind local clock (within 135s skew grace)
+        val skewedExpiresIso = Instant.ofEpochMilli(System.currentTimeMillis() - 100_000L).toString()
+
+        val relay = object : SyncRelayClient() {
+            var blockNextInit = false
+
+            override suspend fun pairInit(relayUrl: String, channelId: String, senderToken: String, ttlSeconds: Int): PairInitResponse {
+                if (blockNextInit) {
+                    pairInitEntered.complete(Unit)
+                    pairInitRelease.await()
+                }
+                return PairInitResponse(ok = true, expiresAt = skewedExpiresIso)
+            }
+
+            override suspend fun pairPoll(relayUrl: String, channelId: String, senderToken: String): PairPollResponse =
+                PairPollResponse(state = "waiting")
+
+            override suspend fun pairApprove(
+                relayUrl: String,
+                channelId: String,
+                senderToken: String,
+                requestId: String,
+                salt: String,
+                nonce: String,
+                ciphertext: String
+            ) {
+                approveCalls.incrementAndGet()
+            }
+
+            override suspend fun pairCancel(relayUrl: String, channelId: String, senderToken: String) {
+                cancelCalls.incrementAndGet()
+            }
+        }
+
+        val service = SyncService(repo, relay)
+
+        // 1. Session within 135s clock skew grace must not be pruned prematurely
+        val skewedSess = service.startSend()
+        assertEquals(SyncSendPollState.WAITING, service.pollSend(skewedSess.sessionId).state)
+
+        // 2. Locking vault mid-pairInit aborts startSend and triggers pairCancel
+        relay.blockNextInit = true
+        val pendingStart = async { runCatching { service.startSend() } }
+        pairInitEntered.await()
+        repo.lockNow()
+        pairInitRelease.complete(Unit)
+        val startRes = pendingStart.await()
+        assertTrue(startRes.exceptionOrNull() is SecurityException)
+        assertTrue(cancelCalls.get() >= 1)
+        assertEquals(0, approveCalls.get())
     }
 }

@@ -2,6 +2,7 @@ package com.gravityssh.app.vault
 
 import com.gravityssh.app.InMemoryMasterKeyProvider
 import com.gravityssh.app.model.AuthType
+import com.gravityssh.app.model.BuiltinOpsPresets
 import com.gravityssh.app.model.BuiltinTemplate
 import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.model.JumpHostConfig
@@ -9,9 +10,12 @@ import com.gravityssh.app.model.JumpMode
 import com.gravityssh.app.model.ProxyConfig
 import com.gravityssh.app.model.ProxyType
 import com.gravityssh.app.model.SSHKeyRecord
+import com.gravityssh.app.model.SSH_PORT_PLACEHOLDER
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
+import com.gravityssh.app.model.isSshPortTemplate
+import com.gravityssh.app.model.resolveSshPortCommand
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -387,6 +391,125 @@ class VaultRepositoryTest {
         assertTrue(mgr2.knownHosts.value.isEmpty())
         assertNotNull(mgr2.lastError.value)
         assertTrue(File(tempFolder.root, "known_hosts.json.corrupt").exists())
+    }
+
+    @Test
+    fun keystoreLossOnPasswordAndBiometricVaultSetsStartupErrorAndRecovers() {
+        val pwFile = File(tempFolder.root, "vault-ks-pw.gsv")
+        val kpOriginal = InMemoryMasterKeyProvider()
+        val kpReplaced = InMemoryMasterKeyProvider()
+
+        val repo = createRepo(pwFile, kpOriginal)
+        repo.open()
+        assertTrue(repo.setMasterPassword("", "s3cr3t!").isSuccess)
+        repo.saveServer(ServerConfig(id = "s1", name = "Prod", host = "10.0.0.1"))
+        repo.lockNow()
+
+        // Wrong password with intact keystore -> plain SecurityException, startupError stays null
+        val intactRepo = createRepo(pwFile, kpOriginal)
+        intactRepo.open()
+        val wrongPwRes = intactRepo.unlock("wrong-pw")
+        assertTrue(wrongPwRes.isFailure)
+        assertFalse(wrongPwRes.exceptionOrNull() is VaultKeystoreException)
+        assertNull(intactRepo.state.value.lockState.startupError)
+
+        // Replaced keystore key on password vault -> VaultKeystoreException + startupError populated
+        val lostKeyPwRepo = createRepo(pwFile, kpReplaced)
+        lostKeyPwRepo.open()
+        assertTrue(lostKeyPwRepo.state.value.lockState.locked)
+        assertTrue(lostKeyPwRepo.state.value.lockState.hasPassword)
+        val ksPwRes = lostKeyPwRepo.unlock("s3cr3t!")
+        assertTrue(ksPwRes.isFailure)
+        assertTrue(ksPwRes.exceptionOrNull() is VaultKeystoreException)
+        assertNotNull(lostKeyPwRepo.state.value.lockState.startupError)
+        assertTrue(lostKeyPwRepo.resetCorruptedVault().isSuccess)
+        assertFalse(lostKeyPwRepo.state.value.lockState.locked)
+        assertNull(lostKeyPwRepo.state.value.lockState.startupError)
+
+        // Replaced keystore key on biometric vault -> VaultKeystoreException + startupError populated
+        val bioFile = File(tempFolder.root, "vault-ks-bio.gsv")
+        val bioRepo = createRepo(bioFile, kpOriginal)
+        bioRepo.open()
+        bioRepo.updateSettings { it.copy(biometricLockEnabled = true) }
+        bioRepo.lockNow()
+
+        val lostKeyBioRepo = createRepo(bioFile, kpReplaced)
+        lostKeyBioRepo.open()
+        assertTrue(lostKeyBioRepo.state.value.lockState.biometricEnabled)
+        val ksBioRes = lostKeyBioRepo.unlockWithBiometric()
+        assertTrue(ksBioRes.isFailure)
+        assertTrue(ksBioRes.exceptionOrNull() is VaultKeystoreException)
+        assertNotNull(lostKeyBioRepo.state.value.lockState.startupError)
+        assertTrue(lostKeyBioRepo.resetCorruptedVault().isSuccess)
+        assertFalse(lostKeyBioRepo.state.value.lockState.locked)
+    }
+
+    @Test
+    fun masterPasswordRejectsWhitespaceAndEmptyCreationWhileAllowingRemoval() {
+        val repo = createRepo()
+        repo.open()
+
+        assertTrue(repo.setMasterPassword("", "").isFailure)
+        assertTrue(repo.setMasterPassword("", "   ").isFailure)
+        assertTrue(repo.setMasterPassword("", "\t \n").isFailure)
+        assertFalse(repo.state.value.lockState.hasPassword)
+
+        assertTrue(repo.setMasterPassword("", "valid-pw").isSuccess)
+        assertTrue(repo.state.value.lockState.hasPassword)
+
+        // Cannot replace existing password with whitespace-only
+        assertTrue(repo.setMasterPassword("valid-pw", "   ").isFailure)
+        assertTrue(repo.state.value.lockState.hasPassword)
+
+        // Removing existing password with empty string still succeeds
+        assertTrue(repo.setMasterPassword("valid-pw", "").isSuccess)
+        assertFalse(repo.state.value.lockState.hasPassword)
+    }
+
+    @Test
+    fun lockNowIsIdempotentAndDoesNotRefireCallbacks() {
+        val repo = createRepo()
+        repo.open()
+        assertTrue(repo.setMasterPassword("", "pw-idempotent").isSuccess)
+
+        val callbacks = AtomicInteger(0)
+        repo.addOnLockListener { callbacks.incrementAndGet() }
+
+        repo.lockNow()
+        assertTrue(repo.state.value.lockState.locked)
+        assertEquals(1, callbacks.get())
+
+        // Calling lockNow again while already locked must not re-fire callbacks
+        repo.lockNow()
+        assertTrue(repo.state.value.lockState.locked)
+        assertEquals(1, callbacks.get())
+    }
+
+    @Test
+    fun builtinTemplatesUseSubshellsAndHardenedSshPortRollback() {
+        val all = BuiltinOpsPresets.all()
+        assertEquals(6, all.size)
+        all.forEach { tpl ->
+            val trimmed = tpl.command.trim()
+            assertTrue("${tpl.id} must run inside a subshell", trimmed.startsWith("(") && trimmed.endsWith(")"))
+        }
+
+        val sshPortTpl = all.first { it.presetId == "tpl-ssh-port" }
+        assertTrue(isSshPortTemplate(sshPortTpl))
+        assertFalse(sshPortTpl.command.contains("read NEW_PORT"))
+        assertTrue(sshPortTpl.command.contains(SSH_PORT_PLACEHOLDER))
+        assertTrue(sshPortTpl.command.contains("sudo touch /run/gssh_port_pending"))
+        assertTrue(sshPortTpl.command.contains("sudo nohup sh -c"))
+
+        val resolved = resolveSshPortCommand(sshPortTpl.command, 2222)
+        assertFalse(resolved.contains(SSH_PORT_PLACEHOLDER))
+        assertTrue(resolved.contains("NEW_PORT=\"2222\""))
+
+        // Legacy template with interactive read NEW_PORT also resolves safely into a subshell
+        val legacyResolved = resolveSshPortCommand("printf \"port: \"; read NEW_PORT\necho \$NEW_PORT", 22022)
+        assertFalse(legacyResolved.contains("read NEW_PORT"))
+        assertTrue(legacyResolved.contains("NEW_PORT=\"22022\""))
+        assertTrue(legacyResolved.trim().startsWith("(") && legacyResolved.trim().endsWith(")"))
     }
 
     private fun sealV1ForTest(
