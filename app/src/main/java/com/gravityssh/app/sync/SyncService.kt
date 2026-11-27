@@ -40,7 +40,10 @@ class SyncService(
         var bundle: SyncBundle?,
         val expiresAtEpochMs: Long,
         var approving: Boolean = false,
-        var approved: Boolean = false
+        var approved: Boolean = false,
+        var cachedRequestKey: String? = null,
+        var cachedRequestPayload: PairRequestPayload? = null,
+        var cachedFormattedRecvCode: String? = null
     )
 
     private data class PendingReceiveSession(
@@ -159,7 +162,7 @@ class SyncService(
             qrText = SyncCrypto.buildQrUri(code),
             expiresAt = resp.expiresAt.ifEmpty { Instant.ofEpochMilli(expiresMs).toString() },
             expiresAtEpochMs = expiresMs,
-            relayUrl = url,
+            relayUrl = SyncConfig.parseRelayEndpoint(url).baseUrl,
             serverCount = bundle.servers.size,
             keyCount = bundle.sshKeys.size,
             shortcutCount = bundle.shortcuts.size,
@@ -191,9 +194,31 @@ class SyncService(
                 }
             }
             "requested" -> {
-                val nowApproved = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
-                if (wasApproved || nowApproved) {
+                val requestCacheKey = "${poll.requestId}|${poll.salt}|${poll.nonce}|${poll.ciphertext}"
+                val cachedHit: Triple<Boolean, PairRequestPayload?, String?> = synchronized(sessionLock) {
+                    val s = pendingSends[sessionId]
+                    when {
+                        wasApproved || s?.approved == true -> Triple(true, null, null)
+                        s != null && poll.requestId.isNotBlank() && s.cachedRequestKey == requestCacheKey &&
+                            s.cachedRequestPayload != null && s.cachedFormattedRecvCode != null ->
+                            Triple(false, s.cachedRequestPayload, s.cachedFormattedRecvCode)
+                        else -> Triple(false, null, null)
+                    }
+                }
+                if (cachedHit.first) {
                     return SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
+                }
+                val cachedPayload = cachedHit.second
+                val cachedCode = cachedHit.third
+                if (cachedPayload != null && cachedCode != null) {
+                    return SyncSendPollResult(
+                        state = SyncSendPollState.REQUESTED,
+                        requestId = poll.requestId,
+                        receiverCode = cachedCode,
+                        receiverDevice = cachedPayload.receiverDevice.ifBlank { "未知设备" },
+                        receiverPlatform = cachedPayload.receiverPlatform.ifBlank { "unknown" },
+                        requestedAt = cachedPayload.requestedAt
+                    )
                 }
                 val decoded = runCatching {
                     val payload = withContext(Dispatchers.Default) {
@@ -205,7 +230,19 @@ class SyncService(
                 }
                 decoded.fold(
                     onSuccess = { (payload, formattedCode) ->
-                        val approvedDuringDecrypt = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
+                        val approvedDuringDecrypt = synchronized(sessionLock) {
+                            val s = pendingSends[sessionId]
+                            if (s?.approved == true) {
+                                true
+                            } else {
+                                if (s != null) {
+                                    s.cachedRequestKey = requestCacheKey
+                                    s.cachedRequestPayload = payload
+                                    s.cachedFormattedRecvCode = formattedCode
+                                }
+                                false
+                            }
+                        }
                         if (approvedDuringDecrypt) {
                             SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
                         } else {
@@ -450,7 +487,7 @@ class SyncService(
             receiverCode = formattedRecv,
             sendCode = formattedSend,
             requestId = requestId,
-            relayUrl = url,
+            relayUrl = SyncConfig.parseRelayEndpoint(url).baseUrl,
             expiresAt = resp.expiresAt.ifEmpty { Instant.ofEpochMilli(expiresMs).toString() },
             expiresAtEpochMs = expiresMs
         )
