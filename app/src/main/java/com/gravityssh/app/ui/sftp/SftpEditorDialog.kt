@@ -103,8 +103,11 @@ fun SftpEditorDialog(
                             onClick = {
                                 saving = true
                                 scope.launch {
-                                    onSave(content)
-                                    saving = false
+                                    try {
+                                        onSave(content)
+                                    } finally {
+                                        saving = false
+                                    }
                                 }
                             },
                             enabled = !saving,

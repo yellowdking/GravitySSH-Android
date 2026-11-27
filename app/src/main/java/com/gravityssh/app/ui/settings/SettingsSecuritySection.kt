@@ -19,11 +19,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.components.BiometricHelper
+import com.gravityssh.app.ui.setBiometricLockEnabled
 import com.gravityssh.app.ui.setMasterPassword
 import com.gravityssh.app.ui.theme.*
-import com.gravityssh.app.ui.updateSettings
 
 @Composable
 fun SettingsSecuritySection(viewModel: AppViewModel) {
@@ -31,9 +32,11 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
     val knownHosts by viewModel.knownHosts.collectAsStateWithLifecycle()
+    val knownHostsError by viewModel.knownHostsError.collectAsStateWithLifecycle()
     val lockState = vaultState.lockState
     val settings = vaultState.data.settings
     var canBiometric by remember(context) { mutableStateOf(BiometricHelper.canAuthenticate(context)) }
+    var biometricBusy by remember { mutableStateOf(false) }
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
@@ -60,28 +63,37 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
         AgSwitchRow(
             label = "生物识别指纹解锁",
             checked = !lockState.hasPassword && settings.biometricLockEnabled,
-            enabled = !lockState.hasPassword && (canBiometric || settings.biometricLockEnabled)
+            enabled = !biometricBusy && !lockState.hasPassword && (canBiometric || settings.biometricLockEnabled)
         ) { enabled ->
+            if (biometricBusy) return@AgSwitchRow
             if (enabled) {
                 if (!canBiometric) {
-                    viewModel.showToast("设备未开启生物识别或锁屏密码")
+                    viewModel.showToast("设备未开启强生物识别或锁屏密码")
                     return@AgSwitchRow
                 }
                 BiometricHelper.authenticate(
                     context = context,
                     title = "验证身份以开启解锁保护",
-                    subtitle = "请验证指纹、人脸或设备锁屏凭据",
+                    subtitle = "请验证强生物识别或设备锁屏凭据",
                     negativeButtonText = "取消",
+                    cryptoProvider = viewModel.container.vaultRepository.masterKeyProvider,
+                    allowDeviceCredentialFallback = true,
                     onSuccess = {
-                        viewModel.updateSettings(onSuccess = { viewModel.showToast("已开启生物识别锁") }) {
-                            it.copy(biometricLockEnabled = true)
+                        biometricBusy = true
+                        viewModel.setBiometricLockEnabled(true) { res ->
+                            biometricBusy = false
+                            res.onSuccess { viewModel.showToast("已开启生物识别锁") }
+                                .onFailure { viewModel.showToast(it.message ?: "开启生物识别锁失败") }
                         }
                     },
                     onError = { err -> viewModel.showToast("身份验证失败: $err") }
                 )
             } else {
-                viewModel.updateSettings(onSuccess = { viewModel.showToast("已关闭生物识别锁") }) {
-                    it.copy(biometricLockEnabled = false)
+                biometricBusy = true
+                viewModel.setBiometricLockEnabled(false) { res ->
+                    biometricBusy = false
+                    res.onSuccess { viewModel.showToast("已关闭生物识别锁") }
+                        .onFailure { viewModel.showToast(it.message ?: "关闭生物识别锁失败") }
                 }
             }
         }
@@ -123,6 +135,15 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
             }
             if (knownHosts.isNotEmpty()) {
                 TextButton(onClick = { confirmClearKnown = true }) { Text("全部清除", color = AgDanger) }
+            }
+        }
+        knownHostsError?.let { err ->
+            Spacer(Modifier.height(8.dp))
+            AgStatusBanner(message = err, color = AgWarning)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { viewModel.dismissKnownHostsError() }) {
+                    Text("知道了", color = AgMuted, fontSize = 12.sp)
+                }
             }
         }
         knownHosts.forEach { entry ->

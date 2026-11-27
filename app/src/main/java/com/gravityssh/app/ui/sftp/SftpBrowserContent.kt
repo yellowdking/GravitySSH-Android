@@ -1,10 +1,12 @@
 package com.gravityssh.app.ui.sftp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Home
@@ -20,6 +22,7 @@ import com.gravityssh.app.model.SFTPFileEntry
 import com.gravityssh.app.model.TransferProgress
 import com.gravityssh.app.ui.components.AgEmptyState
 import com.gravityssh.app.ui.components.AgIcons
+import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.theme.*
 
 @Composable
@@ -29,6 +32,7 @@ internal fun SftpBrowserContent(
     canNavigateUp: Boolean,
     showHidden: Boolean,
     loading: Boolean,
+    hasLoadedOnce: Boolean,
     errorMsg: String?,
     transfer: TransferProgress?,
     entries: List<SFTPFileEntry>,
@@ -36,6 +40,8 @@ internal fun SftpBrowserContent(
     onUp: () -> Unit,
     onHome: () -> Unit,
     onRefresh: () -> Unit,
+    onRetryError: () -> Unit,
+    onDismissError: () -> Unit,
     onToggleHidden: () -> Unit,
     onMkdir: () -> Unit,
     onUpload: () -> Unit,
@@ -112,10 +118,48 @@ internal fun SftpBrowserContent(
         }
         HorizontalDivider(color = AgBorder)
 
+        if (errorMsg != null && hasLoadedOnce) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AgPanel)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                AgStatusBanner(message = errorMsg, color = AgDanger)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onRetryError) { Text("重试", color = AgCyan, fontSize = 12.sp) }
+                    TextButton(onClick = onDismissError) { Text("关闭", color = AgMuted, fontSize = 12.sp) }
+                }
+            }
+            HorizontalDivider(color = AgBorder)
+        }
+
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = AgAccent) }
-            errorMsg != null -> Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
-                Text(errorMsg, color = AgDanger, style = MaterialTheme.typography.bodyMedium)
+            errorMsg != null && !hasLoadedOnce -> Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(errorMsg, color = AgDanger, style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(
+                            onClick = onRetryError,
+                            border = BorderStroke(1.dp, AgCyan),
+                            shape = RoundedCornerShape(10.dp)
+                        ) { Text("重试", color = AgCyan) }
+                        OutlinedButton(
+                            onClick = onHome,
+                            border = BorderStroke(1.dp, AgBorder),
+                            shape = RoundedCornerShape(10.dp)
+                        ) { Text("主目录", color = AgText) }
+                    }
+                }
             }
             entries.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 AgEmptyState(
