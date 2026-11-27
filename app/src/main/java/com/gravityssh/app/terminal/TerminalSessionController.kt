@@ -22,6 +22,8 @@ class TerminalSessionController(
     @Volatile
     private var inputSender: (String) -> Unit = onSendInput
 
+    private val outputLock = Any()
+
     private val parser = AnsiParser(
         buffer = buffer,
         onCwdChanged = onCwdDetected,
@@ -54,35 +56,67 @@ class TerminalSessionController(
 
     fun onRemoteOutput(rawText: String) {
         if (rawText.isEmpty()) return
-        val skipHighlight = buffer.isAltScreen || TerminalModes.containsAltScreenEnter(rawText)
-        val processed = if (skipHighlight) {
-            val pending = highlighter.flushPending()
-            highlighter.reset()
-            if (pending.isEmpty()) rawText else pending + rawText
-        } else if (keywordHighlightEnabled()) {
-            highlighter.highlight(rawText)
-        } else {
-            val pending = highlighter.flushPending()
-            if (pending.isEmpty()) rawText else pending + rawText
+        synchronized(outputLock) {
+            val combinedCheck = highlighter.peekPending().let { p ->
+                if (p.isEmpty()) rawText else p + rawText
+            }
+            val skipHighlight = buffer.isAltScreen || TerminalModes.containsAltScreenEnter(combinedCheck)
+            val processed = if (skipHighlight) {
+                val pending = highlighter.flushAndReset()
+                if (pending.isEmpty()) rawText else pending + rawText
+            } else if (keywordHighlightEnabled()) {
+                highlighter.highlight(rawText)
+            } else {
+                val pending = highlighter.flushPending()
+                if (pending.isEmpty()) rawText else pending + rawText
+            }
+            if (processed.isNotEmpty()) {
+                parser.feed(processed)
+                syncModeFlows()
+                notifyFrameUpdated(immediate = false)
+            }
         }
-        if (processed.isNotEmpty()) {
-            parser.feed(processed)
+    }
+
+    fun resetForReconnect(notice: String? = null) {
+        synchronized(outputLock) {
+            highlighter.reset()
+            buffer.synchronizedBuffer {
+                parser.reset()
+            }
+            buffer.resetForReconnect()
+            _currentInputLine.value = ""
             syncModeFlows()
-            notifyFrameUpdated(immediate = false)
+            if (!notice.isNullOrEmpty()) {
+                parser.feed(notice)
+                syncModeFlows()
+            }
+            notifyFrameUpdated(immediate = true)
         }
     }
 
     fun onLocalInput(data: String) {
         if (data.isEmpty()) return
         val prev = _currentInputLine.value
-        if (data.contains('\r') || data.contains('\n')) {
-            val committed = prev.trim()
-            if (committed.isNotEmpty() && !buffer.isAltScreen) {
+        val isBracketedPastePayload = data.startsWith("\u001B[200~") && data.endsWith("\u001B[201~")
+        if (!isBracketedPastePayload && (data.contains('\r') || data.contains('\n'))) {
+            val firstBreak = data.indexOfFirst { it == '\r' || it == '\n' }
+            val rawLine = if (firstBreak > 0) {
+                AutocompleteEngine.applyTerminalInputToLine(prev, data.substring(0, firstBreak))
+            } else {
+                prev
+            }
+            val hasLeadingSpace = rawLine.firstOrNull()?.let { it == ' ' || it == '\t' } == true
+            val committed = rawLine.trim()
+            if (committed.isNotEmpty() && !buffer.isAltScreen && !hasLeadingSpace && !isSensitivePromptActive()) {
                 onCommandCommitted(committed)
             }
         }
         _currentInputLine.value = AutocompleteEngine.applyTerminalInputToLine(prev, data)
     }
+
+    private fun isSensitivePromptActive(): Boolean =
+        isSensitivePromptText(buffer.currentPromptContext())
 
     fun resize(cols: Int, rows: Int) {
         buffer.resize(cols, rows)
@@ -93,6 +127,8 @@ class TerminalSessionController(
     fun snapshot(scrollOffset: Int = 0): TerminalSnapshot = buffer.snapshot(scrollOffset)
 
     fun extractPlainText(scrollOffset: Int = 0): String = buffer.extractPlainText(scrollOffset)
+
+    fun isBracketedPasteEnabled(): Boolean = buffer.bracketedPaste
 
     fun isAlternateScreen(): Boolean = buffer.isAltScreen
 
@@ -161,8 +197,16 @@ class TerminalSessionController(
 
     companion object {
         private const val FRAME_COALESCE_NS = 16_000_000L
+        private val SENSITIVE_PROMPT_RE = Regex(
+            "(?i)(?:password|passphrase|passcode|passwd|pin\\s*code|\\bpin\\b|otp|one[- ]?time|2fa|two[- ]?factor|mfa|totp|authenticator|verification\\s*code|auth(?:entication)?\\s*code|security\\s*code|token|secret|密码|口令|动态码|验证码)[^\\r\\n]{0,80}[:：?]\\s*$"
+        )
         private val frameFlushExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "TerminalFrameCoalescer").apply { isDaemon = true }
+        }
+
+        internal fun isSensitivePromptText(text: String): Boolean {
+            if (text.isBlank()) return false
+            return SENSITIVE_PROMPT_RE.containsMatchIn(text.trimEnd())
         }
     }
 }

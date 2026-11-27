@@ -29,9 +29,11 @@ object TerminalSelectionHelper {
     private const val WORD_EXTRA = "_-./:@~+=%?&#"
     private val ZERO = TextSelection(CellPos(0, 0), CellPos(0, 0))
 
-    private fun isBlank(ch: Char) = ch == ' ' || ch == '\u0000'
-    private fun isWord(ch: Char) = ch.isLetterOrDigit() || ch in WORD_EXTRA
-    private fun chAt(line: Array<TerminalCell>, c: Int) = if (c in line.indices) line[c].ch else ' '
+    private fun isBlankCp(cp: Int): Boolean = cp == ' '.code || cp == 0
+    private fun isWordCp(cp: Int): Boolean =
+        Character.isLetterOrDigit(cp) || (cp in 0..0x7F && cp.toChar() in WORD_EXTRA)
+    private fun cpAt(line: Array<TerminalCell>, c: Int): Int = if (c in line.indices) line[c].codePoint else ' '.code
+    private fun isBlankAt(line: Array<TerminalCell>, c: Int): Boolean = if (c in line.indices) line[c].isBlank else true
     private fun isContAt(line: Array<TerminalCell>, c: Int) = c in line.indices && line[c].isContinuation
     private fun isWideAt(line: Array<TerminalCell>, c: Int) = c in line.indices && line[c].isWide
     private fun snapToLead(line: Array<TerminalCell>, c: Int): Int =
@@ -39,11 +41,11 @@ object TerminalSelectionHelper {
 
     private fun expand(line: Array<TerminalCell>, maxC: Int, r: Int, rawC: Int): TextSelection {
         val c = snapToLead(line, rawC)
-        val m: (Char) -> Boolean = if (isWord(chAt(line, c))) ::isWord else { ch -> !isBlank(ch) && !isWord(ch) }
+        val m: (Int) -> Boolean = if (isWordCp(cpAt(line, c))) ::isWordCp else { cp -> !isBlankCp(cp) && !isWordCp(cp) }
         var l = c
         while (l > 0) {
             val prev = snapToLead(line, l - 1)
-            if (!m(chAt(line, prev))) break
+            if (isBlankAt(line, prev) || !m(cpAt(line, prev))) break
             l = prev
         }
         var ri = c
@@ -54,7 +56,7 @@ object TerminalSelectionHelper {
                 ri = next
                 continue
             }
-            if (!m(chAt(line, next))) break
+            if (isBlankAt(line, next) || !m(cpAt(line, next))) break
             ri = next
             if (isWideAt(line, ri) && ri + 1 <= maxC && isContAt(line, ri + 1)) ri++
         }
@@ -65,15 +67,15 @@ object TerminalSelectionHelper {
         if (snapshot.lines.isEmpty() || snapshot.cols <= 0) return ZERO
         val r = row.coerceIn(snapshot.lines.indices); val maxC = snapshot.cols - 1
         val c = snapToLead(snapshot.lines[r], col.coerceIn(0, maxC)); val line = snapshot.lines[r]
-        if (!isBlank(chAt(line, c))) return expand(line, maxC, r, c)
+        if (!isBlankAt(line, c)) return expand(line, maxC, r, c)
         for (d in 1..2) {
             if (c - d >= 0) {
                 val lc = snapToLead(line, c - d)
-                if (!isBlank(chAt(line, lc))) return expand(line, maxC, r, lc)
+                if (!isBlankAt(line, lc)) return expand(line, maxC, r, lc)
             }
             if (c + d <= maxC) {
                 val rc = snapToLead(line, c + d)
-                if (!isBlank(chAt(line, rc))) return expand(line, maxC, r, rc)
+                if (!isBlankAt(line, rc)) return expand(line, maxC, r, rc)
             }
         }
         return selectLine(snapshot, r)
@@ -86,7 +88,7 @@ object TerminalSelectionHelper {
         var first = -1; var last = -1
         for (c in 0 until limit) {
             if (line[c].isContinuation) continue
-            if (!isBlank(line[c].ch)) {
+            if (!line[c].isBlank) {
                 if (first < 0) first = c
                 last = if (line[c].isWide && c + 1 < limit && line[c + 1].isContinuation) c + 1 else c
             }
@@ -103,7 +105,7 @@ object TerminalSelectionHelper {
             val limit = minOf(snapshot.cols, line.size)
             for (c in 0 until limit) {
                 if (line[c].isContinuation) continue
-                if (!isBlank(line[c].ch)) {
+                if (!line[c].isBlank) {
                     val pStart = CellPos(r, c)
                     val endCol = if (line[c].isWide && c + 1 < limit && line[c + 1].isContinuation) c + 1 else c
                     if (first == null) first = pStart
@@ -122,10 +124,15 @@ object TerminalSelectionHelper {
         for (r in s.row.coerceAtLeast(0)..e.row.coerceAtMost(snapshot.lines.lastIndex)) {
             val range = selection.colRangeForRow(r, snapshot.cols) ?: continue
             val line = snapshot.lines[r]; buf.setLength(0)
-            for (c in range) {
-                if (c in line.indices && line[c].isContinuation) continue
-                val ch = chAt(line, c)
-                buf.append(if (ch == '\u0000') ' ' else ch)
+            val startCol = snapToLead(line, range.first)
+            for (c in startCol..range.last) {
+                if (c !in line.indices) {
+                    buf.append(' ')
+                    continue
+                }
+                val cell = line[c]
+                if (cell.isContinuation) continue
+                cell.appendTo(buf)
             }
             var end = buf.length; while (end > 0 && buf[end - 1] == ' ') end--
             if (!first) out.append('\n'); first = false

@@ -6,6 +6,11 @@ import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
+class VaultKeystoreException(
+    message: String,
+    cause: Throwable? = null
+) : SecurityException(message, cause)
+
 class CachedPasswordKey internal constructor(
     salt: ByteArray,
     keyBytes: ByteArray
@@ -111,8 +116,15 @@ class VaultCrypto(
             VERSION_V2 -> buildOuterAadV2(header)
             else -> throw IllegalArgumentException("Unsupported vault version: $version")
         }
-        val masterKey = masterKeyProvider.getOrCreateKey()
-        val innerPayload = CryptoUtils.aesGcmDecrypt(masterKey, outerIv, outerCt, outerAad)
+        val innerPayload = try {
+            val masterKey = masterKeyProvider.getOrCreateKey()
+            CryptoUtils.aesGcmDecrypt(masterKey, outerIv, outerCt, outerAad)
+        } catch (e: Exception) {
+            throw VaultKeystoreException(
+                "系统密钥不可用或已失效（可能是系统重置、备份恢复或密钥库受损），无法解密本地保险库",
+                e
+            )
+        }
 
         if (mode != MODE_PASSWORD) return innerPayload to null
 

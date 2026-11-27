@@ -1,5 +1,29 @@
 package com.gravityssh.app.model
 
+const val SSH_PORT_PLACEHOLDER = "__NEW_SSH_PORT__"
+
+fun isSshPortTemplate(tpl: BuiltinTemplate): Boolean =
+    tpl.presetId == "tpl-ssh-port" ||
+        tpl.id == "tpl-ssh-port" ||
+        tpl.command.contains(SSH_PORT_PLACEHOLDER) ||
+        tpl.command.contains("read NEW_PORT")
+
+fun resolveSshPortCommand(command: String, port: Int): String {
+    val portStr = port.toString()
+    var resolved = command.replace(SSH_PORT_PLACEHOLDER, portStr)
+    if (resolved == command && resolved.contains("read NEW_PORT")) {
+        resolved = resolved.replace(
+            Regex("""[^\n]*read\s+NEW_PORT"""),
+            "NEW_PORT=\"$portStr\""
+        )
+        val trimmed = resolved.trim()
+        if (!trimmed.startsWith("(")) {
+            resolved = "(\n$trimmed\n)"
+        }
+    }
+    return resolved
+}
+
 internal fun extraPresets(): List<BuiltinTemplate> = listOf(
     BuiltinTemplate(
         id = "tpl-docker",
@@ -9,6 +33,7 @@ internal fun extraPresets(): List<BuiltinTemplate> = listOf(
         description = "安装 Docker Engine 与 Compose 插件，设置开机自启并验证版本",
         safetyNote = "已安装 Docker 时直接显示版本与状态，不重复覆盖",
         command = """
+(
 if command -v docker >/dev/null 2>&1; then
   echo "Docker 已安装：${'$'}(docker --version)"
 else
@@ -16,6 +41,7 @@ else
 fi
 sudo systemctl enable --now docker 2>/dev/null || true
 docker --version && docker compose version
+)
         """.trimIndent()
     ),
     BuiltinTemplate(
@@ -26,9 +52,10 @@ docker --version && docker compose version
         description = "新增新端口并保留旧端口、放行防火墙、语法校验后重载；10 分钟未确认自动回滚",
         safetyNote = "防失联机制：请先用新端口测试连接成功后再执行回显的取消回滚命令",
         command = """
-printf "请输入新的 SSH 端口 (1024-65535): "; read NEW_PORT
+(
+NEW_PORT="$SSH_PORT_PLACEHOLDER"
 case "${'$'}NEW_PORT" in ''|*[!0-9]*) echo "端口必须是数字"; exit 1 ;; esac
-[ "${'$'}NEW_PORT" -lt 1024 ] || [ "${'$'}NEW_PORT" -gt 65535 ] && { echo "建议使用 1024-65535 之间的端口"; exit 1; }
+if [ "${'$'}NEW_PORT" -lt 1024 ] || [ "${'$'}NEW_PORT" -gt 65535 ]; then echo "建议使用 1024-65535 之间的端口"; exit 1; fi
 BAK="/etc/ssh/sshd_config.bak.${'$'}(date +%s)"
 sudo cp -a /etc/ssh/sshd_config "${'$'}BAK"
 OLD_PORT=${'$'}(sudo sshd -T 2>/dev/null | awk '/^port /{print ${'$'}2; exit}')
@@ -43,10 +70,11 @@ command -v ufw >/dev/null 2>&1 && sudo ufw allow "${'$'}{NEW_PORT}/tcp" >/dev/nu
 command -v firewall-cmd >/dev/null 2>&1 && sudo firewall-cmd --permanent --add-port="${'$'}{NEW_PORT}/tcp" >/dev/null 2>&1 && sudo firewall-cmd --reload >/dev/null 2>&1 || true
 sudo systemctl reload sshd 2>/dev/null || sudo systemctl reload ssh 2>/dev/null || sudo service ssh reload
 echo "✓ 已同时监听旧端口 ${'$'}{OLD_PORT} 与新端口 ${'$'}{NEW_PORT}（备份: ${'$'}{BAK}）"
-(sleep 600 && [ -f /tmp/.gssh_port_pending ] && sudo rm -f /etc/ssh/sshd_config.d/99-gravityssh-port.conf /tmp/.gssh_port_pending && (sudo systemctl reload sshd 2>/dev/null || sudo systemctl reload ssh 2>/dev/null || true)) >/dev/null 2>&1 &
-touch /tmp/.gssh_port_pending
-echo ">>> 请立即新建会话测试新端口 ${'$'}{NEW_PORT}！确认可连上后执行: rm -f /tmp/.gssh_port_pending"
+sudo touch /run/gssh_port_pending
+sudo nohup sh -c 'sleep 600; if [ -f /run/gssh_port_pending ]; then rm -f /etc/ssh/sshd_config.d/99-gravityssh-port.conf /run/gssh_port_pending; systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || service ssh reload 2>/dev/null || true; fi' </dev/null >/dev/null 2>&1 &
+echo ">>> 请立即新建会话测试新端口 ${'$'}{NEW_PORT}！确认可连上后执行: sudo rm -f /run/gssh_port_pending"
 echo ">>> 10 分钟内未确认将自动回滚至旧端口 ${'$'}{OLD_PORT}。"
+)
         """.trimIndent()
     ),
     BuiltinTemplate(
@@ -57,11 +85,13 @@ echo ">>> 10 分钟内未确认将自动回滚至旧端口 ${'$'}{OLD_PORT}。"
         description = "只读巡检系统内核、负载、内存、磁盘、监听端口与异常服务状态",
         safetyNote = "纯只读巡检命令，不会修改任何系统配置",
         command = """
+(
 echo "=== 主机与内核 ==="; uname -a; uptime
 echo "=== 内存与 SWAP ==="; free -h
 echo "=== 磁盘占用 ==="; df -hT | grep -v tmpfs
 echo "=== 监听端口 ==="; ss -tulpn 2>/dev/null | head -n 25 || netstat -tulpn 2>/dev/null | head -n 25
 echo "=== 异常服务 ==="; systemctl --failed --no-pager 2>/dev/null || true
+)
         """.trimIndent()
     )
 )
