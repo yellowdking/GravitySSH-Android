@@ -16,6 +16,8 @@ import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
 import com.gravityssh.app.model.isSshPortTemplate
 import com.gravityssh.app.model.resolveSshPortCommand
+import com.gravityssh.app.ui.sanitizeUploadDisplayName
+import com.gravityssh.app.ui.sync.isValidGravitySshQrPayload
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -385,12 +387,248 @@ class VaultRepositoryTest {
         assertEquals(listOf("ssh-rsa"), mgr.findExistingAlgorithms("server.local", 22))
         assertNull(mgr.lastError.value)
 
-        // Corrupt known_hosts.json -> reload backs it up instead of silently discarding
+        // Corrupt known_hosts.json -> reload backs it up with timestamp instead of silently discarding
         file.writeText("{not-valid-json")
         val mgr2 = KnownHostsManager(file)
         assertTrue(mgr2.knownHosts.value.isEmpty())
         assertNotNull(mgr2.lastError.value)
-        assertTrue(File(tempFolder.root, "known_hosts.json.corrupt").exists())
+        assertTrue(tempFolder.root.listFiles().orEmpty().any { it.name.startsWith("known_hosts.json.corrupt.") })
+    }
+
+    @Test
+    fun knownHostsRollsBackOnDiskFailureAndPreservesStateOnIoLoadError() {
+        val file = File(tempFolder.root, "kh-rollback.json")
+        val mgr = KnownHostsManager(file)
+        val kp1 = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val kp2 = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+
+        assertTrue(mgr.verify("a.local", 22, kp1.public))
+        assertEquals(1, mgr.knownHosts.value.size)
+
+        // Replace target file with a non-empty directory so atomic move fails deterministically across OSes
+        assertTrue(file.delete())
+        assertTrue(file.mkdir())
+        val blocker = File(file, "blocker.txt").apply { writeText("lock") }
+
+        assertTrue(runCatching { mgr.verify("b.local", 22, kp2.public) }.isFailure)
+        assertEquals(1, mgr.knownHosts.value.size)
+        assertEquals("a.local", mgr.knownHosts.value.single().host)
+        assertNotNull(mgr.lastError.value)
+
+        assertTrue(runCatching { mgr.clearHost("a.local", 22) }.isFailure)
+        assertEquals(1, mgr.knownHosts.value.size)
+
+        assertTrue(runCatching { mgr.clearHostByKey("a.local:22") }.isFailure)
+        assertEquals(1, mgr.knownHosts.value.size)
+
+        assertTrue(runCatching { mgr.clearAll() }.isFailure)
+        assertEquals(1, mgr.knownHosts.value.size)
+
+        // Clean up blocker and verify normal operation + error clearing resumes
+        assertTrue(blocker.delete())
+        assertTrue(file.delete())
+        mgr.clearLastError()
+        assertNull(mgr.lastError.value)
+        assertEquals(1, mgr.clearAll())
+        assertTrue(mgr.knownHosts.value.isEmpty())
+
+        // Transient IOException on load (directory at storageFile) must not move/delete file or allow TOFU
+        val ioDir = File(tempFolder.root, "kh-ioerr.json").apply {
+            mkdir()
+            File(this, "keep").writeText("present")
+        }
+        val mgrIo = KnownHostsManager(ioDir)
+        assertTrue(ioDir.exists())
+        assertNotNull(mgrIo.lastError.value)
+        assertFalse(mgrIo.verify("evil.local", 22, kp1.public))
+    }
+
+    @Test
+    fun vaultInitializedFlagTransitionsOnOpenAndCorruptOpen() {
+        val file = File(tempFolder.root, "vault-init.gsv")
+        val kp = InMemoryMasterKeyProvider()
+        val repo = createRepo(file, kp)
+        assertFalse(repo.state.value.lockState.initialized)
+        assertTrue(repo.state.value.lockState.locked)
+
+        repo.open()
+        assertTrue(repo.state.value.lockState.initialized)
+        assertFalse(repo.state.value.lockState.locked)
+
+        file.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+        val broken = createRepo(file, kp)
+        assertFalse(broken.state.value.lockState.initialized)
+        broken.open()
+        assertTrue(broken.state.value.lockState.initialized)
+        assertTrue(broken.state.value.lockState.locked)
+        assertNotNull(broken.state.value.lockState.startupError)
+    }
+
+    @Test
+    fun cachedPasswordKeyVerifiesConstantTimeWithoutPlaintextRetention() {
+        val file = File(tempFolder.root, "vault-pw-verify.gsv")
+        val kp = InMemoryMasterKeyProvider()
+        val crypto = VaultCrypto(kp)
+        val cached = crypto.deriveForNewPassword("Alpha#123")
+        assertTrue(crypto.verifyPassword("Alpha#123", cached))
+        assertFalse(crypto.verifyPassword("Alpha#124", cached))
+        cached.clear()
+        assertTrue(runCatching { crypto.verifyPassword("Alpha#123", cached) }.isFailure)
+
+        val repo = createRepo(file, kp)
+        repo.open()
+        assertTrue(repo.setMasterPassword("", "Alpha#123").isSuccess)
+        repo.lockNow()
+
+        val repo2 = createRepo(file, kp)
+        repo2.open()
+        assertTrue(repo2.unlock("Alpha#123").isSuccess)
+        assertTrue(repo2.setMasterPassword("WrongOld", "Beta#456").isFailure)
+        assertTrue(repo2.setMasterPassword("Alpha#123", "Beta#456").isSuccess)
+        repo2.lockNow()
+
+        val repo3 = createRepo(file, kp)
+        repo3.open()
+        assertTrue(repo3.unlock("Alpha#123").isFailure)
+        assertTrue(repo3.unlock("Beta#456").isSuccess)
+    }
+
+    @Test
+    fun serverValidationRejectsInvalidProxyJumpKeyCyclesAndAlignsBounds() {
+        val repo = createRepo()
+        repo.open()
+        repo.saveSshKey(SSHKeyRecord(id = "k-1", name = "Main Key", publicKey = "ssh-ed25519 AAA"))
+
+        val srvA = repo.saveServer(
+            ServerConfig(
+                id = "srv-a",
+                name = "A",
+                host = " 10.0.0.1 ",
+                port = 22,
+                username = " ops ",
+                timeoutSeconds = 1,
+                keepAliveSeconds = 450
+            )
+        )
+        assertEquals("10.0.0.1", srvA.host)
+        assertEquals("ops", srvA.username)
+        assertEquals(3, srvA.timeoutSeconds)
+        assertEquals(450, srvA.keepAliveSeconds)
+
+        val srvB = repo.saveServer(
+            ServerConfig(
+                id = "srv-b",
+                name = "B",
+                host = "10.0.0.2",
+                jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "srv-a"),
+                timeoutSeconds = 999,
+                keepAliveSeconds = 999
+            )
+        )
+        assertEquals(120, srvB.timeoutSeconds)
+        assertEquals(600, srvB.keepAliveSeconds)
+
+        val srvC = repo.saveServer(
+            ServerConfig(
+                id = "srv-c",
+                name = "C",
+                host = "10.0.0.3",
+                jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "srv-b")
+            )
+        )
+
+        // Multi-hop jump cycle checks: A -> C -> B -> A must be rejected
+        assertTrue(VaultCrudOps.wouldCreateJumpCycle("srv-a", "srv-a", repo.state.value.data.servers))
+        assertTrue(VaultCrudOps.wouldCreateJumpCycle("srv-a", "srv-b", repo.state.value.data.servers))
+        assertTrue(VaultCrudOps.wouldCreateJumpCycle("srv-a", "srv-c", repo.state.value.data.servers))
+        assertFalse(VaultCrudOps.wouldCreateJumpCycle("srv-d", "srv-c", repo.state.value.data.servers))
+        assertTrue(
+            runCatching {
+                repo.saveServer(srvA.copy(jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = srvC.id)))
+            }.isFailure
+        )
+
+        // Blank proxy host rejected when proxy active
+        assertTrue(
+            runCatching {
+                repo.saveServer(
+                    ServerConfig(
+                        id = "bad-proxy",
+                        host = "10.0.0.9",
+                        proxy = ProxyConfig(type = ProxyType.SOCKS5, host = "  ", port = 1080)
+                    )
+                )
+            }.isFailure
+        )
+
+        // Blank custom jump host rejected
+        assertTrue(
+            runCatching {
+                repo.saveServer(
+                    ServerConfig(
+                        id = "bad-jump-custom",
+                        host = "10.0.0.9",
+                        jumpHost = JumpHostConfig(mode = JumpMode.CUSTOM, host = "   ", port = 22)
+                    )
+                )
+            }.isFailure
+        )
+
+        // Nonexistent jump serverId rejected
+        assertTrue(
+            runCatching {
+                repo.saveServer(
+                    ServerConfig(
+                        id = "bad-jump-srv",
+                        host = "10.0.0.9",
+                        jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "missing")
+                    )
+                )
+            }.isFailure
+        )
+
+        // Blank or nonexistent sshKeyId rejected when key auth enabled
+        assertTrue(
+            runCatching {
+                repo.saveServer(
+                    ServerConfig(id = "bad-key-empty", host = "10.0.0.9", authType = AuthType.KEY, sshKeyId = "")
+                )
+            }.isFailure
+        )
+        assertTrue(
+            runCatching {
+                repo.saveServer(
+                    ServerConfig(id = "bad-key-missing", host = "10.0.0.9", authType = AuthType.KEY, sshKeyId = "k-missing")
+                )
+            }.isFailure
+        )
+        // Existing sshKeyId succeeds
+        val validKeySrv = repo.saveServer(
+            ServerConfig(id = "good-key", host = "10.0.0.10", authType = AuthType.KEY, sshKeyId = "k-1")
+        )
+        assertEquals("k-1", validKeySrv.sshKeyId)
+    }
+
+    @Test
+    fun uploadDisplayNameSanitizationAndQrPrefixValidation() {
+        assertEquals("report.pdf", sanitizeUploadDisplayName("report.pdf"))
+        assertEquals("report.pdf", sanitizeUploadDisplayName("nested/path/report.pdf"))
+        assertEquals("report.pdf", sanitizeUploadDisplayName("C:\\temp\\report.pdf"))
+        assertEquals(".bashrc", sanitizeUploadDisplayName(".bashrc"))
+        assertEquals("upload.bin", sanitizeUploadDisplayName("."))
+        assertEquals("upload.bin", sanitizeUploadDisplayName(".."))
+        assertEquals("upload.bin", sanitizeUploadDisplayName("../../.."))
+        assertEquals("upload.bin", sanitizeUploadDisplayName("dir/."))
+        assertEquals("upload.bin", sanitizeUploadDisplayName("evil\u0000.txt"))
+        assertEquals("upload.bin", sanitizeUploadDisplayName("   "))
+        assertEquals("upload.bin", sanitizeUploadDisplayName(null))
+
+        assertTrue(isValidGravitySshQrPayload("gssh-sync://v1?code=K7M9-P4X2"))
+        assertTrue(isValidGravitySshQrPayload("  GSSH-SYNC://v1?code=K7M9P4X2  "))
+        assertFalse(isValidGravitySshQrPayload("https://example.com"))
+        assertFalse(isValidGravitySshQrPayload("K7M9-P4X2"))
+        assertFalse(isValidGravitySshQrPayload("gssh-sync://v1?code=BAD"))
+        assertFalse(isValidGravitySshQrPayload("gssh-sync://v1?code=0000-1111"))
     }
 
     @Test
