@@ -32,7 +32,8 @@ internal object TerminalBufferEdit {
     fun scrollUp(
         grid: Array<Array<TerminalCell>>, scrollback: ArrayDeque<Array<TerminalCell>>,
         topMargin: Int, bottomMargin: Int, cols: Int, rows: Int,
-        isAltScreen: Boolean, maxScrollback: Int, style: TerminalStyle, count: Int
+        isAltScreen: Boolean, maxScrollback: Int, style: TerminalStyle, count: Int,
+        snapCache: Array<Array<TerminalCell>?>? = null
     ) {
         repeat(count.coerceIn(1, bottomMargin - topMargin + 1)) {
             if (!isAltScreen && topMargin == 0 && bottomMargin == rows - 1) {
@@ -41,27 +42,55 @@ internal object TerminalBufferEdit {
             }
             for (r in topMargin until bottomMargin) grid[r] = grid[r + 1]
             grid[bottomMargin] = blankRow(cols, style)
+            if (snapCache != null) {
+                for (r in topMargin until bottomMargin) snapCache[r] = snapCache[r + 1]
+                snapCache[bottomMargin] = null
+            }
         }
     }
 
     fun scrollDown(
         grid: Array<Array<TerminalCell>>, topMargin: Int, bottomMargin: Int,
-        cols: Int, style: TerminalStyle, count: Int
+        cols: Int, style: TerminalStyle, count: Int,
+        snapCache: Array<Array<TerminalCell>?>? = null
     ) {
         repeat(count.coerceIn(1, bottomMargin - topMargin + 1)) {
             for (r in bottomMargin downTo topMargin + 1) grid[r] = grid[r - 1]
             grid[topMargin] = blankRow(cols, style)
+            if (snapCache != null) {
+                for (r in bottomMargin downTo topMargin + 1) snapCache[r] = snapCache[r - 1]
+                snapCache[topMargin] = null
+            }
         }
     }
 
     fun eraseDisplay(
         grid: Array<Array<TerminalCell>>, cursorRow: Int, cursorCol: Int, cols: Int, rows: Int,
-        style: TerminalStyle, mode: Int, clearScrollback: () -> Unit
+        style: TerminalStyle, mode: Int,
+        snapCache: Array<Array<TerminalCell>?>? = null,
+        clearScrollback: () -> Unit
     ) {
         when (mode) {
-            0 -> { eraseLine(grid[cursorRow], cursorCol, cols, style, 0); for (r in cursorRow + 1 until rows) grid[r] = blankRow(cols, style) }
-            1 -> { for (r in 0 until cursorRow) grid[r] = blankRow(cols, style); eraseLine(grid[cursorRow], cursorCol, cols, style, 1) }
-            2, 3 -> { for (r in 0 until rows) grid[r] = blankRow(cols, style); if (mode == 3) clearScrollback() }
+            0 -> {
+                eraseLine(grid[cursorRow], cursorCol, cols, style, 0)
+                for (r in cursorRow + 1 until rows) grid[r] = blankRow(cols, style)
+                if (snapCache != null) {
+                    for (r in cursorRow until minOf(rows, snapCache.size)) snapCache[r] = null
+                }
+            }
+            1 -> {
+                for (r in 0 until cursorRow) grid[r] = blankRow(cols, style)
+                eraseLine(grid[cursorRow], cursorCol, cols, style, 1)
+                if (snapCache != null) {
+                    val last = minOf(cursorRow, snapCache.lastIndex)
+                    for (r in 0..last) snapCache[r] = null
+                }
+            }
+            2, 3 -> {
+                for (r in 0 until rows) grid[r] = blankRow(cols, style)
+                snapCache?.fill(null)
+                if (mode == 3) clearScrollback()
+            }
         }
     }
 
@@ -110,19 +139,36 @@ internal object TerminalBufferEdit {
     fun buildSnapshot(
         cols: Int, rows: Int, cursorCol: Int, cursorRow: Int, cursorVisible: Boolean,
         grid: Array<Array<TerminalCell>>, scrollback: ArrayDeque<Array<TerminalCell>>,
-        isAltScreen: Boolean, bracketedPaste: Boolean, version: Long, scrollOffset: Int
+        isAltScreen: Boolean, bracketedPaste: Boolean, version: Long, scrollOffset: Int,
+        snapCache: Array<Array<TerminalCell>?>? = null
     ): TerminalSnapshot {
         val clamped = if (isAltScreen) 0 else scrollOffset.coerceIn(0, scrollback.size)
         val result = ArrayList<Array<TerminalCell>>(rows)
+
+        fun snapshotGridRow(r: Int): Array<TerminalCell> {
+            if (snapCache != null && r in snapCache.indices) {
+                snapCache[r]?.let { return it }
+                val copy = grid[r].copyOf()
+                snapCache[r] = copy
+                return copy
+            }
+            return grid[r].copyOf()
+        }
+
         if (clamped == 0) {
-            for (r in 0 until rows) result.add(grid[r].copyOf())
+            for (r in 0 until rows) result.add(snapshotGridRow(r))
         } else {
             val sbStart = (scrollback.size - clamped).coerceAtLeast(0)
             for (i in 0 until rows) {
                 val idx = sbStart + i
                 result.add(
-                    if (idx < scrollback.size) resizeRow(scrollback[idx], cols)
-                    else grid.getOrNull(idx - scrollback.size)?.copyOf() ?: blankRow(cols)
+                    if (idx < scrollback.size) {
+                        val sbRow = scrollback[idx]
+                        if (sbRow.size == cols) sbRow else resizeRow(sbRow, cols)
+                    } else {
+                        val gr = idx - scrollback.size
+                        if (gr in 0 until rows && gr in grid.indices) snapshotGridRow(gr) else blankRow(cols)
+                    }
                 )
             }
         }

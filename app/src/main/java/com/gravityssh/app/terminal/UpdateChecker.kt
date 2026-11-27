@@ -36,11 +36,11 @@ private data class GitHubAssetDto(
     @SerialName("browser_download_url") val downloadUrl: String = ""
 )
 
-class UpdateChecker(
+open class UpdateChecker(
     private val currentVersion: String,
     private val apiUrl: String = DEFAULT_RELEASE_API
 ) {
-    private data class FetchResult(
+    internal data class FetchResult(
         val code: Int,
         val location: String?,
         val body: String
@@ -65,7 +65,7 @@ class UpdateChecker(
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "GravitySSH-Android/$currentVersion")
                 .build()
-            val res = executeCancellable(req)
+            val res = executeFetch(req)
             if (res.code in REDIRECT_STATUS_CODES) {
                 if (hop == MAX_REDIRECTS) {
                     throw IOException("检查更新重定向次数过多")
@@ -112,6 +112,9 @@ class UpdateChecker(
             publishedAt = dto.publishedAt
         )
     }
+
+    internal open suspend fun executeFetch(req: Request): FetchResult =
+        executeCancellable(req)
 
     private suspend fun executeCancellable(req: Request): FetchResult =
         suspendCancellableCoroutine { cont ->

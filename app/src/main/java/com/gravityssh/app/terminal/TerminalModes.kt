@@ -87,51 +87,51 @@ internal object TerminalModes {
 
 fun TerminalBuffer.scrollUp(count: Int) {
     clearLastWrite()
-    E.scrollUp(activeGrid(), scrollback, topMargin, bottomMargin, cols, rows, isAltScreen, maxScrollback, style, count)
+    E.scrollUp(activeGrid(), scrollback, topMargin, bottomMargin, cols, rows, isAltScreen, maxScrollback, style, count, activeSnapCache())
     markAltNanoDirty()
 }
 
 fun TerminalBuffer.scrollDown(count: Int) {
     clearLastWrite()
-    E.scrollDown(activeGrid(), topMargin, bottomMargin, cols, style, count)
+    E.scrollDown(activeGrid(), topMargin, bottomMargin, cols, style, count, activeSnapCache())
     markAltNanoDirty()
 }
 
 fun TerminalBuffer.eraseDisplay(mode: Int) {
     clearWrapPending()
-    E.eraseDisplay(activeGrid(), cursorRow, cursorCol, cols, rows, style, mode) { if (!isAltScreen) scrollback.clear() }
+    E.eraseDisplay(activeGrid(), cursorRow, cursorCol, cols, rows, style, mode, activeSnapCache()) { if (!isAltScreen) scrollback.clear() }
     markAltNanoDirty()
 }
 
 fun TerminalBuffer.eraseLine(mode: Int) {
     clearWrapPending()
     E.eraseLine(currentRowCells(), cursorCol, cols, style, mode)
-    markAltRowDirty(cursorRow)
+    markRowDirty(cursorRow)
 }
 
 fun TerminalBuffer.eraseChars(count: Int) {
     clearWrapPending()
     E.eraseChars(currentRowCells(), cursorCol, cols, style, count)
-    markAltRowDirty(cursorRow)
+    markRowDirty(cursorRow)
 }
 
 fun TerminalBuffer.deleteChars(count: Int) {
     clearWrapPending()
     E.deleteChars(currentRowCells(), cursorCol, cols, style, count)
-    markAltRowDirty(cursorRow)
+    markRowDirty(cursorRow)
 }
 
 fun TerminalBuffer.insertChars(count: Int) {
     clearWrapPending()
     E.insertChars(currentRowCells(), cursorCol, cols, style, count)
-    markAltRowDirty(cursorRow)
+    markRowDirty(cursorRow)
 }
 
 fun TerminalBuffer.insertLines(count: Int) {
     clearWrapPending()
     if (cursorRow in topMargin..bottomMargin) {
         carriageReturn()
-        E.scrollDown(activeGrid(), cursorRow, bottomMargin, cols, style, count)
+        E.scrollDown(activeGrid(), cursorRow, bottomMargin, cols, style, count, activeSnapCache())
         markAltNanoDirty()
     }
 }
@@ -140,7 +140,7 @@ fun TerminalBuffer.deleteLines(count: Int) {
     clearWrapPending()
     if (cursorRow in topMargin..bottomMargin) {
         carriageReturn()
-        E.scrollUp(activeGrid(), scrollback, cursorRow, bottomMargin, cols, rows, true, maxScrollback, style, count)
+        E.scrollUp(activeGrid(), scrollback, cursorRow, bottomMargin, cols, rows, true, maxScrollback, style, count, activeSnapCache())
         markAltNanoDirty()
     }
 }
