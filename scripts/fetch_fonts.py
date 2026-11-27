@@ -4,6 +4,9 @@
 import hashlib
 import os
 import sys
+import tempfile
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -20,6 +23,19 @@ TTF_DEST = FONT_DIR / "smiley_sans.ttf"
 LICENSE_DEST = ROOT / "OFL-SmileySans.txt"
 
 
+class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        resolved = urllib.parse.urljoin(req.full_url, newurl)
+        require_https(resolved)
+        return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+def require_https(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError(f"Only HTTPS URLs are permitted, got: {url!r}")
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -29,8 +45,11 @@ def sha256_file(path: Path) -> str:
 
 
 def download(url: str, dest: Path) -> None:
+    require_https(url)
+    opener = urllib.request.build_opener(HttpsOnlyRedirectHandler)
     req = urllib.request.Request(url, headers={"User-Agent": "GravitySSH-Android/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as resp, dest.open("wb") as out:
+    with opener.open(req, timeout=60) as resp, dest.open("wb") as out:
+        require_https(resp.geturl())
         while True:
             buf = resp.read(65536)
             if not buf:
@@ -50,54 +69,55 @@ def ensure_font() -> int:
             file=sys.stderr,
         )
 
-    tmp_zip = FONT_DIR / "smiley-sans-v2.0.1.zip"
-    tmp_ttf = FONT_DIR / "smiley_sans.ttf.tmp"
-    print(f"[fetch_fonts] downloading {ZIP_URL} ...")
-    download(ZIP_URL, tmp_zip)
-    digest = sha256_file(tmp_zip)
-    if digest.lower() != EXPECTED_ZIP_SHA256:
-        tmp_zip.unlink(missing_ok=True)
-        print(f"[fetch_fonts] zip SHA-256 mismatch: {digest}", file=sys.stderr)
-        return 1
+    with tempfile.TemporaryDirectory(prefix="gravityssh-fonts-") as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        tmp_zip = tmp_dir / "smiley-sans-v2.0.1.zip"
+        tmp_ttf = tmp_dir / "smiley_sans.ttf"
+        print(f"[fetch_fonts] downloading {ZIP_URL} ...")
+        download(ZIP_URL, tmp_zip)
+        digest = sha256_file(tmp_zip)
+        if digest.lower() != EXPECTED_ZIP_SHA256:
+            print(f"[fetch_fonts] zip SHA-256 mismatch: {digest}", file=sys.stderr)
+            return 1
 
-    ttf_written = False
-    with zipfile.ZipFile(tmp_zip, "r") as zf:
-        for name in zf.namelist():
-            if os.path.basename(name) == "SmileySans-Oblique.ttf":
-                tmp_ttf.write_bytes(zf.read(name))
-                ttf_written = True
-                break
-    tmp_zip.unlink(missing_ok=True)
-    if not ttf_written:
-        tmp_ttf.unlink(missing_ok=True)
-        print("[fetch_fonts] SmileySans-Oblique.ttf missing from zip", file=sys.stderr)
-        return 1
+        ttf_written = False
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            for name in zf.namelist():
+                if os.path.basename(name) == "SmileySans-Oblique.ttf":
+                    tmp_ttf.write_bytes(zf.read(name))
+                    ttf_written = True
+                    break
+        if not ttf_written:
+            print("[fetch_fonts] SmileySans-Oblique.ttf missing from zip", file=sys.stderr)
+            return 1
 
-    ttf_digest = sha256_file(tmp_ttf).lower()
-    if ttf_digest != EXPECTED_TTF_SHA256:
-        tmp_ttf.unlink(missing_ok=True)
-        print(f"[fetch_fonts] extracted TTF SHA-256 mismatch: {ttf_digest}", file=sys.stderr)
-        return 1
+        ttf_bytes = tmp_ttf.read_bytes()
+        ttf_digest = hashlib.sha256(ttf_bytes).hexdigest().lower()
+        if ttf_digest != EXPECTED_TTF_SHA256:
+            print(f"[fetch_fonts] extracted TTF SHA-256 mismatch: {ttf_digest}", file=sys.stderr)
+            return 1
 
-    tmp_ttf.replace(TTF_DEST)
-    print(f"[fetch_fonts] extracted and verified {TTF_DEST} ({TTF_DEST.stat().st_size} bytes)")
-    return 0
+        # Write verified bytes directly to TTF_DEST without staging non-font files inside res/font/
+        TTF_DEST.write_bytes(ttf_bytes)
+        print(f"[fetch_fonts] extracted and verified {TTF_DEST} ({TTF_DEST.stat().st_size} bytes)")
+        return 0
 
 
 def ensure_license() -> int:
     if LICENSE_DEST.exists() and sha256_file(LICENSE_DEST).lower() == EXPECTED_LICENSE_SHA256:
         print(f"[fetch_fonts] license already present: {LICENSE_DEST}")
         return 0
-    tmp_lic = ROOT / "OFL-SmileySans.txt.tmp"
-    download(LICENSE_URL, tmp_lic)
-    digest = sha256_file(tmp_lic)
-    if digest.lower() != EXPECTED_LICENSE_SHA256:
-        tmp_lic.unlink(missing_ok=True)
-        print(f"[fetch_fonts] license SHA-256 mismatch: {digest}", file=sys.stderr)
-        return 1
-    tmp_lic.replace(LICENSE_DEST)
-    print(f"[fetch_fonts] verified {LICENSE_DEST} ({LICENSE_DEST.stat().st_size} bytes)")
-    return 0
+    with tempfile.TemporaryDirectory(prefix="gravityssh-license-") as tmp_dir_str:
+        tmp_lic = Path(tmp_dir_str) / "OFL-SmileySans.txt"
+        download(LICENSE_URL, tmp_lic)
+        lic_bytes = tmp_lic.read_bytes()
+        digest = hashlib.sha256(lic_bytes).hexdigest().lower()
+        if digest != EXPECTED_LICENSE_SHA256:
+            print(f"[fetch_fonts] license SHA-256 mismatch: {digest}", file=sys.stderr)
+            return 1
+        LICENSE_DEST.write_bytes(lic_bytes)
+        print(f"[fetch_fonts] verified {LICENSE_DEST} ({LICENSE_DEST.stat().st_size} bytes)")
+        return 0
 
 
 def main() -> int:
