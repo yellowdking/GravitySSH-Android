@@ -29,6 +29,7 @@ jobs:
     outputs:
       version: ${{ steps.pkg.outputs.version }}
       tag: ${{ steps.pkg.outputs.tag }}
+      ephemeral_signing: ${{ steps.keystore.outputs.ephemeral }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,9 +62,11 @@ jobs:
           gradle-version: "8.9"
 
       - name: Prepare Release Keystore
+        id: keystore
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REQUIRE_RELEASE_KEYSTORE: ${{ vars.REQUIRE_RELEASE_KEYSTORE }}
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -71,15 +74,25 @@ jobs:
         run: |
           if [ -n "$ANDROID_KEYSTORE_B64" ]; then
             printf '%s' "$ANDROID_KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/release.jks"
+            keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "${ANDROID_KEYSTORE_PASS:-gravityssh}" -alias "${ANDROID_KEY_ALIAS:-gravityssh}" >/dev/null
+            echo "ephemeral=false" >> "$GITHUB_OUTPUT"
           elif [ "$EVENT_NAME" = "pull_request" ]; then
             echo "::warning::ANDROID_KEYSTORE_B64 secret is not available in pull_request; using an ephemeral signing keystore for PR verification only."
             keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
               -storepass gravityssh -keypass gravityssh -alias gravityssh \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=GravitySSH, OU=Mobile, O=GravitySSH, L=Net, S=Net, C=US"
-          else
-            echo "::error::ANDROID_KEYSTORE_B64 secret is empty on event '${EVENT_NAME}' (${GITHUB_REF}). Refusing to sign a release APK with an ephemeral keystore."
+            echo "ephemeral=true" >> "$GITHUB_OUTPUT"
+          elif [ "$REQUIRE_RELEASE_KEYSTORE" = "true" ]; then
+            echo "::error::ANDROID_KEYSTORE_B64 secret is empty while REQUIRE_RELEASE_KEYSTORE=true on event '${EVENT_NAME}' (${GITHUB_REF}). Refusing to sign a release APK with an ephemeral keystore."
             exit 1
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 secret is not configured; using an ephemeral signing keystore. Configure ANDROID_KEYSTORE_B64 and set repository variable REQUIRE_RELEASE_KEYSTORE=true to lock down upgrade signatures."
+            keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
+              -storepass gravityssh -keypass gravityssh -alias gravityssh \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=GravitySSH, OU=Mobile, O=GravitySSH, L=Net, S=Net, C=US"
+            echo "ephemeral=true" >> "$GITHUB_OUTPUT"
           fi
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           echo "ANDROID_KEYSTORE_PASS=${ANDROID_KEYSTORE_PASS:-gravityssh}" >> "$GITHUB_ENV"
@@ -175,6 +188,7 @@ jobs:
           tag_name: ${{ needs.build.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: GravitySSH Android ${{ needs.build.outputs.tag }}
+          body: ${{ needs.build.outputs.ephemeral_signing == 'true' && '> ⚠️ **签名提醒**：仓库尚未配置 `ANDROID_KEYSTORE_B64` Secret，本版本使用临时密钥签名。如需后续版本保留数据覆盖安装，请先在仓库 Secrets 配置固定 Keystore 并设置 Variable `REQUIRE_RELEASE_KEYSTORE=true`。' || '' }}
           generate_release_notes: true
           make_latest: true
           files: |
