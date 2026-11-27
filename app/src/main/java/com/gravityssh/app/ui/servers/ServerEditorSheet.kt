@@ -1,6 +1,5 @@
 package com.gravityssh.app.ui.servers
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -10,6 +9,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -17,7 +17,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.gravityssh.app.model.AuthType
+import com.gravityssh.app.model.JumpHostConfig
 import com.gravityssh.app.model.JumpMode
+import com.gravityssh.app.model.ProxyConfig
 import com.gravityssh.app.model.ProxyType
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
@@ -38,20 +40,92 @@ fun ServerEditorSheet(
     onClearHostCache: (String, Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var draft by remember(initial) { mutableStateOf(initial) }
+    val draftKey = initial.id
     val initPort = remember(initial) { initial.port.toString() }
     val initProxyPort = remember(initial) { if (initial.proxy.port > 0) initial.proxy.port.toString() else "" }
     val initJumpPort = remember(initial) { initial.jumpHost.port.toString() }
     val initTimeout = remember(initial) { initial.timeoutSeconds.toString() }
     val initKeepAlive = remember(initial) { initial.keepAliveSeconds.toString() }
 
-    var portText by remember(initial) { mutableStateOf(initPort) }
-    var proxyPortText by remember(initial) { mutableStateOf(initProxyPort) }
-    var jumpPortText by remember(initial) { mutableStateOf(initJumpPort) }
-    var timeoutText by remember(initial) { mutableStateOf(initTimeout) }
-    var keepAliveText by remember(initial) { mutableStateOf(initKeepAlive) }
+    // Bundle-safe primitive/String draft fields survive process death & config changes; secrets stay in-memory only.
+    var name by rememberSaveable(draftKey) { mutableStateOf(initial.name) }
+    var group by rememberSaveable(draftKey) { mutableStateOf(initial.group) }
+    var color by rememberSaveable(draftKey) { mutableStateOf(initial.color) }
+    var host by rememberSaveable(draftKey) { mutableStateOf(initial.host) }
+    var port by rememberSaveable(draftKey) { mutableIntStateOf(initial.port) }
+    var username by rememberSaveable(draftKey) { mutableStateOf(initial.username) }
+    var authType by rememberSaveable(draftKey) { mutableStateOf(initial.authType) }
+    var password by remember(draftKey) { mutableStateOf(initial.password) }
+    var sshKeyId by rememberSaveable(draftKey) { mutableStateOf(initial.sshKeyId) }
 
-    var tabIndex by remember { mutableIntStateOf(0) }
+    var proxyType by rememberSaveable(draftKey) { mutableStateOf(initial.proxy.type) }
+    var proxyHost by rememberSaveable(draftKey) { mutableStateOf(initial.proxy.host) }
+    var proxyPort by rememberSaveable(draftKey) { mutableIntStateOf(initial.proxy.port) }
+    var proxyUsername by rememberSaveable(draftKey) { mutableStateOf(initial.proxy.username) }
+    var proxyPassword by remember(draftKey) { mutableStateOf(initial.proxy.password) }
+
+    var jumpMode by rememberSaveable(draftKey) { mutableStateOf(initial.jumpHost.mode) }
+    var jumpServerId by rememberSaveable(draftKey) { mutableStateOf(initial.jumpHost.serverId) }
+    var jumpHost by rememberSaveable(draftKey) { mutableStateOf(initial.jumpHost.host) }
+    var jumpPort by rememberSaveable(draftKey) { mutableIntStateOf(initial.jumpHost.port) }
+    var jumpUsername by rememberSaveable(draftKey) { mutableStateOf(initial.jumpHost.username) }
+    var jumpAuthType by rememberSaveable(draftKey) { mutableStateOf(initial.jumpHost.authType) }
+    var jumpPassword by remember(draftKey) { mutableStateOf(initial.jumpHost.password) }
+    var jumpSshKeyId by rememberSaveable(draftKey) { mutableStateOf(initial.jumpHost.sshKeyId) }
+    var jumpUseMainProxy by rememberSaveable(draftKey) { mutableStateOf(initial.jumpHost.useMainProxy) }
+
+    var timeoutSeconds by rememberSaveable(draftKey) { mutableIntStateOf(initial.timeoutSeconds) }
+    var keepAliveSeconds by rememberSaveable(draftKey) { mutableIntStateOf(initial.keepAliveSeconds) }
+    var defaultRemotePath by rememberSaveable(draftKey) { mutableStateOf(initial.defaultRemotePath) }
+    var startupCommand by rememberSaveable(draftKey) { mutableStateOf(initial.startupCommand) }
+    var notes by rememberSaveable(draftKey) { mutableStateOf(initial.notes) }
+
+    var portText by rememberSaveable(draftKey) { mutableStateOf(initPort) }
+    var proxyPortText by rememberSaveable(draftKey) { mutableStateOf(initProxyPort) }
+    var jumpPortText by rememberSaveable(draftKey) { mutableStateOf(initJumpPort) }
+    var timeoutText by rememberSaveable(draftKey) { mutableStateOf(initTimeout) }
+    var keepAliveText by rememberSaveable(draftKey) { mutableStateOf(initKeepAlive) }
+
+    val draft = ServerConfig(
+        id = initial.id,
+        name = name,
+        group = group,
+        color = color,
+        host = host,
+        port = port,
+        username = username,
+        authType = authType,
+        password = password,
+        sshKeyId = sshKeyId,
+        proxy = ProxyConfig(
+            type = proxyType,
+            host = proxyHost,
+            port = proxyPort,
+            username = proxyUsername,
+            password = proxyPassword
+        ),
+        jumpHost = JumpHostConfig(
+            mode = jumpMode,
+            serverId = jumpServerId,
+            host = jumpHost,
+            port = jumpPort,
+            username = jumpUsername,
+            authType = jumpAuthType,
+            password = jumpPassword,
+            sshKeyId = jumpSshKeyId,
+            useMainProxy = jumpUseMainProxy
+        ),
+        timeoutSeconds = timeoutSeconds,
+        keepAliveSeconds = keepAliveSeconds,
+        defaultRemotePath = defaultRemotePath,
+        startupCommand = startupCommand,
+        notes = notes,
+        createdAt = initial.createdAt,
+        updatedAt = initial.updatedAt,
+        lastConnectedAt = initial.lastConnectedAt
+    )
+
+    var tabIndex by rememberSaveable(draftKey) { mutableIntStateOf(0) }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
@@ -76,7 +150,34 @@ fun ServerEditorSheet(
     }
 
     fun updateDraft(next: ServerConfig) {
-        draft = next
+        name = next.name
+        group = next.group
+        color = next.color
+        host = next.host
+        port = next.port
+        username = next.username
+        authType = next.authType
+        password = next.password
+        sshKeyId = next.sshKeyId
+        proxyType = next.proxy.type
+        proxyHost = next.proxy.host
+        proxyPort = next.proxy.port
+        proxyUsername = next.proxy.username
+        proxyPassword = next.proxy.password
+        jumpMode = next.jumpHost.mode
+        jumpServerId = next.jumpHost.serverId
+        jumpHost = next.jumpHost.host
+        jumpPort = next.jumpHost.port
+        jumpUsername = next.jumpHost.username
+        jumpAuthType = next.jumpHost.authType
+        jumpPassword = next.jumpHost.password
+        jumpSshKeyId = next.jumpHost.sshKeyId
+        jumpUseMainProxy = next.jumpHost.useMainProxy
+        timeoutSeconds = next.timeoutSeconds
+        keepAliveSeconds = next.keepAliveSeconds
+        defaultRemotePath = next.defaultRemotePath
+        startupCommand = next.startupCommand
+        notes = next.notes
         testResult = null
         validationError = null
     }
@@ -195,9 +296,6 @@ fun ServerEditorSheet(
     }
 
     Dialog(onDismissRequest = ::requestDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        BackHandler(enabled = hasChanges) {
-            confirmDiscard = true
-        }
         Surface(modifier = Modifier.fillMaxSize().imePadding(), color = AgBg) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(
@@ -240,7 +338,7 @@ fun ServerEditorSheet(
                                 portText = digits
                                 testResult = null
                                 validationError = null
-                                digits.toIntOrNull()?.takeIf { it in 1..65535 }?.let { draft = draft.copy(port = it) }
+                                digits.toIntOrNull()?.takeIf { it in 1..65535 }?.let { port = it }
                             },
                             onChange = ::updateDraft
                         )
@@ -252,7 +350,7 @@ fun ServerEditorSheet(
                                 proxyPortText = digits
                                 testResult = null
                                 validationError = null
-                                draft = draft.copy(proxy = draft.proxy.copy(port = digits.toIntOrNull() ?: 0))
+                                proxyPort = digits.toIntOrNull() ?: 0
                             },
                             onChange = ::updateDraft
                         )
@@ -267,7 +365,7 @@ fun ServerEditorSheet(
                                 testResult = null
                                 validationError = null
                                 digits.toIntOrNull()?.takeIf { it in 1..65535 }?.let {
-                                    draft = draft.copy(jumpHost = draft.jumpHost.copy(port = it))
+                                    jumpPort = it
                                 }
                             },
                             onChange = ::updateDraft
@@ -281,14 +379,14 @@ fun ServerEditorSheet(
                                 timeoutText = digits
                                 testResult = null
                                 validationError = null
-                                digits.toIntOrNull()?.let { draft = draft.copy(timeoutSeconds = it) }
+                                digits.toIntOrNull()?.let { timeoutSeconds = it }
                             },
                             onKeepAliveTextChange = { raw ->
                                 val digits = raw.filter(Char::isDigit).take(3)
                                 keepAliveText = digits
                                 testResult = null
                                 validationError = null
-                                digits.toIntOrNull()?.let { draft = draft.copy(keepAliveSeconds = it) }
+                                digits.toIntOrNull()?.let { keepAliveSeconds = it }
                             },
                             onChange = ::updateDraft,
                             onClearHostCache = {
