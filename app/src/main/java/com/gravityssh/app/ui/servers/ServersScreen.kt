@@ -30,7 +30,6 @@ fun ServersScreen(
 
     var query by remember { mutableStateOf("") }
     var editingServer by remember { mutableStateOf<ServerConfig?>(null) }
-    var showEditor by remember { mutableStateOf(false) }
     var deletingServer by remember { mutableStateOf<ServerConfig?>(null) }
 
     val filtered = remember(servers, query) {
@@ -63,7 +62,7 @@ fun ServersScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { editingServer = ServerConfig(); showEditor = true },
+                onClick = { editingServer = ServerConfig() },
                 containerColor = AgAccent,
                 contentColor = Color.White,
                 shape = RoundedCornerShape(16.dp)
@@ -80,7 +79,7 @@ fun ServersScreen(
                     title = if (servers.isEmpty()) "还没有配置任何主机" else "没有匹配的主机",
                     subtitle = if (servers.isEmpty()) "点击右下角新建主机，或在设置中从电脑端同步" else "尝试更改搜索关键字",
                     actionLabel = if (servers.isEmpty()) "添加第一台主机" else null,
-                    onAction = if (servers.isEmpty()) { { editingServer = ServerConfig(); showEditor = true } } else null
+                    onAction = if (servers.isEmpty()) { { editingServer = ServerConfig() } } else null
                 )
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 84.dp)) {
@@ -89,7 +88,7 @@ fun ServersScreen(
                             Text("$groupName (${list.size})", style = MaterialTheme.typography.labelMedium, color = AgMuted, modifier = Modifier.padding(top = 6.dp, bottom = 2.dp))
                         }
                         items(list, key = { it.id }) { server ->
-                            ServerCardItem(server, { onConnectAndOpenTerminal(server) }, { editingServer = server; showEditor = true }, { deletingServer = server })
+                            ServerCardItem(server, { onConnectAndOpenTerminal(server) }, { editingServer = server }, { deletingServer = server })
                         }
                     }
                 }
@@ -97,13 +96,13 @@ fun ServersScreen(
         }
     }
 
-    if (showEditor && editingServer != null) {
+    editingServer?.let { server ->
         ServerEditorSheet(
-            editingServer!!, servers, keys,
-            onSave = { viewModel.saveServer(it); showEditor = false },
+            server, servers, keys,
+            onSave = { viewModel.saveServer(it); editingServer = null },
             onTest = { viewModel.container.sshSessionManager.testConnection(it) },
             onClearHostCache = { h, p -> viewModel.clearHostKnownKey(h, p) },
-            onDismiss = { showEditor = false }
+            onDismiss = { editingServer = null }
         )
     }
     deletingServer?.let { t ->

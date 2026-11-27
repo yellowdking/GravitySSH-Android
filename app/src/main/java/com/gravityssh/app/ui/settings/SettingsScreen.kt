@@ -1,10 +1,8 @@
 package com.gravityssh.app.ui.settings
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -15,20 +13,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
-import com.gravityssh.app.ui.components.AgTextField
-import com.gravityssh.app.ui.saveSyncRelayUrl
+import com.gravityssh.app.ui.sync.SyncRelayCard
 import com.gravityssh.app.ui.theme.*
 import com.gravityssh.app.ui.updateSettings
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
     val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
     val settings = vaultState.data.settings
-    var relayUrlInput by remember(settings.syncRelayUrl) { mutableStateOf(settings.syncRelayUrl) }
+    var fontSizeSlider by remember(settings.terminalFontSize) {
+        mutableFloatStateOf(settings.terminalFontSize.toFloat())
+    }
 
     Scaffold(
         containerColor = AgBg,
@@ -70,27 +69,23 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
                 ToggleRow("记录命令执行历史", settings.recordCommands) { v -> viewModel.updateSettings { it.copy(recordCommands = v) } }
                 ToggleRow("启动时自动检查更新", settings.checkUpdatesOnStartup) { v -> viewModel.updateSettings { it.copy(checkUpdatesOnStartup = v) } }
                 Spacer(Modifier.height(8.dp))
-                Text("终端字号：${settings.terminalFontSize} sp", style = MaterialTheme.typography.bodyMedium, color = AgText)
+                Text("终端字号：${fontSizeSlider.roundToInt()} sp", style = MaterialTheme.typography.bodyMedium, color = AgText)
                 Slider(
-                    value = settings.terminalFontSize.toFloat(),
-                    onValueChange = { v -> viewModel.updateSettings { it.copy(terminalFontSize = v.toInt()) } },
+                    value = fontSizeSlider,
+                    onValueChange = { fontSizeSlider = it },
+                    onValueChangeFinished = {
+                        val target = fontSizeSlider.roundToInt().coerceIn(10, 22)
+                        if (target != settings.terminalFontSize) {
+                            viewModel.updateSettings { it.copy(terminalFontSize = target) }
+                        }
+                    },
                     valueRange = 10f..22f,
                     steps = 11,
                     colors = SliderDefaults.colors(thumbColor = AgAccent, activeTrackColor = AgAccent)
                 )
             }
 
-            AgCard {
-                Text("同步中继服务器 (IP:端口)", style = MaterialTheme.typography.titleMedium, color = AgText)
-                Spacer(Modifier.height(6.dp))
-                AgTextField(relayUrlInput, { relayUrlInput = it }, "自定义中继地址（留空使用默认）", placeholder = "如 1.2.3.4:54843 或 ${SyncConfig.DEFAULT_RELAY_URL}", mono = true)
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(
-                    onClick = { viewModel.saveSyncRelayUrl(relayUrlInput) },
-                    border = BorderStroke(1.dp, AgCyan),
-                    shape = RoundedCornerShape(10.dp)
-                ) { Text("保存中继地址", color = AgCyan) }
-            }
+            SyncRelayCard(viewModel = viewModel)
 
             SettingsTouchCursorCard(viewModel = viewModel)
             SettingsSecuritySection(viewModel = viewModel)

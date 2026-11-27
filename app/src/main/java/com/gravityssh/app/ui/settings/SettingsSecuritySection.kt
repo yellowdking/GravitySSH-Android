@@ -32,6 +32,10 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
     var showPwDialog by remember { mutableStateOf(false) }
     var confirmClearKnown by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        viewModel.refreshKnownHosts()
+    }
+
     AgCard {
         Text("保险库安全与锁屏", style = MaterialTheme.typography.titleMedium, color = AgText)
         Spacer(Modifier.height(6.dp))
@@ -89,7 +93,7 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
                 TextButton(onClick = { confirmClearKnown = true }) { Text("全部清除", color = AgDanger) }
             }
         }
-        knownHosts.take(8).forEach { entry ->
+        knownHosts.forEach { entry ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

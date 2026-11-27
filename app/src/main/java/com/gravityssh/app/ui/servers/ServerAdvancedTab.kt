@@ -19,22 +19,28 @@ import com.gravityssh.app.ui.theme.AgDanger
 @Composable
 fun ServerAdvancedTab(
     draft: ServerConfig,
+    timeoutText: String,
+    keepAliveText: String,
+    onTimeoutTextChange: (String) -> Unit,
+    onKeepAliveTextChange: (String) -> Unit,
     onChange: (ServerConfig) -> Unit,
     onClearHostCache: () -> Unit
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AgTextField(
-            draft.timeoutSeconds.toString(),
-            { onChange(draft.copy(timeoutSeconds = it.filter(Char::isDigit).toIntOrNull() ?: 15)) },
+            timeoutText,
+            onTimeoutTextChange,
             "连接超时 (秒)",
+            placeholder = "15",
             mono = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.weight(1f)
         )
         AgTextField(
-            draft.keepAliveSeconds.toString(),
-            { onChange(draft.copy(keepAliveSeconds = it.filter(Char::isDigit).toIntOrNull() ?: 30)) },
+            keepAliveText,
+            onKeepAliveTextChange,
             "心跳间隔 (秒)",
+            placeholder = "30",
             mono = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.weight(1f)
