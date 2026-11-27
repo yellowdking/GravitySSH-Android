@@ -75,7 +75,7 @@ fun TerminalCanvas(
     LaunchedEffect(canvasSize, cellW, cellH, controller.sessionId) {
         if (canvasSize.width > 0 && canvasSize.height > 0) {
             val cols = floor((canvasSize.width - TERM_PAD_X * 2) / cellW).toInt().coerceIn(20, 240)
-            val rows = floor((canvasSize.height - TERM_PAD_Y * 2) / cellH).toInt().coerceIn(5, 100)
+            val rows = floor((canvasSize.height - TERM_PAD_Y * 2) / cellH).toInt().coerceIn(8, 120)
             if (cols != lastCols || rows != lastRows) {
                 if (lastCols != 0 && lastRows != 0) delay(180L)
                 lastCols = cols; lastRows = rows; onResize(cols, rows)

@@ -1,5 +1,8 @@
 package com.gravityssh.app.ui.sync
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -7,8 +10,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.cleanupAbandonedSyncOnLeave
@@ -19,10 +24,16 @@ import com.gravityssh.app.ui.theme.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
-    var tabIndex by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    var tabIndex by rememberSaveable { mutableIntStateOf(0) }
 
-    DisposableEffect(Unit) {
-        onDispose { viewModel.cleanupAbandonedSyncOnLeave() }
+    DisposableEffect(context) {
+        onDispose {
+            val changingConfig = context.findSyncActivity()?.isChangingConfigurations == true
+            if (!changingConfig) {
+                viewModel.cleanupAbandonedSyncOnLeave()
+            }
+        }
     }
 
     Scaffold(
@@ -73,4 +84,10 @@ fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
             }
         }
     }
+}
+
+private tailrec fun Context.findSyncActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findSyncActivity()
+    else -> null
 }

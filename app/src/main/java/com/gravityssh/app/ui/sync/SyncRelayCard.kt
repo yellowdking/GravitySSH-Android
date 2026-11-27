@@ -110,7 +110,7 @@ fun SyncRelayCard(viewModel: AppViewModel) {
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "新 VPS 部署: docker run -d -p 54843:54843 bbplin/sshsync",
+            text = "新 VPS 部署: docker run -d --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=96m --pids-limit=64 -p 54843:54843 bbplin/sshsync",
             fontFamily = MonoFontFamily,
             fontSize = 10.sp,
             color = AgMuted
