@@ -9,6 +9,7 @@ import com.gravityssh.app.model.JumpMode
 import com.gravityssh.app.model.PairRequestPayload
 import com.gravityssh.app.model.ProxyConfig
 import com.gravityssh.app.model.ProxyType
+import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
@@ -18,8 +19,14 @@ import com.gravityssh.app.model.SyncSendPollState
 import com.gravityssh.app.vault.VaultCrypto
 import com.gravityssh.app.vault.VaultRepository
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import okhttp3.TlsVersion
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -28,9 +35,19 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.math.BigInteger
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.security.KeyPairGenerator
+import java.security.Principal
+import java.security.PublicKey
+import java.security.cert.CertificateException
+import java.security.cert.X509Certificate
 import java.time.Instant
 import java.util.Base64
+import java.util.Date
 import java.util.concurrent.atomic.AtomicInteger
+import javax.security.auth.x500.X500Principal
 
 class SyncCryptoInteropTest {
 
@@ -648,5 +665,254 @@ class SyncCryptoInteropTest {
         assertTrue(startRes.exceptionOrNull() is SecurityException)
         assertTrue(cancelCalls.get() >= 1)
         assertEquals(0, approveCalls.get())
+    }
+
+    @Test
+    fun pollSendInspectsLiveApprovedFlagWhenGoneArrivesMidApprove() = runTest {
+        val repo = VaultRepository(File(tempFolder.root, "race-consumed.gsv"), VaultCrypto(InMemoryMasterKeyProvider()))
+        repo.open()
+        val pollEntered = CompletableDeferred<Unit>()
+        val releasePoll = CompletableDeferred<Unit>()
+
+        val relay = object : SyncRelayClient() {
+            override suspend fun pairInit(relayUrl: String, channelId: String, senderToken: String, ttlSeconds: Int): PairInitResponse =
+                PairInitResponse(ok = true, expiresAt = "2099-01-01T00:00:00Z")
+
+            override suspend fun pairPoll(relayUrl: String, channelId: String, senderToken: String): PairPollResponse {
+                pollEntered.complete(Unit)
+                releasePoll.await()
+                return PairPollResponse(state = "gone")
+            }
+
+            override suspend fun pairApprove(
+                relayUrl: String,
+                channelId: String,
+                senderToken: String,
+                requestId: String,
+                salt: String,
+                nonce: String,
+                ciphertext: String
+            ) = Unit
+        }
+
+        val service = SyncService(repo, relay)
+        val sendSess = service.startSend()
+        val pollDeferred = async { service.pollSend(sendSess.sessionId) }
+        pollEntered.await()
+
+        // Approve while pollSend is in-flight with stale wasApproved=false snapshot
+        service.approveSend(
+            sessionId = sendSess.sessionId,
+            requestId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            receiverCode = "M8N2-Q5R7"
+        )
+        releasePoll.complete(Unit)
+
+        assertEquals(SyncSendPollState.CONSUMED, pollDeferred.await().state)
+    }
+
+    @Test
+    fun relayUrlExplicitSpkiPinTls13AndCustomIpTofu() {
+        // Pure TLS 1.3 enforced on API 29+
+        assertEquals(listOf(TlsVersion.TLS_1_3), SyncHttpClients.tls13Spec.tlsVersions)
+
+        val validPin = "A1".repeat(32)
+        val norm = SyncConfig.normalizeRelayUrl("https://198.51.100.10:54843/#spki=SHA256:$validPin")
+        assertEquals("https://198.51.100.10:54843#spki=${validPin.lowercase()}", norm)
+        val ep = SyncConfig.parseRelayEndpoint(norm)
+        assertEquals("https://198.51.100.10:54843", ep.baseUrl)
+        assertEquals(validPin.lowercase(), ep.explicitSpkiPin)
+        assertTrue(ep.isRawIp)
+        assertFalse(ep.isDefaultRelay)
+        assertTrue(runCatching { SyncConfig.normalizeRelayUrl("https://198.51.100.10:54843#spki=bad") }.isFailure)
+        assertTrue(runCatching { SyncConfig.normalizeRelayUrl("https://user:pass@198.51.100.10:54843") }.isFailure)
+
+        val kpg = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }
+        val kp1 = kpg.generateKeyPair()
+        val kp2 = kpg.generateKeyPair()
+        val certDns1 = stubX509Cert(kp1.public, listOf(listOf(2, "sshsync")))
+        val certDns2 = stubX509Cert(kp2.public, listOf(listOf(2, "sshsync")))
+        val certIpOk = stubX509Cert(kp1.public, listOf(listOf(7, "198.51.100.10")))
+        val certIpBad = stubX509Cert(kp1.public, listOf(listOf(7, "198.51.100.99")))
+        val spki1 = SyncHttpClients.spkiSha256Hex(certDns1)
+
+        // Explicit SPKI pin match & mismatch
+        SyncHttpClients.verifyPinnedSpkiCert(arrayOf(certDns1), spki1)
+        assertTrue(runCatching { SyncHttpClients.verifyPinnedSpkiCert(arrayOf(certDns2), spki1) }.exceptionOrNull() is CertificateException)
+
+        // Standard self-hosted bbplin/sshsync cert (DNS:sshsync, no IP SAN) works under TOFU & catches rotation/MITM
+        SyncHttpClients.clearCustomRelayTofuPins()
+        try {
+            SyncHttpClients.verifyAndPinCustomRelayTofu("198.51.100.10:54843", certDns1, "198.51.100.10")
+            SyncHttpClients.verifyAndPinCustomRelayTofu("198.51.100.10:54843", certDns1, "198.51.100.10")
+            assertTrue(
+                runCatching {
+                    SyncHttpClients.verifyAndPinCustomRelayTofu("198.51.100.10:54843", certDns2, "198.51.100.10")
+                }.exceptionOrNull() is CertificateException
+            )
+
+            // When cert DOES carry IP SANs, enforce IP SAN matching
+            SyncHttpClients.verifySelfSignedIpLeafCert(certIpOk, "198.51.100.10")
+            assertTrue(
+                runCatching {
+                    SyncHttpClients.verifySelfSignedIpLeafCert(certIpBad, "198.51.100.10")
+                }.exceptionOrNull() is CertificateException
+            )
+        } finally {
+            SyncHttpClients.clearCustomRelayTofuPins()
+        }
+    }
+
+    @Test
+    fun syncRelayClientCancelsPromptlyOnCoroutineCancel() = runBlocking {
+        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { server ->
+            val accepted = CompletableDeferred<Unit>()
+            val accepter = Thread {
+                runCatching {
+                    server.accept().use { sock ->
+                        accepted.complete(Unit)
+                        Thread.sleep(10_000L)
+                        sock.close()
+                    }
+                }
+            }.apply { isDaemon = true; start() }
+
+            val client = SyncRelayClient()
+            val job = launch(Dispatchers.IO) {
+                runCatching { client.ping("https://127.0.0.1:${server.localPort}") }
+            }
+            withTimeout(2_000L) { accepted.await() }
+            delay(50L)
+            job.cancel()
+            withTimeout(3_000L) { job.join() }
+            accepter.interrupt()
+        }
+    }
+
+    @Test
+    fun vaultSyncOpsSanitizationParityAndJumpCycleBreaking() {
+        val repo = VaultRepository(File(tempFolder.root, "parity.gsv"), VaultCrypto(InMemoryMasterKeyProvider()))
+        repo.open()
+
+        val bundle = SyncBundle(
+            schemaVersion = 1,
+            sshKeys = listOf(
+                SSHKeyRecord(id = "", name = "", fingerprint = "", publicKey = "", privateKeyPem = ""),
+                SSHKeyRecord(id = "k-valid", name = "Valid", fingerprint = "SHA256:valid")
+            ),
+            servers = listOf(
+                ServerConfig(
+                    id = "srv-a",
+                    name = "A",
+                    host = "198.51.100.1",
+                    port = 0,
+                    timeoutSeconds = 0,
+                    keepAliveSeconds = 0,
+                    proxy = ProxyConfig(type = ProxyType.SOCKS5, host = "127.0.0.1", port = 0),
+                    jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "srv-b")
+                ),
+                ServerConfig(
+                    id = "srv-b",
+                    name = "B",
+                    host = "198.51.100.2",
+                    port = 22,
+                    keepAliveSeconds = -10,
+                    proxy = ProxyConfig(type = ProxyType.HTTP, host = "127.0.0.1", port = 0),
+                    jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "srv-c")
+                ),
+                ServerConfig(
+                    id = "srv-c",
+                    name = "C",
+                    host = "198.51.100.3",
+                    port = 22,
+                    jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "srv-a")
+                )
+            ),
+            shortcuts = listOf(
+                CommandShortcut(id = "sc-empty", name = "NoCmd", command = "   "),
+                CommandShortcut(id = "sc-ok", name = "Ok", command = "uname -a")
+            ),
+            templates = listOf(
+                BuiltinTemplate(id = "t-empty", name = "NoCmd", command = "  "),
+                BuiltinTemplate(id = "t-ok", name = "OkTpl", command = "uptime")
+            )
+        )
+
+        val overSum = repo.importSyncBundle(bundle, SyncImportMode.OVERWRITE)
+        assertEquals(1, overSum.keysAdded)
+        assertEquals(3, overSum.serversAdded)
+        assertEquals(1, overSum.shortcutsAdded)
+        assertEquals(1, overSum.templatesAdded)
+
+        val servers = repo.state.value.data.servers.associateBy { it.id }
+        val srvA = servers["srv-a"]!!
+        val srvB = servers["srv-b"]!!
+        assertEquals(22, srvA.port)
+        assertEquals(15, srvA.timeoutSeconds)
+        assertEquals(0, srvA.keepAliveSeconds)
+        assertEquals(1080, srvA.proxy.port)
+        assertEquals(0, srvB.keepAliveSeconds)
+        assertEquals(8080, srvB.proxy.port)
+        // At least one edge in the 3-node jump cycle A -> B -> C -> A must be broken
+        assertTrue(
+            servers.values.any { it.jumpHost.mode == JumpMode.NONE && it.jumpHost.serverId.isEmpty() }
+        )
+
+        // Merge mode also breaks multi-hop cycles introduced across existing + incoming servers
+        val cycleMerge = SyncBundle(
+            schemaVersion = 1,
+            servers = listOf(
+                ServerConfig(
+                    id = "srv-a",
+                    name = "A",
+                    host = "198.51.100.1",
+                    port = 22,
+                    jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "srv-b")
+                ),
+                ServerConfig(
+                    id = "srv-b",
+                    name = "B",
+                    host = "198.51.100.2",
+                    port = 22,
+                    jumpHost = JumpHostConfig(mode = JumpMode.SERVER, serverId = "srv-a")
+                )
+            )
+        )
+        repo.importSyncBundle(cycleMerge, SyncImportMode.MERGE)
+        val merged = repo.state.value.data.servers.associateBy { it.id }
+        val aPointsToB = merged["srv-a"]!!.jumpHost.mode == JumpMode.SERVER && merged["srv-a"]!!.jumpHost.serverId == "srv-b"
+        val bPointsToA = merged["srv-b"]!!.jumpHost.mode == JumpMode.SERVER && merged["srv-b"]!!.jumpHost.serverId == "srv-a"
+        assertFalse(aPointsToB && bPointsToA)
+    }
+
+    private fun stubX509Cert(pub: PublicKey, sans: Collection<List<*>>?): X509Certificate = object : X509Certificate() {
+        private val principal = X500Principal("CN=sshsync")
+        override fun checkValidity() = Unit
+        override fun checkValidity(date: Date?) = Unit
+        override fun getVersion(): Int = 3
+        override fun getSerialNumber(): BigInteger = BigInteger.ONE
+        override fun getIssuerDN(): Principal = principal
+        override fun getSubjectDN(): Principal = principal
+        override fun getNotBefore(): Date = Date(0L)
+        override fun getNotAfter(): Date = Date(Long.MAX_VALUE)
+        override fun getTBSCertificate(): ByteArray = ByteArray(0)
+        override fun getSignature(): ByteArray = ByteArray(0)
+        override fun getSigAlgName(): String = "SHA256withRSA"
+        override fun getSigAlgOID(): String = "1.2.840.113549.1.1.11"
+        override fun getSigAlgParams(): ByteArray? = null
+        override fun getIssuerUniqueID(): BooleanArray? = null
+        override fun getSubjectUniqueID(): BooleanArray? = null
+        override fun getKeyUsage(): BooleanArray? = null
+        override fun getBasicConstraints(): Int = -1
+        override fun getEncoded(): ByteArray = pub.encoded
+        override fun verify(key: PublicKey?) = Unit
+        override fun verify(key: PublicKey?, sigProvider: String?) = Unit
+        override fun toString(): String = "StubX509Certificate"
+        override fun getPublicKey(): PublicKey = pub
+        override fun hasUnsupportedCriticalExtension(): Boolean = false
+        override fun getCriticalExtensionOIDs(): MutableSet<String>? = null
+        override fun getNonCriticalExtensionOIDs(): MutableSet<String>? = null
+        override fun getExtensionValue(oid: String?): ByteArray? = null
+        override fun getSubjectAlternativeNames(): Collection<List<*>>? = sans
     }
 }
