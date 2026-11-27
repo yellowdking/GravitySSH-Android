@@ -8,12 +8,14 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.model.BuiltinTemplate
+import com.gravityssh.app.model.CommandRecord
 import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.model.isSshPortTemplate
 import com.gravityssh.app.ui.*
@@ -23,6 +25,9 @@ import com.gravityssh.app.ui.components.AgEmptyState
 import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 
 private data class PendingToolCommand(
     val title: String,
@@ -34,19 +39,101 @@ private data class PendingToolCommand(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: () -> Unit) {
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-    val shortcuts = vaultState.data.shortcuts
-    val templates = vaultState.data.templates
-    val history = vaultState.data.history
+    var tabIndex by rememberSaveable { mutableIntStateOf(0) }
+    var search by rememberSaveable { mutableStateOf("") }
 
-    var tabIndex by remember { mutableIntStateOf(0) }
-    var search by remember { mutableStateOf("") }
-    var editingShortcut by remember { mutableStateOf<CommandShortcut?>(null) }
-    var editingTemplate by remember { mutableStateOf<BuiltinTemplate?>(null) }
+    val shortcuts by remember(viewModel) {
+        viewModel.vaultState.map { it.data.shortcuts }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = viewModel.vaultState.value.data.shortcuts)
+    val templates by remember(viewModel) {
+        viewModel.vaultState.map { it.data.templates }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = viewModel.vaultState.value.data.templates)
+    val historyCount by remember(viewModel) {
+        viewModel.vaultState.map { it.data.history.size }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = viewModel.vaultState.value.data.history.size)
+    val history by remember(viewModel, tabIndex) {
+        if (tabIndex == 2) {
+            viewModel.vaultState.map { it.data.history }.distinctUntilChanged()
+        } else {
+            flowOf(emptyList<CommandRecord>())
+        }
+    }.collectAsStateWithLifecycle(
+        initialValue = if (tabIndex == 2) viewModel.vaultState.value.data.history else emptyList()
+    )
+
+    var editingShortcutOpen by rememberSaveable { mutableStateOf(false) }
+    var editingShortcutId by rememberSaveable { mutableStateOf<String?>(null) }
+    var editingShortcutInitName by rememberSaveable { mutableStateOf("") }
+    var editingShortcutInitCommand by rememberSaveable { mutableStateOf("") }
+    var editingShortcutInitAutoExec by rememberSaveable { mutableStateOf(false) }
+
+    var editingTemplateOpen by rememberSaveable { mutableStateOf(false) }
+    var editingTemplateId by rememberSaveable { mutableStateOf<String?>(null) }
+
     var deletingShortcut by remember { mutableStateOf<CommandShortcut?>(null) }
     var deletingTemplate by remember { mutableStateOf<BuiltinTemplate?>(null) }
     var confirmClearHistory by remember { mutableStateOf(false) }
     var pendingCommand by remember { mutableStateOf<PendingToolCommand?>(null) }
+
+    val editingShortcut = if (!editingShortcutOpen) {
+        null
+    } else {
+        val id = editingShortcutId
+        if (id.isNullOrBlank()) {
+            CommandShortcut(
+                name = editingShortcutInitName,
+                command = editingShortcutInitCommand,
+                autoExecute = editingShortcutInitAutoExec
+            )
+        } else {
+            shortcuts.find { it.id == id }
+        }
+    }
+    val editingTemplate = if (!editingTemplateOpen) {
+        null
+    } else {
+        val id = editingTemplateId
+        if (id.isNullOrBlank()) BuiltinTemplate() else templates.find { it.id == id }
+    }
+
+    LaunchedEffect(editingShortcutOpen, editingShortcutId, shortcuts) {
+        if (editingShortcutOpen && !editingShortcutId.isNullOrBlank() && shortcuts.none { it.id == editingShortcutId }) {
+            editingShortcutOpen = false
+            editingShortcutId = null
+        }
+    }
+    LaunchedEffect(editingTemplateOpen, editingTemplateId, templates) {
+        if (editingTemplateOpen && !editingTemplateId.isNullOrBlank() && templates.none { it.id == editingTemplateId }) {
+            editingTemplateOpen = false
+            editingTemplateId = null
+        }
+    }
+
+    fun openShortcutEditor(sc: CommandShortcut) {
+        editingShortcutId = sc.id.ifBlank { null }
+        editingShortcutInitName = if (sc.id.isBlank()) sc.name else ""
+        editingShortcutInitCommand = if (sc.id.isBlank()) sc.command else ""
+        editingShortcutInitAutoExec = if (sc.id.isBlank()) sc.autoExecute else false
+        editingShortcutOpen = true
+    }
+
+    fun closeShortcutEditor() {
+        editingShortcutOpen = false
+        editingShortcutId = null
+        editingShortcutInitName = ""
+        editingShortcutInitCommand = ""
+        editingShortcutInitAutoExec = false
+    }
+
+    fun openTemplateEditor(tpl: BuiltinTemplate) {
+        editingTemplateId = tpl.id.ifBlank { null }
+        editingTemplateOpen = true
+    }
+
+    fun closeTemplateEditor() {
+        editingTemplateOpen = false
+        editingTemplateId = null
+    }
 
     val q = remember(search) { search.trim().lowercase() }
     val filteredShortcuts = remember(shortcuts, q) {
@@ -99,13 +186,13 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
                 title = { Text("快捷中心", style = MaterialTheme.typography.titleLarge, color = AgText) },
                 actions = {
                     when (tabIndex) {
-                        0 -> IconButton(onClick = { editingShortcut = CommandShortcut() }) { Icon(Icons.Rounded.Add, "新建", tint = AgAccent) }
+                        0 -> IconButton(onClick = { openShortcutEditor(CommandShortcut()) }) { Icon(Icons.Rounded.Add, "新建", tint = AgAccent) }
                         1 -> {
                             IconButton(onClick = { viewModel.loadPresetTemplates() }) { Icon(AgIcons.Download, "预置", tint = AgCyan) }
-                            IconButton(onClick = { editingTemplate = BuiltinTemplate() }) { Icon(Icons.Rounded.Add, "新建", tint = AgAccent) }
+                            IconButton(onClick = { openTemplateEditor(BuiltinTemplate()) }) { Icon(Icons.Rounded.Add, "新建", tint = AgAccent) }
                         }
-                        2 -> IconButton(onClick = { confirmClearHistory = true }, enabled = history.isNotEmpty()) {
-                            Icon(AgIcons.DeleteSweep, "清空", tint = if (history.isNotEmpty()) AgDanger else AgMuted)
+                        2 -> IconButton(onClick = { confirmClearHistory = true }, enabled = historyCount > 0) {
+                            Icon(AgIcons.DeleteSweep, "清空", tint = if (historyCount > 0) AgDanger else AgMuted)
                         }
                     }
                 },
@@ -115,7 +202,7 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
             TabRow(selectedTabIndex = tabIndex, containerColor = AgSurface, contentColor = AgAccent) {
-                listOf("快捷命令(${shortcuts.size})", "运维模板(${templates.size})", "历史(${history.size})").forEachIndexed { idx, t ->
+                listOf("快捷命令(${shortcuts.size})", "运维模板(${templates.size})", "历史($historyCount)").forEachIndexed { idx, t ->
                     Tab(selected = tabIndex == idx, onClick = { tabIndex = idx }, text = { Text(t, color = if (tabIndex == idx) AgText else AgMuted, fontSize = 12.sp) })
                 }
             }
@@ -136,7 +223,7 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
                             title = if (shortcuts.isEmpty()) "暂无快捷命令" else "没有匹配的快捷命令",
                             subtitle = if (shortcuts.isEmpty()) "保存常用命令或脚本，在终端中一键触发执行" else "请尝试更改筛选关键字",
                             actionLabel = if (shortcuts.isEmpty()) "新建快捷命令" else null,
-                            onAction = if (shortcuts.isEmpty()) { { editingShortcut = CommandShortcut() } } else null
+                            onAction = if (shortcuts.isEmpty()) { { openShortcutEditor(CommandShortcut()) } } else null
                         )
                         1 -> AgEmptyState(
                             icon = AgIcons.Terminal,
@@ -147,8 +234,8 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
                         )
                         else -> AgEmptyState(
                             icon = AgIcons.History,
-                            title = if (history.isEmpty()) "暂无命令执行历史" else "没有匹配的历史记录",
-                            subtitle = if (history.isEmpty()) "在 SSH 终端执行的命令会自动记录在此，支持搜索与收藏" else "请尝试更改筛选关键字"
+                            title = if (historyCount == 0) "暂无命令执行历史" else "没有匹配的历史记录",
+                            subtitle = if (historyCount == 0) "在 SSH 终端执行的命令会自动记录在此，支持搜索与收藏" else "请尝试更改筛选关键字"
                         )
                     }
                 }
@@ -162,7 +249,7 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
                         0 -> items(filteredShortcuts, key = { it.id }) { sc ->
                             ShortcutItemCard(sc, { viewModel.saveShortcut(sc.copy(pinned = !sc.pinned)) }, {
                                 if (viewModel.runShortcutInActive(sc)) onJumpToTerminal() else viewModel.showToast("请先连接 SSH 终端")
-                            }, { editingShortcut = sc }, { deletingShortcut = sc })
+                            }, { openShortcutEditor(sc) }, { deletingShortcut = sc })
                         }
                         1 -> items(filteredTemplates, key = { it.id }) { tpl ->
                             TemplateItemCard(
@@ -177,14 +264,14 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
                                         )
                                     )
                                 },
-                                onEdit = { editingTemplate = tpl },
+                                onEdit = { openTemplateEditor(tpl) },
                                 onDelete = { deletingTemplate = tpl }
                             )
                         }
                         else -> items(filteredHistory, key = { it.id }) { rec ->
                             HistoryItemCard(
                                 rec = rec,
-                                onStar = { editingShortcut = CommandShortcut(name = rec.command.take(24), command = rec.command, autoExecute = true) },
+                                onStar = { openShortcutEditor(CommandShortcut(name = rec.command.take(24), command = rec.command, autoExecute = true)) },
                                 onRun = {
                                     requestConfirmRun(
                                         PendingToolCommand(
@@ -215,8 +302,8 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
         )
     }
 
-    editingShortcut?.let { ShortcutEditorDialog(it, { s -> viewModel.saveShortcut(s); editingShortcut = null }, { editingShortcut = null }) }
-    editingTemplate?.let { TemplateEditorDialog(it, { t -> viewModel.saveTemplate(t); editingTemplate = null }, { editingTemplate = null }) }
+    editingShortcut?.let { ShortcutEditorDialog(it, { s -> viewModel.saveShortcut(s); closeShortcutEditor() }, ::closeShortcutEditor) }
+    editingTemplate?.let { TemplateEditorDialog(it, { t -> viewModel.saveTemplate(t); closeTemplateEditor() }, ::closeTemplateEditor) }
     deletingShortcut?.let { sc ->
         AgConfirmDialog(
             title = "删除快捷命令",

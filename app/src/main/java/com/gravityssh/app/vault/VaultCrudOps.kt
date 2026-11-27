@@ -1,5 +1,6 @@
 package com.gravityssh.app.vault
 
+import com.gravityssh.app.model.AppSettings
 import com.gravityssh.app.model.AuthType
 import com.gravityssh.app.model.BuiltinOpsPresets
 import com.gravityssh.app.model.BuiltinTemplate
@@ -11,6 +12,7 @@ import com.gravityssh.app.model.ProxyType
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.VaultData
+import com.gravityssh.app.model.VaultLockState
 import java.time.Instant
 import java.util.UUID
 
@@ -20,6 +22,33 @@ internal object VaultCrudOps {
     const val MAX_TIMEOUT_SECONDS = 120
     const val MIN_KEEPALIVE_SECONDS = 0
     const val MAX_KEEPALIVE_SECONDS = 600
+    const val MIN_AUTO_LOCK_MINUTES = 0
+    const val MAX_AUTO_LOCK_MINUTES = 1440
+    val AUTO_LOCK_PRESET_MINUTES: List<Int> = listOf(0, 1, 5, 15, 30)
+
+    fun sanitizeSettings(settings: AppSettings): AppSettings {
+        val clampedAutoLock = settings.autoLockMinutes.coerceIn(MIN_AUTO_LOCK_MINUTES, MAX_AUTO_LOCK_MINUTES)
+        return if (clampedAutoLock == settings.autoLockMinutes) {
+            settings
+        } else {
+            settings.copy(autoLockMinutes = clampedAutoLock)
+        }
+    }
+
+    fun shouldAutoLockAfterBackground(
+        lockState: VaultLockState,
+        autoLockMinutes: Int,
+        backgroundedAtElapsedMs: Long,
+        nowElapsedMs: Long
+    ): Boolean {
+        if (!lockState.initialized || lockState.locked) return false
+        if (!lockState.hasPassword && !lockState.biometricEnabled) return false
+        val clampedMinutes = autoLockMinutes.coerceIn(MIN_AUTO_LOCK_MINUTES, MAX_AUTO_LOCK_MINUTES)
+        if (clampedMinutes <= 0) return false
+        if (backgroundedAtElapsedMs <= 0L) return false
+        val elapsedMs = nowElapsedMs - backgroundedAtElapsedMs
+        return elapsedMs >= clampedMinutes * 60_000L
+    }
 
     private inline fun <T> List<T>.upsertById(item: T, idOf: (T) -> String): List<T> {
         val targetId = idOf(item)
