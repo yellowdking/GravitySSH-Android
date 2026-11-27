@@ -14,6 +14,8 @@ class TerminalBuffer(
 
     private var mainGrid = E.makeGrid(rows, cols)
     private var altGrid = E.makeGrid(rows, cols)
+    private var mainSnapCache: Array<Array<TerminalCell>?> = arrayOfNulls(rows)
+    private var altSnapCache: Array<Array<TerminalCell>?> = arrayOfNulls(rows)
     internal val scrollback = ArrayDeque<Array<TerminalCell>>()
 
     @Volatile var isAltScreen: Boolean = false; private set
@@ -37,13 +39,17 @@ class TerminalBuffer(
     private var lastWriteRow = -1; private var lastWriteCol = -1
 
     internal fun activeGrid() = if (isAltScreen) altGrid else mainGrid
+    internal fun activeSnapCache() = if (isAltScreen) altSnapCache else mainSnapCache
     internal fun currentRowCells() = activeGrid()[cursorRow]
     internal fun clearWrapPending() { wrapPending = false; clearLastWrite() }
     internal fun clearLastWrite() { lastWriteRow = -1; lastWriteCol = -1 }
     internal fun markAltNanoDirty() { if (isAltScreen) altNanoDirty = true }
-    internal fun markAltRowDirty(row: Int) {
+    internal fun markRowDirty(row: Int) {
+        val cache = activeSnapCache()
+        if (row in cache.indices) cache[row] = null
         if (isAltScreen && (row == 0 || row >= rows - 2)) altNanoDirty = true
     }
+    internal fun markAltRowDirty(row: Int) = markRowDirty(row)
     private fun resetMargins() { topMargin = 0; bottomMargin = rows - 1; wrapPending = false; clearLastWrite() }
     private fun clampCursor() { cursorCol = cursorCol.coerceIn(0, cols - 1); cursorRow = cursorRow.coerceIn(0, rows - 1) }
 
@@ -156,14 +162,15 @@ class TerminalBuffer(
             mainCol = cursorCol; mainRow = cursorRow; mainStyle = style
         }
         altSavedCol = 0; altSavedRow = 0; altSavedStyle = TerminalStyle()
-        altGrid = E.makeGrid(rows, cols); isAltScreen = true; cursorCol = 0; cursorRow = 0
+        altGrid = E.makeGrid(rows, cols); altSnapCache = arrayOfNulls(rows)
+        isAltScreen = true; cursorCol = 0; cursorRow = 0
         cachedNanoHint = false; altNanoDirty = false
         resetMargins()
     }
 
     fun exitAlternateScreen(restoreCursor: Boolean = true) {
         if (!isAltScreen) return
-        isAltScreen = false; altGrid = E.makeGrid(rows, cols)
+        isAltScreen = false; altGrid = E.makeGrid(rows, cols); altSnapCache = arrayOfNulls(rows)
         cachedNanoHint = false; altNanoDirty = false
         if (restoreCursor) { cursorCol = mainCol; cursorRow = mainRow; style = mainStyle }
         clampCursor(); resetMargins()
@@ -262,13 +269,19 @@ class TerminalBuffer(
 
         mainGrid = E.resizeGridWithTopDrop(mainGrid, r, c, drop)
         altGrid = E.resizeGrid(altGrid, r, c)
+        mainSnapCache = arrayOfNulls(r)
+        altSnapCache = arrayOfNulls(r)
         cols = c; rows = r; clampCursor(); resetMargins()
         if (isAltScreen) altNanoDirty = true
         version++
     }
 
     fun snapshot(scrollOffset: Int = 0): TerminalSnapshot = synchronized(lock) {
-        E.buildSnapshot(cols, rows, cursorCol, cursorRow, cursorVisible, activeGrid(), scrollback, isAltScreen, bracketedPaste, version, scrollOffset)
+        E.buildSnapshot(
+            cols, rows, cursorCol, cursorRow, cursorVisible,
+            activeGrid(), scrollback, isAltScreen, bracketedPaste, version, scrollOffset,
+            activeSnapCache()
+        )
     }
 
     fun extractPlainText(scrollOffset: Int = 0): String = E.extractText(snapshot(scrollOffset))
