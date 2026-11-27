@@ -54,7 +54,8 @@ private class ProxyTunnelSocket(
         val deadlineNs = System.nanoTime() + effTimeout.toLong() * 1_000_000L
         try {
             val connectRemMs = remainingTimeoutMs(deadlineNs)
-            super.connect(InetSocketAddress(proxy.host.trim(), proxy.port), connectRemMs)
+            val cleanProxyHost = proxy.host.trim().removeSurrounding("[", "]")
+            super.connect(InetSocketAddress(cleanProxyHost, proxy.port), connectRemMs)
             runCatching { tcpNoDelay = true }
             soTimeout = remainingTimeoutMs(deadlineNs)
             when (proxy.type.lowercase()) {

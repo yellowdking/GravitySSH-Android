@@ -10,19 +10,7 @@ internal class SftpArchiveOps(
 ) {
     suspend fun compress(sessionId: String, paths: List<String>, archivePath: String) =
         withContext(Dispatchers.IO) {
-            require(paths.isNotEmpty()) { "请选择需要打包的文件" }
-            val cleanArchive = SshPathUtils.normalizePosixPath(archivePath)
-            val parentDir = SshPathUtils.parentDir(paths.first())
-            val names = paths.map { SshPathUtils.normalizePosixPath(it).substringAfterLast('/') }.filter { it.isNotEmpty() }
-            require(names.isNotEmpty()) { "无效的打包路径" }
-            val joinedNames = names.joinToString(" ") { SshPathUtils.shellQuote(it) }
-            val qParent = SshPathUtils.shellQuote(parentDir)
-            val qArchive = SshPathUtils.shellQuote(cleanArchive)
-            val cmd = if (cleanArchive.endsWith(".zip", ignoreCase = true)) {
-                "cd $qParent && zip -rq $qArchive -- $joinedNames"
-            } else {
-                "cd $qParent && tar -czf $qArchive -- $joinedNames"
-            }
+            val cmd = buildCompressCommand(paths, archivePath)
             runRemoteCommand(sessionId, cmd, 120L)
         }
 
@@ -86,6 +74,34 @@ internal class SftpArchiveOps(
         fun isSupportedArchiveName(name: String): Boolean {
             val lower = name.lowercase()
             return SUPPORTED_ARCHIVE_SUFFIXES.any { lower.endsWith(it) }
+        }
+
+        internal fun buildCompressCommand(paths: List<String>, archivePath: String): String {
+            require(paths.isNotEmpty()) { "请选择需要打包的文件" }
+            val cleanArchive = SshPathUtils.normalizePosixPath(archivePath)
+            require(cleanArchive != "/") { "无效的目标压缩包路径" }
+
+            val normalized = paths.map { SshPathUtils.normalizePosixPath(it) }
+            require(normalized.none { it == "/" }) { "不能打包根目录" }
+            val parents = normalized.map { SshPathUtils.parentDir(it) }.distinct()
+            require(parents.size == 1) { "批量打包仅支持同一目录下的文件" }
+            val parentDir = parents.first()
+
+            val names = normalized.map { it.substringAfterLast('/') }.distinct()
+            require(names.isNotEmpty() && names.none { it.isEmpty() || it == "." || it == ".." }) { "无效的打包路径" }
+
+            val joinedNames = names.joinToString(" ") { SshPathUtils.shellQuote(it) }
+            val qParent = SshPathUtils.shellQuote(parentDir)
+            val qArchive = SshPathUtils.shellQuote(cleanArchive)
+            val lower = cleanArchive.lowercase()
+            return when {
+                lower.endsWith(".zip") -> "cd $qParent && zip -rq $qArchive -- $joinedNames"
+                lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> "cd $qParent && tar -czf $qArchive -- $joinedNames"
+                lower.endsWith(".tar.bz2") -> "cd $qParent && tar -cjf $qArchive -- $joinedNames"
+                lower.endsWith(".tar.xz") -> "cd $qParent && tar -cJf $qArchive -- $joinedNames"
+                lower.endsWith(".tar") -> "cd $qParent && tar -cf $qArchive -- $joinedNames"
+                else -> throw IllegalArgumentException("不支持的压缩包格式: ${cleanArchive.substringAfterLast('/')}")
+            }
         }
     }
 }

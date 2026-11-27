@@ -51,13 +51,7 @@ internal object ProxyHandshakes {
             else -> throw IOException("SOCKS5 代理拒绝认证方式")
         }
 
-        val hostBytes = cleanHost.toByteArray(Charsets.UTF_8)
-        if (hostBytes.size > 255) throw IOException("目标主机名过长")
-        val req = ByteArray(7 + hostBytes.size)
-        req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x03; req[4] = hostBytes.size.toByte()
-        System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
-        req[5 + hostBytes.size] = ((targetPort ushr 8) and 0xFF).toByte()
-        req[6 + hostBytes.size] = (targetPort and 0xFF).toByte()
+        val req = buildSocks5ConnectRequest(cleanHost, targetPort)
         out.write(req)
         out.flush()
 
@@ -127,6 +121,117 @@ internal object ProxyHandshakes {
                 throw IOException("HTTP 代理响应头行数超过上限 ($MAX_HTTP_HEADER_LINES)")
             }
         }
+    }
+
+    internal fun buildSocks5ConnectRequest(targetHost: String, targetPort: Int): ByteArray {
+        val cleanHost = sanitizeTargetHost(targetHost).removeSurrounding("[", "]")
+        val ipv4 = parseIpv4Bytes(cleanHost)
+        if (ipv4 != null) {
+            val req = ByteArray(10)
+            req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x01
+            System.arraycopy(ipv4, 0, req, 4, 4)
+            req[8] = ((targetPort ushr 8) and 0xFF).toByte()
+            req[9] = (targetPort and 0xFF).toByte()
+            return req
+        }
+        val ipv6 = parseIpv6Bytes(cleanHost)
+        if (ipv6 != null) {
+            val req = ByteArray(22)
+            req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x04
+            System.arraycopy(ipv6, 0, req, 4, 16)
+            req[20] = ((targetPort ushr 8) and 0xFF).toByte()
+            req[21] = (targetPort and 0xFF).toByte()
+            return req
+        }
+        val hostBytes = cleanHost.toByteArray(Charsets.UTF_8)
+        if (hostBytes.size > 255) throw IOException("目标主机名过长")
+        val req = ByteArray(7 + hostBytes.size)
+        req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x03; req[4] = hostBytes.size.toByte()
+        System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
+        req[5 + hostBytes.size] = ((targetPort ushr 8) and 0xFF).toByte()
+        req[6 + hostBytes.size] = (targetPort and 0xFF).toByte()
+        return req
+    }
+
+    internal fun parseIpv4Bytes(host: String): ByteArray? {
+        val parts = host.split('.')
+        if (parts.size != 4) return null
+        val out = ByteArray(4)
+        for (i in 0 until 4) {
+            val p = parts[i]
+            if (p.isEmpty() || p.length > 3) return null
+            if (p.length > 1 && p[0] == '0') return null
+            var v = 0
+            for (ch in p) {
+                if (ch !in '0'..'9') return null
+                v = v * 10 + (ch - '0')
+            }
+            if (v !in 0..255) return null
+            out[i] = v.toByte()
+        }
+        return out
+    }
+
+    internal fun parseIpv6Bytes(host: String): ByteArray? {
+        val s = host.trim().removeSurrounding("[", "]")
+        if (s.isEmpty() || ':' !in s || '%' in s) return null
+        val doubleColonIdx = s.indexOf("::")
+        val leftGroups: List<Int>
+        val rightGroups: List<Int>
+        if (doubleColonIdx >= 0) {
+            if (s.indexOf("::", doubleColonIdx + 2) >= 0) return null
+            val leftPart = s.substring(0, doubleColonIdx)
+            val rightPart = s.substring(doubleColonIdx + 2)
+            leftGroups = if (leftPart.isEmpty()) emptyList() else parseIpv6GroupList(leftPart, allowTrailingIpv4 = false) ?: return null
+            rightGroups = if (rightPart.isEmpty()) emptyList() else parseIpv6GroupList(rightPart, allowTrailingIpv4 = true) ?: return null
+            if (leftGroups.size + rightGroups.size >= 8) return null
+        } else {
+            leftGroups = parseIpv6GroupList(s, allowTrailingIpv4 = true) ?: return null
+            rightGroups = emptyList()
+            if (leftGroups.size != 8) return null
+        }
+        val missing = 8 - leftGroups.size - rightGroups.size
+        val out = ByteArray(16)
+        var pos = 0
+        for (g in leftGroups) {
+            out[pos++] = ((g ushr 8) and 0xFF).toByte()
+            out[pos++] = (g and 0xFF).toByte()
+        }
+        pos += missing * 2
+        for (g in rightGroups) {
+            out[pos++] = ((g ushr 8) and 0xFF).toByte()
+            out[pos++] = (g and 0xFF).toByte()
+        }
+        return out
+    }
+
+    private fun parseIpv6GroupList(part: String, allowTrailingIpv4: Boolean): List<Int>? {
+        val tokens = part.split(':')
+        val groups = ArrayList<Int>(tokens.size + 1)
+        for (idx in tokens.indices) {
+            val tok = tokens[idx]
+            if (tok.isEmpty()) return null
+            if ('.' in tok) {
+                if (!allowTrailingIpv4 || idx != tokens.lastIndex) return null
+                val v4 = parseIpv4Bytes(tok) ?: return null
+                groups.add(((v4[0].toInt() and 0xFF) shl 8) or (v4[1].toInt() and 0xFF))
+                groups.add(((v4[2].toInt() and 0xFF) shl 8) or (v4[3].toInt() and 0xFF))
+            } else {
+                if (tok.length > 4) return null
+                var v = 0
+                for (ch in tok) {
+                    val d = when (ch) {
+                        in '0'..'9' -> ch - '0'
+                        in 'a'..'f' -> ch - 'a' + 10
+                        in 'A'..'F' -> ch - 'A' + 10
+                        else -> return null
+                    }
+                    v = (v shl 4) or d
+                }
+                groups.add(v)
+            }
+        }
+        return groups
     }
 
     private fun sanitizeTargetHost(targetHost: String): String {
