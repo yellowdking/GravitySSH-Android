@@ -3,9 +3,11 @@ package com.gravityssh.app.ui.sftp
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -15,6 +17,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.gravityssh.app.model.*
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.theme.AgBg
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 @Composable
@@ -22,41 +26,60 @@ fun SftpSheet(viewModel: AppViewModel, session: SessionTab, onDismiss: () -> Uni
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sftp = viewModel.container.sftpService
+    val sid = session.sessionId
 
-    var currentPath by remember(session.sessionId) { mutableStateOf(session.currentDir.ifBlank { session.homeDir }) }
-    var parentPath by remember { mutableStateOf("/") }
-    var entries by remember { mutableStateOf<List<SFTPFileEntry>>(emptyList()) }
-    var showHidden by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(true) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-    var transfer by remember { mutableStateOf<TransferProgress?>(null) }
-    var showMkdir by remember { mutableStateOf(false) }
-    var selectedEntry by remember { mutableStateOf<SFTPFileEntry?>(null) }
-    var renamingEntry by remember { mutableStateOf<SFTPFileEntry?>(null) }
-    var deletingEntry by remember { mutableStateOf<SFTPFileEntry?>(null) }
-    var deletingBusy by remember { mutableStateOf(false) }
-    var editingFile by remember { mutableStateOf<RemoteFileContent?>(null) }
-    var downloadTarget by remember { mutableStateOf<SFTPFileEntry?>(null) }
+    var currentPath by remember(sid) { mutableStateOf(session.currentDir.ifBlank { session.homeDir }) }
+    var parentPath by remember(sid) { mutableStateOf("/") }
+    var entries by remember(sid) { mutableStateOf<List<SFTPFileEntry>>(emptyList()) }
+    var showHidden by remember(sid) { mutableStateOf(false) }
+    var loading by remember(sid) { mutableStateOf(true) }
+    var errorMsg by remember(sid) { mutableStateOf<String?>(null) }
+    var transfer by remember(sid) { mutableStateOf<TransferProgress?>(null) }
+    var showMkdir by remember(sid) { mutableStateOf(false) }
+    var selectedEntry by remember(sid) { mutableStateOf<SFTPFileEntry?>(null) }
+    var renamingEntry by remember(sid) { mutableStateOf<SFTPFileEntry?>(null) }
+    var deletingEntry by remember(sid) { mutableStateOf<SFTPFileEntry?>(null) }
+    var deletingBusy by remember(sid) { mutableStateOf(false) }
+    var editingFile by remember(sid) { mutableStateOf<RemoteFileContent?>(null) }
+    var downloadTarget by remember(sid) { mutableStateOf<SFTPFileEntry?>(null) }
+    var reloadJob by remember(sid) { mutableStateOf<Job?>(null) }
+    var reloadGen by remember(sid) { mutableIntStateOf(0) }
 
     fun reload(path: String = currentPath) {
-        scope.launch {
-            loading = true; errorMsg = null
-            runCatching { sftp.list(session.sessionId, path, showHidden) }
-                .onSuccess { currentPath = it.path; parentPath = it.parent; entries = it.entries }
-                .onFailure { errorMsg = it.message ?: "读取目录失败" }
-            loading = false
+        reloadJob?.cancel()
+        val gen = ++reloadGen
+        reloadJob = scope.launch {
+            loading = true
+            errorMsg = null
+            try {
+                val res = sftp.list(sid, path, showHidden)
+                currentPath = res.path
+                parentPath = res.parent
+                entries = res.entries
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                errorMsg = e.message ?: "读取目录失败"
+            } finally {
+                if (reloadGen == gen) loading = false
+            }
         }
     }
 
-    LaunchedEffect(session.sessionId, showHidden) { reload(currentPath) }
+    LaunchedEffect(sid, showHidden) { reload(currentPath) }
 
     val uploadLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             val (name, total) = queryDocumentMeta(context, uri)
             val remote = "${currentPath.trimEnd('/')}/$name"
+            val stream = context.contentResolver.openInputStream(uri)
+            if (stream == null) {
+                viewModel.showToast("上传失败: 无法打开所选文件")
+                return@launch
+            }
             runCatching {
-                context.contentResolver.openInputStream(uri)?.use { sftp.uploadStream(session.sessionId, remote, it, total) { p -> transfer = p } }
+                stream.use { sftp.uploadStream(sid, remote, it, total) { p -> transfer = p } }
             }.onSuccess { viewModel.showToast("上传完成: $name"); transfer = null; reload() }
                 .onFailure { viewModel.showToast("上传失败: ${it.message}"); transfer = null }
         }
@@ -67,15 +90,30 @@ fun SftpSheet(viewModel: AppViewModel, session: SessionTab, onDismiss: () -> Uni
         downloadTarget = null
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
+            val stream = context.contentResolver.openOutputStream(uri)
+            if (stream == null) {
+                viewModel.showToast("下载失败: 无法写入目标文件")
+                return@launch
+            }
             runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { sftp.downloadStream(session.sessionId, target.path, it) { p -> transfer = p } }
+                stream.use { sftp.downloadStream(sid, target.path, it) { p -> transfer = p } }
             }.onSuccess { viewModel.showToast("下载完成: ${target.name}"); transfer = null }
                 .onFailure { viewModel.showToast("下载失败: ${it.message}"); transfer = null }
         }
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(modifier = Modifier.fillMaxSize(), color = AgBg) {
+    val canNavigateUp = currentPath != "/" && parentPath.isNotBlank() && parentPath != currentPath
+
+    Dialog(
+        onDismissRequest = {
+            if (canNavigateUp) reload(parentPath) else onDismiss()
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        BackHandler(enabled = canNavigateUp) {
+            reload(parentPath)
+        }
+        Surface(modifier = Modifier.fillMaxSize().imePadding(), color = AgBg) {
             SftpBrowserContent(
                 session.serverName, currentPath, showHidden, loading, errorMsg, transfer, entries,
                 onUp = { reload(parentPath) }, onHome = { reload(session.homeDir) }, onRefresh = { reload() },
@@ -88,7 +126,7 @@ fun SftpSheet(viewModel: AppViewModel, session: SessionTab, onDismiss: () -> Uni
     }
 
     SftpOverlays(
-        session.sessionId, currentPath, sftp, showMkdir, selectedEntry, renamingEntry, deletingEntry, deletingBusy, editingFile,
+        sid, currentPath, sftp, showMkdir, selectedEntry, renamingEntry, deletingEntry, deletingBusy, editingFile,
         onDismissMkdir = { showMkdir = false }, onDismissSelected = { selectedEntry = null },
         onStartRename = { selectedEntry = null; renamingEntry = it }, onDismissRename = { renamingEntry = null },
         onStartDelete = { selectedEntry = null; deletingEntry = it }, onDismissDelete = { deletingEntry = null },

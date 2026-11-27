@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gravityssh.app.model.SyncSendSession
 import com.gravityssh.app.ui.AppViewModel
+import com.gravityssh.app.ui.cancelSyncSend
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.theme.*
 import kotlinx.coroutines.delay
@@ -98,10 +99,7 @@ fun SyncSendCard(viewModel: AppViewModel) {
                     OutlinedButton(
                         onClick = {
                             val code = sess.code; sendSession = null
-                            scope.launch {
-                                runCatching { viewModel.container.syncService.cancelSend(code) }
-                                viewModel.showToast("已撤销同步码")
-                            }
+                            viewModel.cancelSyncSend(code)
                         },
                         border = BorderStroke(1.dp, AgDanger),
                         modifier = Modifier.weight(1f)
