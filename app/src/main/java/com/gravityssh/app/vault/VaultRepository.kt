@@ -37,13 +37,17 @@ class VaultRepository(
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val onLockCallbacks = CopyOnWriteArrayList<() -> Unit>()
 
-    private var activePassword: String? = null
     private var cachedPasswordKey: CachedPasswordKey? = null
     private var currentData: VaultData = VaultData()
     private var pendingDirty: Boolean = false
     private var debouncedFlushJob: Job? = null
 
-    private val _state = MutableStateFlow(VaultState(lockState = VaultLockState(locked = true)))
+    val masterKeyProvider: MasterKeyProvider
+        get() = store.masterKeyProvider
+
+    private val _state = MutableStateFlow(
+        VaultState(lockState = VaultLockState(locked = true, initialized = false))
+    )
     val state: StateFlow<VaultState> = _state.asStateFlow()
 
     fun addOnLockListener(listener: () -> Unit) {
@@ -61,7 +65,8 @@ class VaultRepository(
                 locked = res.locked,
                 hasPassword = res.hasPassword,
                 biometric = res.biometric,
-                startupError = null
+                startupError = null,
+                initialized = true
             )
         } catch (e: CancellationException) {
             throw e
@@ -75,7 +80,8 @@ class VaultRepository(
                 locked = true,
                 hasPassword = false,
                 biometric = false,
-                startupError = "保险库打开失败（文件损坏或系统密钥不可用）：${e.message ?: e.javaClass.simpleName}"
+                startupError = "保险库打开失败（文件损坏或系统密钥不可用）：${e.message ?: e.javaClass.simpleName}",
+                initialized = true
             )
         }
     }
@@ -92,7 +98,8 @@ class VaultRepository(
                 locked = res.locked,
                 hasPassword = res.hasPassword,
                 biometric = res.biometric,
-                startupError = null
+                startupError = null,
+                initialized = true
             )
         }
     }
@@ -102,12 +109,11 @@ class VaultRepository(
             val (data, newKey) = store.loadWithKeyCache(password)
             val oldKey = cachedPasswordKey
             currentData = data
-            activePassword = password
             cachedPasswordKey = newKey
             oldKey?.clear()
             pendingDirty = false
             cancelDebouncedFlushLocked()
-            emitStateLocked(locked = false, hasPassword = true, startupError = null)
+            emitStateLocked(locked = false, hasPassword = newKey != null, startupError = null, initialized = true)
         }.onFailure { e ->
             if (e is VaultKeystoreException || e is IllegalArgumentException || e is SerializationException) {
                 runCatching { Log.e(TAG, "Vault unlock failed due to keystore/corruption", e) }
@@ -116,7 +122,8 @@ class VaultRepository(
                     locked = true,
                     hasPassword = cur.hasPassword,
                     biometric = cur.biometricEnabled,
-                    startupError = e.message ?: "系统密钥已失效或保险库文件损坏，请备份并重置保险库"
+                    startupError = e.message ?: "系统密钥已失效或保险库文件损坏，请备份并重置保险库",
+                    initialized = true
                 )
             }
         }
@@ -124,14 +131,14 @@ class VaultRepository(
 
     fun unlockWithBiometric(): Result<Unit> = synchronized(lock) {
         runCatching {
-            val (data, hasPw, newKey) = store.loadForBiometric(activePassword)
+            val (data, hasPw, newKey) = store.loadForBiometric()
             val oldKey = cachedPasswordKey
             currentData = data
             cachedPasswordKey = newKey
             oldKey?.clear()
             pendingDirty = false
             cancelDebouncedFlushLocked()
-            emitStateLocked(locked = false, hasPassword = hasPw, startupError = null)
+            emitStateLocked(locked = false, hasPassword = hasPw, startupError = null, initialized = true)
         }.onFailure { e ->
             if (e is VaultKeystoreException || e is IllegalArgumentException || e is SerializationException) {
                 runCatching { Log.e(TAG, "Biometric unlock failed due to keystore/corruption", e) }
@@ -140,7 +147,8 @@ class VaultRepository(
                     locked = true,
                     hasPassword = cur.hasPassword,
                     biometric = cur.biometricEnabled,
-                    startupError = e.message ?: "系统密钥已失效或保险库文件损坏，请备份并重置保险库"
+                    startupError = e.message ?: "系统密钥已失效或保险库文件损坏，请备份并重置保险库",
+                    initialized = true
                 )
             }
         }
@@ -152,7 +160,7 @@ class VaultRepository(
             if (cur.locked) return@synchronized false
             if (!cur.hasPassword && !cur.biometricEnabled) return@synchronized false
             if (pendingDirty) {
-                runCatching { store.save(currentData, activePassword, cachedPasswordKey) }
+                runCatching { store.save(currentData, cachedPasswordKey) }
                     .onFailure { e -> runCatching { Log.e(TAG, "Failed to save pending vault changes before lock", e) } }
             }
             cancelDebouncedFlushLocked()
@@ -163,7 +171,8 @@ class VaultRepository(
                 locked = true,
                 hasPassword = cur.hasPassword,
                 biometric = cur.biometricEnabled,
-                startupError = cur.startupError
+                startupError = cur.startupError,
+                initialized = cur.initialized
             )
             true
         }
@@ -175,13 +184,14 @@ class VaultRepository(
     fun setMasterPassword(currentPassword: String, newPassword: String): Result<Unit> = synchronized(lock) {
         runCatching {
             requireUnlocked()
-            if (!activePassword.isNullOrEmpty() && currentPassword != activePassword) {
+            val curKey = cachedPasswordKey
+            if (curKey != null && !store.verifyPassword(currentPassword, curKey)) {
                 throw SecurityException("当前主密码不正确")
             }
             if (newPassword.isNotEmpty() && newPassword.isBlank()) {
                 throw IllegalArgumentException("主密码不能仅包含空白字符")
             }
-            if (activePassword.isNullOrEmpty() && newPassword.isEmpty()) {
+            if (curKey == null && newPassword.isEmpty()) {
                 throw IllegalArgumentException("请输入新主密码")
             }
             val nextPassword = newPassword.ifEmpty { null }
@@ -192,7 +202,7 @@ class VaultRepository(
             }
             val nextKey = nextPassword?.let { store.deriveForNewPassword(it) }
             try {
-                store.save(nextData, nextPassword, nextKey)
+                store.save(nextData, nextKey)
             } catch (e: Exception) {
                 nextKey?.clear()
                 throw e
@@ -200,11 +210,10 @@ class VaultRepository(
             val oldKey = cachedPasswordKey
             currentData = nextData
             cachedPasswordKey = nextKey
-            activePassword = nextPassword
             oldKey?.clear()
             cancelDebouncedFlushLocked()
             pendingDirty = false
-            emitStateLocked(locked = false, hasPassword = !activePassword.isNullOrEmpty())
+            emitStateLocked(locked = false, hasPassword = cachedPasswordKey != null)
         }
     }
 
@@ -248,7 +257,7 @@ class VaultRepository(
     fun flushPendingHistory() = synchronized(lock) {
         if (!pendingDirty || _state.value.lockState.locked) return@synchronized
         cancelDebouncedFlushLocked()
-        store.save(currentData, activePassword, cachedPasswordKey)
+        store.save(currentData, cachedPasswordKey)
         pendingDirty = false
     }
 
@@ -261,7 +270,7 @@ class VaultRepository(
 
     fun updateSettings(transform: (AppSettings) -> AppSettings): AppSettings = mutate { d ->
         val transformed = transform(d.settings)
-        val u = if (!activePassword.isNullOrEmpty() && transformed.biometricLockEnabled) {
+        val u = if (cachedPasswordKey != null && transformed.biometricLockEnabled) {
             transformed.copy(biometricLockEnabled = false)
         } else {
             transformed
@@ -293,7 +302,7 @@ class VaultRepository(
         if (next !== currentData) {
             currentData = next
             pendingDirty = true
-            emitStateLocked(locked = false, hasPassword = !activePassword.isNullOrEmpty())
+            emitStateLocked(locked = false, hasPassword = cachedPasswordKey != null)
             scheduleDebouncedFlushLocked()
         }
     }
@@ -304,11 +313,11 @@ class VaultRepository(
 
     private fun persistAndCommitLocked(next: VaultData) {
         // Persist BEFORE updating in-memory state so failures leave state untouched (rollback-safe)
-        store.save(next, activePassword, cachedPasswordKey)
+        store.save(next, cachedPasswordKey)
         currentData = next
         cancelDebouncedFlushLocked()
         pendingDirty = false
-        emitStateLocked(locked = false, hasPassword = !activePassword.isNullOrEmpty())
+        emitStateLocked(locked = false, hasPassword = cachedPasswordKey != null)
     }
 
     private fun scheduleDebouncedFlushLocked() {
@@ -318,7 +327,7 @@ class VaultRepository(
             synchronized(lock) {
                 if (!pendingDirty || _state.value.lockState.locked) return@synchronized
                 runCatching {
-                    store.save(currentData, activePassword, cachedPasswordKey)
+                    store.save(currentData, cachedPasswordKey)
                     pendingDirty = false
                 }.onFailure { e ->
                     runCatching { Log.e(TAG, "Debounced vault flush failed", e) }
@@ -333,7 +342,6 @@ class VaultRepository(
     }
 
     private fun clearSecretsLocked() {
-        activePassword = null
         cachedPasswordKey?.clear()
         cachedPasswordKey = null
     }
@@ -342,7 +350,8 @@ class VaultRepository(
         locked: Boolean,
         hasPassword: Boolean,
         biometric: Boolean = currentData.settings.biometricLockEnabled,
-        startupError: String? = null
+        startupError: String? = null,
+        initialized: Boolean = true
     ) {
         val effectiveBiometric = !hasPassword && biometric
         _state.value = VaultState(
@@ -350,7 +359,8 @@ class VaultRepository(
                 locked = locked,
                 hasPassword = hasPassword,
                 biometricEnabled = effectiveBiometric,
-                startupError = startupError
+                startupError = startupError,
+                initialized = initialized
             ),
             data = if (locked) VaultData() else currentData
         )
