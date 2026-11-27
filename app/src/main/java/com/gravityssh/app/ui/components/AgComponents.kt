@@ -2,23 +2,45 @@ package com.gravityssh.app.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,7 +74,7 @@ fun AgCard(
 fun AgTextField(
     value: String,
     onValueChange: (String) -> Unit,
-    label: String,
+    label: String? = null,
     modifier: Modifier = Modifier,
     placeholder: String = "",
     mono: Boolean = false,
@@ -61,15 +83,17 @@ fun AgTextField(
     visualTransformation: VisualTransformation = VisualTransformation.None,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
-    trailingIcon: @Composable (() -> Unit)? = null
+    trailingIcon: @Composable (() -> Unit)? = null,
+    enabled: Boolean = true
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        label = { Text(label, color = AgMuted) },
+        label = label?.let { { Text(it, color = AgMuted) } },
         placeholder = if (placeholder.isNotEmpty()) { { Text(placeholder, color = AgSubtle) } } else null,
         singleLine = singleLine,
         maxLines = maxLines,
+        enabled = enabled,
         visualTransformation = visualTransformation,
         keyboardOptions = keyboardOptions,
         keyboardActions = keyboardActions,
@@ -83,13 +107,49 @@ fun AgTextField(
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = AgAccent,
             unfocusedBorderColor = AgBorder,
+            disabledBorderColor = AgBorder.copy(alpha = 0.5f),
             focusedContainerColor = AgInputBg,
             unfocusedContainerColor = AgInputBg,
+            disabledContainerColor = AgInputBg.copy(alpha = 0.6f),
             cursorColor = AgAccent,
             focusedTextColor = AgText,
             unfocusedTextColor = AgText
         ),
         modifier = modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+fun AgPasswordField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    placeholder: String = "",
+    enabled: Boolean = true,
+    imeAction: ImeAction = ImeAction.Default,
+    onDone: (() -> Unit)? = null
+) {
+    var visible by remember { mutableStateOf(false) }
+    AgTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = label,
+        modifier = modifier,
+        placeholder = placeholder,
+        enabled = enabled,
+        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = imeAction),
+        keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),
+        trailingIcon = {
+            IconButton(onClick = { visible = !visible }, enabled = enabled) {
+                Icon(
+                    imageVector = if (visible) AgIcons.VisibilityOff else AgIcons.Visibility,
+                    contentDescription = if (visible) "隐藏密码" else "显示密码",
+                    tint = AgMuted
+                )
+            }
+        }
     )
 }
 
@@ -101,5 +161,115 @@ fun AgBadge(text: String, color: Color = AgAccent, modifier: Modifier = Modifier
             .padding(horizontal = 7.dp, vertical = 2.dp)
     ) {
         Text(text, color = color, style = MaterialTheme.typography.labelSmall, fontFamily = MonoFontFamily)
+    }
+}
+
+@Composable
+fun AgSwitchRow(
+    label: String,
+    checked: Boolean,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (enabled) AgText else AgMuted,
+            modifier = Modifier.weight(1f).padding(end = 8.dp)
+        )
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+fun AgStatusBanner(
+    message: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = color.copy(alpha = 0.14f),
+        border = BorderStroke(1.dp, color),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+            }
+            Text(message, color = color, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+fun AgFilterChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    selectedColor: Color = AgAccent
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier,
+        label = { Text(label) },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = selectedColor.copy(alpha = 0.22f),
+            selectedLabelColor = Color.White,
+            labelColor = AgMuted
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = enabled,
+            selected = selected,
+            borderColor = AgBorder,
+            selectedBorderColor = selectedColor
+        )
+    )
+}
+
+@Composable
+fun AgHapticPill(
+    dotColor: Color,
+    text: String,
+    textColor: Color,
+    bgColor: Color,
+    borderColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            onClick()
+        },
+        modifier = modifier.height(28.dp),
+        shape = RoundedCornerShape(7.dp),
+        color = bgColor,
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(6.dp).background(dotColor, CircleShape))
+            Text(text, color = textColor, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+        }
     }
 }

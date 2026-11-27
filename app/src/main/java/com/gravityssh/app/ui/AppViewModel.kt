@@ -6,17 +6,35 @@ import androidx.lifecycle.viewModelScope
 import com.gravityssh.app.AppContainer
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SessionTab
+import com.gravityssh.app.model.SyncSendPollResult
+import com.gravityssh.app.model.SyncSendSession
+import com.gravityssh.app.model.TransferProgress
 import com.gravityssh.app.model.UpdateCheckResult
 import com.gravityssh.app.model.VaultState
 import com.gravityssh.app.vault.KnownHostEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+
+data class SyncSendUiState(
+    val session: SyncSendSession? = null,
+    val pollResult: SyncSendPollResult? = null,
+    val busy: Boolean = false,
+    val error: String? = null,
+    val consumedSuccess: Boolean = false,
+    val remainingSec: Long = 0L,
+    val consecutivePollErrors: Int = 0,
+    val lastPollError: String? = null
+)
 
 class AppViewModel(val container: AppContainer) : ViewModel() {
 
@@ -34,21 +52,38 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     private val _checkingUpdate = MutableStateFlow(false)
     val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
 
+    internal val _sftpTransfer = MutableStateFlow<TransferProgress?>(null)
+    val sftpTransfer: StateFlow<TransferProgress?> = _sftpTransfer.asStateFlow()
+
+    internal val _sftpMutatedTick = MutableStateFlow(0)
+    val sftpMutatedTick: StateFlow<Int> = _sftpMutatedTick.asStateFlow()
+
+    internal var sftpTransferJob: Job? = null
+
+    internal val _syncSendState = MutableStateFlow(SyncSendUiState())
+    val syncSendState: StateFlow<SyncSendUiState> = _syncSendState.asStateFlow()
+
+    internal var syncCountdownJob: Job? = null
+    internal var syncPollJob: Job? = null
+
+    private var startupUpdateChecked = false
+
     init {
         viewModelScope.launch {
-            val st = vaultState.value
-            if (!st.lockState.locked && st.data.settings.checkUpdatesOnStartup) {
-                checkUpdates(silent = true)
-            }
+            vaultState
+                .map { !it.lockState.locked to it.data.settings.checkUpdatesOnStartup }
+                .distinctUntilChanged()
+                .collect { (unlocked, checkEnabled) ->
+                    if (unlocked && !startupUpdateChecked) {
+                        startupUpdateChecked = true
+                        if (checkEnabled) checkUpdates(silent = true)
+                    }
+                }
         }
     }
 
     fun showToast(message: String) {
         _toastEvents.tryEmit(message)
-    }
-
-    fun refreshKnownHosts() {
-        // KnownHostsManager.knownHosts is a live StateFlow; no manual copy needed.
     }
 
     fun clearHostKnownKey(host: String, port: Int): Boolean {
@@ -88,6 +123,19 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
                 .onFailure { if (!silent) showToast("检查更新失败: ${it.message}") }
             _checkingUpdate.value = false
         }
+    }
+
+    override fun onCleared() {
+        sftpTransferJob?.cancel()
+        syncCountdownJob?.cancel()
+        syncPollJob?.cancel()
+        val pendingId = _syncSendState.value.session?.sessionId
+        if (!pendingId.isNullOrBlank()) {
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO + NonCancellable).launch {
+                runCatching { container.syncService.cancelSend(pendingId) }
+            }
+        }
+        super.onCleared()
     }
 }
 
