@@ -5,8 +5,6 @@ import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -19,19 +17,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.BuildConfig
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
-
-@Composable
-internal fun ToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = AgText, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
-}
 
 @Composable
 internal fun SettingsUpdateCard(viewModel: AppViewModel) {
@@ -59,7 +46,7 @@ internal fun SettingsUpdateCard(viewModel: AppViewModel) {
                     CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = Color.White)
                     Spacer(Modifier.width(6.dp))
                 } else {
-                    Icon(Icons.Rounded.SystemUpdate, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Icon(AgIcons.SystemUpdate, null, tint = Color.White, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                 }
                 Text("检查更新", color = Color.White)

@@ -2,7 +2,6 @@ package com.gravityssh.app.ui.sync
 
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -30,6 +29,7 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
 import com.gravityssh.app.ui.theme.AgDanger
+import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -80,12 +80,20 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
                             try {
                                 if (!disposed.get() && !delivered.get()) {
                                     val plane = proxy.planes.firstOrNull()
-                                    if (plane != null) {
-                                        val buf = plane.buffer
-                                        val len = buf.remaining()
-                                        if (yuvBuf.size < len) yuvBuf = ByteArray(len)
-                                        buf.get(yuvBuf, 0, len)
-                                        decodeQr(proxy, plane.rowStride, yuvBuf, reader)?.let { text ->
+                                    val width = proxy.width
+                                    val height = proxy.height
+                                    if (plane != null && width > 0 && height > 0) {
+                                        val needed = width * height
+                                        if (yuvBuf.size < needed) yuvBuf = ByteArray(needed)
+                                        copyYPlaneTightly(
+                                            buf = plane.buffer,
+                                            width = width,
+                                            height = height,
+                                            rowStride = plane.rowStride,
+                                            pixelStride = plane.pixelStride,
+                                            dst = yuvBuf
+                                        )
+                                        decodeQr(width, height, yuvBuf, reader)?.let { text ->
                                             if (delivered.compareAndSet(false, true)) {
                                                 mainExecutor.execute {
                                                     if (!disposed.get()) currentOnScanned(text)
@@ -128,15 +136,53 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
     }
 }
 
-private fun decodeQr(
-    proxy: ImageProxy,
+private fun copyYPlaneTightly(
+    buf: ByteBuffer,
+    width: Int,
+    height: Int,
     rowStride: Int,
+    pixelStride: Int,
+    dst: ByteArray
+) {
+    val basePos = buf.position()
+    val limit = buf.limit()
+    val needed = width * height
+    if (pixelStride == 1 && rowStride == width) {
+        val toRead = minOf(needed, (limit - basePos).coerceAtLeast(0))
+        if (toRead > 0) buf.get(dst, 0, toRead)
+        if (toRead < needed) dst.fill(0, toRead, needed)
+        return
+    }
+    for (r in 0 until height) {
+        val rowStart = basePos + r * rowStride
+        val dstOff = r * width
+        if (rowStart >= limit) {
+            dst.fill(0, dstOff, needed)
+            break
+        }
+        if (pixelStride == 1) {
+            buf.position(rowStart)
+            val toRead = minOf(width, limit - rowStart)
+            buf.get(dst, dstOff, toRead)
+            if (toRead < width) dst.fill(0, dstOff + toRead, dstOff + width)
+        } else {
+            for (c in 0 until width) {
+                val idx = rowStart + c * pixelStride
+                dst[dstOff + c] = if (idx < limit) buf.get(idx) else 0
+            }
+        }
+    }
+}
+
+private fun decodeQr(
+    width: Int,
+    height: Int,
     data: ByteArray,
     reader: QRCodeReader
 ): String? {
     return runCatching {
         val source = PlanarYUVLuminanceSource(
-            data, rowStride, proxy.height, 0, 0, proxy.width, proxy.height, false
+            data, width, height, 0, 0, width, height, false
         )
         reader.decode(BinaryBitmap(HybridBinarizer(source))).text
     }.getOrNull().also { reader.reset() }

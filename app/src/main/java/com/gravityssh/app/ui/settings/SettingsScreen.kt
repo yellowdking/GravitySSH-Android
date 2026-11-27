@@ -4,9 +4,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,7 +12,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
-import com.gravityssh.app.ui.sync.SyncRelayCard
+import com.gravityssh.app.ui.components.AgIcons
+import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.theme.*
 import com.gravityssh.app.ui.updateSettings
 import kotlin.math.roundToInt
@@ -48,26 +46,31 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Icon(Icons.Rounded.QrCode2, null, tint = AgCyan, modifier = Modifier.size(28.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+                        Icon(AgIcons.QrCode2, null, tint = AgCyan, modifier = Modifier.size(28.dp))
                         Column {
-                            Text("多端同步", style = MaterialTheme.typography.titleMedium, color = AgText)
-                            Text("一次性同步码 / 二维码端到端加密迁移", style = MaterialTheme.typography.bodySmall, color = AgMuted)
+                            Text("多端同步与中继", style = MaterialTheme.typography.titleMedium, color = AgText)
+                            Text(
+                                if (settings.syncRelayUrl.isNotBlank()) "自定义中继: ${settings.syncRelayUrl}"
+                                else "一次性同步码 / 二维码端到端加密迁移 · 中继设置",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = AgMuted
+                            )
                         }
                     }
-                    Icon(Icons.Rounded.ChevronRight, null, tint = AgMuted)
+                    Icon(AgIcons.ChevronRight, null, tint = AgMuted)
                 }
             }
 
             AgCard {
                 Text("终端体验与智能辅助", style = MaterialTheme.typography.titleMedium, color = AgText)
                 Spacer(Modifier.height(6.dp))
-                ToggleRow("实时命令自动补全", settings.autocompleteEnabled) { v -> viewModel.updateSettings { it.copy(autocompleteEnabled = v) } }
-                ToggleRow("终端顶部主机监控条 (CPU/RAM/RTT)", settings.monitorBarEnabled) { v -> viewModel.updateSettings { it.copy(monitorBarEnabled = v) } }
-                ToggleRow("安全粘贴拦截 (高危命令/隐藏字符)", settings.pasteGuardEnabled) { v -> viewModel.updateSettings { it.copy(pasteGuardEnabled = v) } }
-                ToggleRow("终端关键字语义高亮 (Error/Warn/IP)", settings.keywordHighlightEnabled) { v -> viewModel.updateSettings { it.copy(keywordHighlightEnabled = v) } }
-                ToggleRow("记录命令执行历史", settings.recordCommands) { v -> viewModel.updateSettings { it.copy(recordCommands = v) } }
-                ToggleRow("启动时自动检查更新", settings.checkUpdatesOnStartup) { v -> viewModel.updateSettings { it.copy(checkUpdatesOnStartup = v) } }
+                AgSwitchRow("实时命令自动补全", settings.autocompleteEnabled) { v -> viewModel.updateSettings { it.copy(autocompleteEnabled = v) } }
+                AgSwitchRow("终端顶部主机监控条 (CPU/RAM/RTT)", settings.monitorBarEnabled) { v -> viewModel.updateSettings { it.copy(monitorBarEnabled = v) } }
+                AgSwitchRow("安全粘贴拦截 (高危命令/隐藏字符)", settings.pasteGuardEnabled) { v -> viewModel.updateSettings { it.copy(pasteGuardEnabled = v) } }
+                AgSwitchRow("终端关键字语义高亮 (Error/Warn/IP)", settings.keywordHighlightEnabled) { v -> viewModel.updateSettings { it.copy(keywordHighlightEnabled = v) } }
+                AgSwitchRow("记录命令执行历史", settings.recordCommands) { v -> viewModel.updateSettings { it.copy(recordCommands = v) } }
+                AgSwitchRow("启动时自动检查更新", settings.checkUpdatesOnStartup) { v -> viewModel.updateSettings { it.copy(checkUpdatesOnStartup = v) } }
                 Spacer(Modifier.height(8.dp))
                 Text("终端字号：${fontSizeSlider.roundToInt()} sp", style = MaterialTheme.typography.bodyMedium, color = AgText)
                 Slider(
@@ -84,8 +87,6 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
                     colors = SliderDefaults.colors(thumbColor = AgAccent, activeTrackColor = AgAccent)
                 )
             }
-
-            SyncRelayCard(viewModel = viewModel)
 
             SettingsTouchCursorCard(viewModel = viewModel)
             SettingsSecuritySection(viewModel = viewModel)

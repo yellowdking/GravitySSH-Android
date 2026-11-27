@@ -5,13 +5,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.terminal.TouchCursorMode
 import com.gravityssh.app.terminal.TouchSensitivity
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgFilterChip
+import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.theme.*
 import com.gravityssh.app.ui.updateSettings
 
@@ -35,22 +36,11 @@ internal fun SettingsTouchCursorCard(viewModel: AppViewModel) {
         Text("触控模式", style = MaterialTheme.typography.labelMedium, color = AgMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             TouchCursorMode.entries.forEach { m ->
-                val selected = curMode == m
-                FilterChip(
-                    selected = selected,
+                AgFilterChip(
+                    selected = curMode == m,
                     onClick = { viewModel.updateSettings { it.copy(touchCursorMode = m.id) } },
-                    label = { Text(m.label) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = AgAccent.copy(alpha = 0.22f),
-                        selectedLabelColor = Color.White,
-                        labelColor = AgMuted
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = selected,
-                        borderColor = AgBorder,
-                        selectedBorderColor = AgAccent
-                    )
+                    label = m.label,
+                    selectedColor = AgAccent
                 )
             }
         }
@@ -59,28 +49,17 @@ internal fun SettingsTouchCursorCard(viewModel: AppViewModel) {
         Text("滑动加速灵敏度", style = MaterialTheme.typography.labelMedium, color = AgMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             TouchSensitivity.entries.forEach { s ->
-                val selected = curSens == s
-                FilterChip(
-                    selected = selected,
+                AgFilterChip(
+                    selected = curSens == s,
                     onClick = { viewModel.updateSettings { it.copy(touchCursorSensitivity = s.id) } },
-                    label = { Text(s.label) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = AgCyan.copy(alpha = 0.2f),
-                        selectedLabelColor = AgCyan,
-                        labelColor = AgMuted
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = selected,
-                        borderColor = AgBorder,
-                        selectedBorderColor = AgCyan
-                    )
+                    label = s.label,
+                    selectedColor = AgCyan
                 )
             }
         }
 
         Spacer(Modifier.height(6.dp))
-        ToggleRow("快速滑动惯性滑行减速", settings.touchCursorFling) { v ->
+        AgSwitchRow("快速滑动惯性滑行减速", settings.touchCursorFling) { v ->
             viewModel.updateSettings { it.copy(touchCursorFling = v) }
         }
     }

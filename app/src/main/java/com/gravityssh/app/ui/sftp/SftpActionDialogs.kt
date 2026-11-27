@@ -38,23 +38,60 @@ fun SftpNameInputDialog(
     label: String,
     initialValue: String = "",
     confirmLabel: String = "确定",
-    onConfirm: (String) -> Unit,
+    onConfirm: (name: String, onDone: (Result<Unit>) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     var text by remember(initialValue) { mutableStateOf(initialValue) }
+    var busy by remember { mutableStateOf(false) }
+    var submitError by remember { mutableStateOf<String?>(null) }
+
+    val trimmed = text.trim()
+    val nameInvalid = trimmed.isNotEmpty() && ('/' in trimmed || trimmed == "." || trimmed == "..")
+    val validationError = if (nameInvalid) "名称不能包含 /，也不能为 . 或 .." else null
+    val canSubmit = trimmed.isNotEmpty() && !nameInvalid && !busy
+
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         containerColor = AgPanel,
         title = { Text(title, color = AgText) },
-        text = { AgTextField(value = text, onValueChange = { text = it }, label = label, mono = true) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                AgTextField(
+                    value = text,
+                    onValueChange = { text = it; submitError = null },
+                    label = label,
+                    mono = true,
+                    enabled = !busy
+                )
+                val err = validationError ?: submitError
+                if (err != null) {
+                    Text(err, style = MaterialTheme.typography.bodySmall, color = AgDanger)
+                }
+            }
+        },
         confirmButton = {
             Button(
-                onClick = { if (text.isNotBlank()) onConfirm(text.trim()) },
-                enabled = text.isNotBlank(),
+                onClick = {
+                    if (!canSubmit) return@Button
+                    busy = true
+                    submitError = null
+                    onConfirm(trimmed) { res ->
+                        busy = false
+                        res.onSuccess { onDismiss() }
+                            .onFailure { submitError = it.message ?: "操作失败" }
+                    }
+                },
+                enabled = canSubmit,
                 colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
-            ) { Text(confirmLabel, color = Color.White) }
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = Color.White)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(if (busy) "处理中..." else confirmLabel, color = Color.White)
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = AgMuted) } }
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消", color = AgMuted) } }
     )
 }
 
@@ -99,6 +136,7 @@ fun SftpDeleteConfirmDialog(
 @Composable
 fun SftpEntryActionDialog(
     entry: SFTPFileEntry,
+    loadingEdit: Boolean = false,
     onEdit: () -> Unit,
     onDownload: () -> Unit,
     onRename: () -> Unit,
@@ -112,32 +150,48 @@ fun SftpEntryActionDialog(
         entry.name.lowercase().endsWith(it)
     }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!loadingEdit) onDismiss() },
         containerColor = AgPanel,
         title = { Text(entry.name, color = AgText, style = MaterialTheme.typography.titleMedium) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.fillMaxWidth()) {
                 if (!entry.isDir) {
-                    ActionItem("在线编辑文本 (<= 1MB)", AgCyan, onEdit)
-                    ActionItem("下载到本地存储", AgText, onDownload)
+                    ActionItem(
+                        label = if (loadingEdit) "正在读取文件..." else "在线编辑文本 (<= 1MB)",
+                        color = AgCyan,
+                        enabled = !loadingEdit,
+                        busy = loadingEdit,
+                        onClick = onEdit
+                    )
+                    ActionItem("下载到本地存储", AgText, !loadingEdit, false, onDownload)
                 }
-                ActionItem("重命名", AgText, onRename)
-                ActionItem("压缩为 .tar.gz", AgText, onCompress)
-                if (isArchive) ActionItem("解压到当前目录", AgCyan, onExtract)
-                ActionItem("权限对齐 (同级目录模式)", AgText, onAlignPerms)
-                ActionItem("删除", AgDanger, onDelete)
+                ActionItem("重命名", AgText, !loadingEdit, false, onRename)
+                ActionItem("压缩为 .tar.gz", AgText, !loadingEdit, false, onCompress)
+                if (isArchive) ActionItem("解压到当前目录", AgCyan, !loadingEdit, false, onExtract)
+                ActionItem("权限对齐 (同级目录模式)", AgText, !loadingEdit, false, onAlignPerms)
+                ActionItem("删除", AgDanger, !loadingEdit, false, onDelete)
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭", color = AgMuted) } }
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !loadingEdit) { Text("关闭", color = AgMuted) } }
     )
 }
 
 @Composable
-private fun ActionItem(label: String, color: Color, onClick: () -> Unit) {
-    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+private fun ActionItem(
+    label: String,
+    color: Color,
+    enabled: Boolean = true,
+    busy: Boolean = false,
+    onClick: () -> Unit
+) {
+    TextButton(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = color, style = MaterialTheme.typography.bodyMedium)
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = color)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(label, color = if (enabled) color else AgMuted, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

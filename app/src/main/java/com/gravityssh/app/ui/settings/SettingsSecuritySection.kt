@@ -16,7 +16,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.components.BiometricHelper
+import com.gravityssh.app.ui.setMasterPassword
 import com.gravityssh.app.ui.theme.*
 import com.gravityssh.app.ui.updateSettings
 
@@ -32,10 +34,6 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
     var showPwDialog by remember { mutableStateOf(false) }
     var confirmClearKnown by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        viewModel.refreshKnownHosts()
-    }
-
     AgCard {
         Text("保险库安全与锁屏", style = MaterialTheme.typography.titleMedium, color = AgText)
         Spacer(Modifier.height(6.dp))
@@ -45,20 +43,13 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
             color = AgMuted
         )
         Spacer(Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("生物识别指纹解锁", style = MaterialTheme.typography.bodyMedium, color = AgText)
-            Switch(
-                checked = settings.biometricLockEnabled,
-                enabled = canBiometric,
-                onCheckedChange = { enabled ->
-                    viewModel.updateSettings { it.copy(biometricLockEnabled = enabled) }
-                    viewModel.showToast(if (enabled) "已开启生物识别锁" else "已关闭生物识别锁")
-                }
-            )
+        AgSwitchRow(
+            label = "生物识别指纹解锁",
+            checked = settings.biometricLockEnabled,
+            enabled = canBiometric
+        ) { enabled ->
+            viewModel.updateSettings { it.copy(biometricLockEnabled = enabled) }
+            viewModel.showToast(if (enabled) "已开启生物识别锁" else "已关闭生物识别锁")
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -113,13 +104,11 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
     if (showPwDialog) {
         MasterPasswordDialog(
             hasExisting = lockState.hasPassword,
-            onSave = { cur, next ->
-                viewModel.container.vaultRepository.setMasterPassword(cur, next)
-                    .onSuccess {
-                        viewModel.showToast(if (next.isEmpty()) "已移除主密码" else "主密码已更新")
-                        showPwDialog = false
-                    }
-                    .onFailure { viewModel.showToast(it.message ?: "操作失败") }
+            onSave = { cur, next, done ->
+                viewModel.setMasterPassword(cur, next) { res ->
+                    res.onSuccess { showPwDialog = false }
+                    done(res)
+                }
             },
             onDismiss = { showPwDialog = false }
         )

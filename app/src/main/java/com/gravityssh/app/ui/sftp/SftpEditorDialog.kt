@@ -17,8 +17,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -31,18 +29,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.gravityssh.app.model.RemoteFileContent
 import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.AgAccent
 import com.gravityssh.app.ui.theme.AgBg
-import com.gravityssh.app.ui.theme.AgBorder
-import com.gravityssh.app.ui.theme.AgInputBg
 import com.gravityssh.app.ui.theme.AgMuted
 import com.gravityssh.app.ui.theme.AgSurface
 import com.gravityssh.app.ui.theme.AgText
@@ -125,17 +120,14 @@ fun SftpEditorDialog(
                     }
                 }
 
-                OutlinedTextField(
+                AgTextField(
                     value = content,
                     onValueChange = { content = it },
-                    textStyle = TextStyle(fontFamily = MonoFontFamily, fontSize = 12.sp, lineHeight = 18.sp, color = AgText),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AgBorder,
-                        unfocusedBorderColor = AgBorder,
-                        focusedContainerColor = AgInputBg,
-                        unfocusedContainerColor = AgInputBg,
-                        cursorColor = AgAccent
-                    ),
+                    label = null,
+                    mono = true,
+                    singleLine = false,
+                    maxLines = Int.MAX_VALUE,
+                    enabled = !saving,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)

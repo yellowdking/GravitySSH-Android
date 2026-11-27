@@ -5,8 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
-import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -16,6 +14,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gravityssh.app.model.SFTPFileEntry
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
 import java.util.Locale
 
@@ -29,7 +28,7 @@ internal fun SftpRow(entry: SFTPFileEntry, onTap: () -> Unit, onMenu: () -> Unit
     ) {
         Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                if (entry.isDir) Icons.Rounded.Folder else Icons.AutoMirrored.Rounded.InsertDriveFile,
+                if (entry.isDir) AgIcons.Folder else AgIcons.InsertDriveFile,
                 null,
                 tint = if (entry.isDir) AgWarning else AgCyan,
                 modifier = Modifier.size(22.dp)

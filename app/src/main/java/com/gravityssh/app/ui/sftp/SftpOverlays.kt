@@ -1,14 +1,23 @@
 package com.gravityssh.app.ui.sftp
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.viewModelScope
 import com.gravityssh.app.model.RemoteFileContent
 import com.gravityssh.app.model.SFTPFileEntry
 import com.gravityssh.app.ssh.SftpService
+import com.gravityssh.app.ui.AppViewModel
+import com.gravityssh.app.ui.runSftpOp
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 @Composable
 internal fun SftpOverlays(
+    viewModel: AppViewModel,
     sessionId: String,
     currentPath: String,
     sftp: SftpService,
@@ -32,52 +41,61 @@ internal fun SftpOverlays(
     onToast: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    var loadingEdit by remember { mutableStateOf(false) }
 
     if (showMkdir) {
-        SftpNameInputDialog("新建文件夹", "文件夹名称", onConfirm = { name ->
-            onDismissMkdir()
-            scope.launch {
-                runCatching { sftp.mkdir(sessionId, "${currentPath.trimEnd('/')}/$name") }
-                    .onSuccess { onReload() }.onFailure { onToast("新建失败: ${it.message}") }
-            }
-        }, onDismiss = onDismissMkdir)
+        SftpNameInputDialog(
+            title = "新建文件夹",
+            label = "文件夹名称",
+            onConfirm = { name, onDone ->
+                viewModel.runSftpOp(errorPrefix = "新建失败", onDone = onDone) {
+                    sftp.mkdir(sessionId, "${currentPath.trimEnd('/')}/$name")
+                }
+            },
+            onDismiss = onDismissMkdir
+        )
     }
 
     selectedEntry?.let { entry ->
         SftpEntryActionDialog(
             entry = entry,
+            loadingEdit = loadingEdit,
             onEdit = {
-                onDismissSelected()
+                if (loadingEdit) return@SftpEntryActionDialog
+                loadingEdit = true
                 scope.launch {
                     runCatching { sftp.readTextFile(sessionId, entry.path) }
-                        .onSuccess { onOpenEditor(it) }.onFailure { onToast("打开失败: ${it.message}") }
+                        .onSuccess {
+                            loadingEdit = false
+                            onDismissSelected()
+                            onOpenEditor(it)
+                        }
+                        .onFailure {
+                            loadingEdit = false
+                            onToast("打开失败: ${it.message}")
+                        }
                 }
             },
             onDownload = { onStartDownload(entry) },
             onRename = { onStartRename(entry) },
             onCompress = {
                 onDismissSelected()
-                scope.launch {
-                    val archive = "${currentPath.trimEnd('/')}/${entry.name}.tar.gz"
-                    runCatching { sftp.compress(sessionId, listOf(entry.path), archive) }
-                        .onSuccess { onToast("已压缩为 ${entry.name}.tar.gz"); onReload() }
-                        .onFailure { onToast("压缩失败: ${it.message}") }
+                val archive = "${currentPath.trimEnd('/')}/${entry.name}.tar.gz"
+                viewModel.runSftpOp(successMsg = "已压缩为 ${entry.name}.tar.gz", errorPrefix = "压缩失败") {
+                    sftp.compress(sessionId, listOf(entry.path), archive)
                 }
             },
             onExtract = {
                 onDismissSelected()
-                scope.launch {
-                    runCatching { sftp.extract(sessionId, entry.path, currentPath) }
-                        .onSuccess { onToast("解压完成"); onReload() }
-                        .onFailure { onToast("解压失败: ${it.message}") }
+                viewModel.runSftpOp(successMsg = "解压完成", errorPrefix = "解压失败") {
+                    sftp.extract(sessionId, entry.path, currentPath)
                 }
             },
             onAlignPerms = {
                 onDismissSelected()
-                scope.launch {
-                    runCatching { sftp.alignPermissions(sessionId, entry.path) }
-                        .onSuccess { onToast("权限已对齐为 $it"); onReload() }
-                        .onFailure { onToast("权限对齐失败: ${it.message}") }
+                viewModel.runSftpOp(errorPrefix = "权限对齐失败") {
+                    val mode = sftp.alignPermissions(sessionId, entry.path)
+                    onToast("权限已对齐为 $mode")
                 }
             },
             onDelete = { onStartDelete(entry) },
@@ -86,33 +104,58 @@ internal fun SftpOverlays(
     }
 
     renamingEntry?.let { entry ->
-        SftpNameInputDialog("重命名", "新名称", entry.name, "重命名", onConfirm = { newName ->
-            onDismissRename()
-            val dst = "${entry.path.substringBeforeLast('/')}/$newName"
-            scope.launch {
-                runCatching { sftp.rename(sessionId, entry.path, dst) }
-                    .onSuccess { onReload() }.onFailure { onToast("重命名失败: ${it.message}") }
-            }
-        }, onDismiss = onDismissRename)
+        SftpNameInputDialog(
+            title = "重命名",
+            label = "新名称",
+            initialValue = entry.name,
+            confirmLabel = "重命名",
+            onConfirm = { newName, onDone ->
+                val dst = "${entry.path.substringBeforeLast('/')}/$newName"
+                viewModel.runSftpOp(errorPrefix = "重命名失败", onDone = onDone) {
+                    sftp.rename(sessionId, entry.path, dst)
+                }
+            },
+            onDismiss = onDismissRename
+        )
     }
 
     deletingEntry?.let { entry ->
-        SftpDeleteConfirmDialog(entry, deletingBusy, onConfirm = {
-            onSetDeleteBusy(true)
-            scope.launch {
-                runCatching { sftp.delete(sessionId, entry.path) }
-                    .onSuccess { onDismissDelete(); onReload() }
-                    .onFailure { onToast("删除失败: ${it.message}") }
-                onSetDeleteBusy(false)
-            }
-        }, onDismiss = onDismissDelete)
+        SftpDeleteConfirmDialog(
+            entry = entry,
+            busy = deletingBusy,
+            onConfirm = {
+                onSetDeleteBusy(true)
+                viewModel.runSftpOp(
+                    errorPrefix = "删除失败",
+                    onDone = { res ->
+                        onSetDeleteBusy(false)
+                        if (res.isSuccess) onDismissDelete()
+                    }
+                ) {
+                    sftp.delete(sessionId, entry.path)
+                }
+            },
+            onDismiss = onDismissDelete
+        )
     }
 
     editingFile?.let { file ->
-        SftpEditorDialog(file, onSave = { newContent ->
-            runCatching { sftp.writeTextFile(sessionId, file.path, newContent) }
-                .onSuccess { onToast("文件已保存"); onDismissEditor(); onReload() }
-                .onFailure { onToast("保存失败: ${it.message}") }
-        }, onDismiss = onDismissEditor)
+        SftpEditorDialog(
+            file = file,
+            onSave = { newContent ->
+                runCatching {
+                    viewModel.viewModelScope.async {
+                        sftp.writeTextFile(sessionId, file.path, newContent)
+                    }.await()
+                }.onSuccess {
+                    onToast("文件已保存")
+                    onDismissEditor()
+                    onReload()
+                }.onFailure {
+                    onToast("保存失败: ${it.message}")
+                }
+            },
+            onDismiss = onDismissEditor
+        )
     }
 }
