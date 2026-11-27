@@ -86,6 +86,48 @@ class VaultRepositoryTest {
     }
 
     @Test
+    fun biometricLockMutuallyExclusiveWithMasterPassword() {
+        val file = File(tempFolder.root, "vault-bio.gsv")
+        val kp = InMemoryMasterKeyProvider()
+        val repo = createRepo(file, kp)
+        repo.open()
+
+        // Without master password, biometric lock works across lock/reopen/unlock
+        repo.updateSettings { it.copy(biometricLockEnabled = true) }
+        assertTrue(repo.state.value.lockState.biometricEnabled)
+        assertFalse(repo.state.value.lockState.hasPassword)
+
+        repo.lockNow()
+        assertTrue(repo.state.value.lockState.locked)
+        assertTrue(repo.state.value.lockState.biometricEnabled)
+        assertTrue(repo.unlockWithBiometric().isSuccess)
+        assertFalse(repo.state.value.lockState.locked)
+
+        val reopenedBio = createRepo(file, kp)
+        reopenedBio.open()
+        assertTrue(reopenedBio.state.value.lockState.locked)
+        assertTrue(reopenedBio.state.value.lockState.biometricEnabled)
+        assertTrue(reopenedBio.unlockWithBiometric().isSuccess)
+
+        // Setting a master password clears biometricLockEnabled and suppresses biometricEnabled
+        assertTrue(reopenedBio.setMasterPassword("", "pw-123").isSuccess)
+        assertTrue(reopenedBio.state.value.lockState.hasPassword)
+        assertFalse(reopenedBio.state.value.lockState.biometricEnabled)
+        assertFalse(reopenedBio.state.value.data.settings.biometricLockEnabled)
+
+        // Attempting to re-enable biometric while master password is set is ignored
+        reopenedBio.updateSettings { it.copy(biometricLockEnabled = true) }
+        assertFalse(reopenedBio.state.value.lockState.biometricEnabled)
+        assertFalse(reopenedBio.state.value.data.settings.biometricLockEnabled)
+
+        // Locking with master password must never advertise biometric unlock
+        reopenedBio.lockNow()
+        assertTrue(reopenedBio.state.value.lockState.locked)
+        assertTrue(reopenedBio.state.value.lockState.hasPassword)
+        assertFalse(reopenedBio.state.value.lockState.biometricEnabled)
+    }
+
+    @Test
     fun syncImportMergeAndOverwrite() {
         val repo = createRepo()
         repo.open()

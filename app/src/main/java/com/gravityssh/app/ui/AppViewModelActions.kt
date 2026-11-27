@@ -16,7 +16,9 @@ import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.terminal.TouchCursorMode
 import com.gravityssh.app.terminal.TouchSensitivity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -223,14 +225,18 @@ fun AppViewModel.startSftpUpload(
 ) {
     val appCtx = context.applicationContext
     sftpTransferJob?.cancel()
-    sftpTransferJob = viewModelScope.launch {
+    _sftpTransfer.value = null
+    val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+        val thisJob = coroutineContext[Job]
         try {
             withContext(Dispatchers.IO) {
                 val stream = appCtx.contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("无法打开所选文件")
                 stream.use { input ->
                     container.sftpService.uploadStream(sessionId, remotePath, input, totalBytes) { p ->
-                        _sftpTransfer.value = p
+                        if (sftpTransferJob === thisJob) {
+                            _sftpTransfer.value = p
+                        }
                     }
                 }
             }
@@ -241,10 +247,14 @@ fun AppViewModel.startSftpUpload(
         } catch (e: Throwable) {
             showToast("上传失败: ${e.message}")
         } finally {
-            _sftpTransfer.value = null
-            sftpTransferJob = null
+            if (sftpTransferJob === thisJob) {
+                _sftpTransfer.value = null
+                sftpTransferJob = null
+            }
         }
     }
+    sftpTransferJob = job
+    job.start()
 }
 
 fun AppViewModel.startSftpDownload(
@@ -256,14 +266,18 @@ fun AppViewModel.startSftpDownload(
 ) {
     val appCtx = context.applicationContext
     sftpTransferJob?.cancel()
-    sftpTransferJob = viewModelScope.launch {
+    _sftpTransfer.value = null
+    val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+        val thisJob = coroutineContext[Job]
         try {
             withContext(Dispatchers.IO) {
                 val stream = appCtx.contentResolver.openOutputStream(uri)
                     ?: throw IllegalStateException("无法写入目标文件")
                 stream.use { output ->
                     container.sftpService.downloadStream(sessionId, remotePath, output) { p ->
-                        _sftpTransfer.value = p
+                        if (sftpTransferJob === thisJob) {
+                            _sftpTransfer.value = p
+                        }
                     }
                 }
             }
@@ -273,10 +287,14 @@ fun AppViewModel.startSftpDownload(
         } catch (e: Throwable) {
             showToast("下载失败: ${e.message}")
         } finally {
-            _sftpTransfer.value = null
-            sftpTransferJob = null
+            if (sftpTransferJob === thisJob) {
+                _sftpTransfer.value = null
+                sftpTransferJob = null
+            }
         }
     }
+    sftpTransferJob = job
+    job.start()
 }
 
 fun AppViewModel.cancelSftpTransfer() {

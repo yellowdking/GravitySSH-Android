@@ -14,6 +14,7 @@ internal data class SearchMatch(val row: Int, val col: Int, val len: Int)
 
 internal class TerminalCanvasDrawState {
     var runBuf: CharArray = CharArray(256)
+    val measureBuf: CharArray = CharArray(1)
     val teardropPath: Path = Path()
     val searchSb: StringBuilder = StringBuilder(256)
     var searchColMap: IntArray = IntArray(256)
@@ -75,8 +76,8 @@ internal class TerminalCanvasDrawState {
         if (ch.code <= 0x7E) return true
         val key = (ch.code shl 1) or (if (isBold) 1 else 0)
         unicodeBatchSafeCache[key]?.let { return it }
-        runBuf[0] = ch
-        val safe = abs(p.measureText(runBuf, 0, 1) - cellW) <= cellW * 0.08f
+        measureBuf[0] = ch
+        val safe = abs(p.measureText(measureBuf, 0, 1) - cellW) <= cellW * 0.08f
         if (unicodeBatchSafeCache.size >= 256) unicodeBatchSafeCache.clear()
         unicodeBatchSafeCache[key] = safe
         return safe

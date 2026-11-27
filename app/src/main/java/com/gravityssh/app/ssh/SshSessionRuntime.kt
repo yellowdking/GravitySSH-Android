@@ -48,6 +48,10 @@ internal class ManagedSession(
 
     @Volatile private var writeChannel: Channel<ByteArray>? = null
 
+    init {
+        terminal.setInputSender(::sendRaw)
+    }
+
     fun startWriter(scope: CoroutineScope, sh: Session.Shell) {
         writerJob?.cancel()
         writeChannel?.close()
@@ -110,19 +114,20 @@ internal class ManagedSession(
 
     fun closeTransportOnly() {
         cancelJobs(includeConnect = false)
-        synchronized(sftpLock) {
-            runCatching { sftpClient?.close() }
-            sftpClient = null
+        val oldSftp = synchronized(sftpLock) {
+            sftpClient.also { sftpClient = null }
         }
-        runCatching { shell?.close() }
-        runCatching { sshSession?.close() }
-        runCatching { conn?.close() }
-        shell = null
-        sshSession = null
-        conn = null
+        val oldShell = shell.also { shell = null }
+        val oldSshSession = sshSession.also { sshSession = null }
+        val oldConn = conn.also { conn = null }
         lastSentCols = -1
         lastSentRows = -1
         metricsSampler.reset()
+        // Close transport first so any in-flight SFTP/channel I/O unblocks immediately
+        runCatching { oldConn?.close() }
+        runCatching { oldSftp?.close() }
+        runCatching { oldShell?.close() }
+        runCatching { oldSshSession?.close() }
     }
 
     fun closeResources() {

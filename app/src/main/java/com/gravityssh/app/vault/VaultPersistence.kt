@@ -69,10 +69,12 @@ internal class VaultPersistence(
 
     fun save(data: VaultData, password: String?, cachedKey: CachedPasswordKey? = null) {
         val plain = json.encodeToString(data).toByteArray(Charsets.UTF_8)
+        val hasPassword = cachedKey != null || !password.isNullOrEmpty()
+        val biometricLock = !hasPassword && data.settings.biometricLockEnabled
         val blob = if (cachedKey != null) {
-            crypto.sealWithCachedKey(plain, cachedKey, data.settings.biometricLockEnabled)
+            crypto.sealWithCachedKey(plain, cachedKey, biometricLock)
         } else {
-            crypto.seal(plain, password, data.settings.biometricLockEnabled)
+            crypto.seal(plain, password, biometricLock)
         }
         AtomicFileOps.writeBytesAtomic(vaultFile, blob)
     }

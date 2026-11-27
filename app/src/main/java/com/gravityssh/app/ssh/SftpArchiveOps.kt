@@ -75,4 +75,13 @@ internal class SftpArchiveOps(
             throw IOException(err.ifEmpty { "远端命令执行失败 (exit=${res.exitCode})" })
         }
     }
+
+    companion object {
+        val SUPPORTED_ARCHIVE_SUFFIXES = listOf(".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip", ".tar")
+
+        fun isSupportedArchiveName(name: String): Boolean {
+            val lower = name.lowercase()
+            return SUPPORTED_ARCHIVE_SUFFIXES.any { lower.endsWith(it) }
+        }
+    }
 }

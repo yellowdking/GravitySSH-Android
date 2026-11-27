@@ -45,11 +45,18 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
         Spacer(Modifier.height(8.dp))
         AgSwitchRow(
             label = "生物识别指纹解锁",
-            checked = settings.biometricLockEnabled,
-            enabled = canBiometric
+            checked = !lockState.hasPassword && settings.biometricLockEnabled,
+            enabled = canBiometric && !lockState.hasPassword
         ) { enabled ->
             viewModel.updateSettings { it.copy(biometricLockEnabled = enabled) }
             viewModel.showToast(if (enabled) "已开启生物识别锁" else "已关闭生物识别锁")
+        }
+        if (lockState.hasPassword) {
+            Text(
+                "已设置主密码时需使用主密码解锁",
+                style = MaterialTheme.typography.bodySmall,
+                color = AgMuted
+            )
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -59,7 +66,7 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.weight(1f)
             ) { Text(if (lockState.hasPassword) "修改/移除主密码" else "设置主密码", color = AgCyan) }
-            if (lockState.hasPassword || settings.biometricLockEnabled) {
+            if (lockState.hasPassword || lockState.biometricEnabled) {
                 OutlinedButton(
                     onClick = { viewModel.container.vaultRepository.lockNow() },
                     border = BorderStroke(1.dp, AgAccent),

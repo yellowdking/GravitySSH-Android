@@ -151,23 +151,49 @@ class SshSessionManager(
 
     internal fun requireSftp(sessionId: String): SFTPClient {
         val m = sessions[sessionId] ?: throw IOException("会话不存在")
-        return synchronized(m.sftpLock) {
-            val client = m.conn?.client
-            if (client == null || !client.isConnected) {
-                runCatching { m.sftpClient?.close() }
+        val gen = m.generation.get()
+        var staleSftp: SFTPClient? = null
+        val client: SSHClient = synchronized(m.sftpLock) {
+            val c = m.conn?.client
+            if (m.closed || c == null || !c.isConnected) {
+                staleSftp = m.sftpClient
                 m.sftpClient = null
-                throw IOException("SSH 会话未连接")
-            }
-            val existing = m.sftpClient
-            if (existing != null) {
-                existing
+                null
             } else {
-                client.newSFTPClient().also {
-                    m.sftpClient = it
-                    updateTab(sessionId) { t -> t.copy(sftpReady = true) }
+                m.sftpClient?.let { return it }
+                c
+            }
+        } ?: run {
+            runCatching { staleSftp?.close() }
+            throw IOException("SSH 会话未连接")
+        }
+
+        val created = client.newSFTPClient()
+        var adopted = false
+        val result = synchronized(m.sftpLock) {
+            if (m.closed || m.generation.get() != gen || m.conn?.client !== client || !client.isConnected) {
+                null
+            } else {
+                val existing = m.sftpClient
+                if (existing != null) {
+                    existing
+                } else {
+                    m.sftpClient = created
+                    adopted = true
+                    created
                 }
             }
         }
+        if (result == null) {
+            runCatching { created.close() }
+            throw IOException("SSH 会话已断开")
+        }
+        if (!adopted) {
+            runCatching { created.close() }
+        } else {
+            updateTab(sessionId) { t -> t.copy(sftpReady = true) }
+        }
+        return result
     }
 
     private fun homeOf(id: String): String = _tabs.value.find { it.sessionId == id }?.homeDir.orEmpty()
@@ -176,6 +202,6 @@ class SshSessionManager(
         _tabs.update { l -> l.map { if (it.sessionId == id) fn(it) else it } }
 
     private fun syncKeepAlive() = SshKeepAliveService.update(
-        appContext, _tabs.value.count { it.status == SessionStatus.CONNECTED || it.status == SessionStatus.CONNECTING }
+        appContext, _tabs.value.count { it.status == SessionStatus.CONNECTED }
     )
 }

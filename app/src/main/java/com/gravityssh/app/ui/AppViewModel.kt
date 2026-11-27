@@ -58,6 +58,7 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     internal val _sftpMutatedTick = MutableStateFlow(0)
     val sftpMutatedTick: StateFlow<Int> = _sftpMutatedTick.asStateFlow()
 
+    @Volatile
     internal var sftpTransferJob: Job? = null
 
     internal val _syncSendState = MutableStateFlow(SyncSendUiState())

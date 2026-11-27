@@ -154,14 +154,20 @@ class VaultRepository(
                 throw SecurityException("当前主密码不正确")
             }
             val nextPassword = newPassword.ifEmpty { null }
+            val nextData = if (nextPassword != null && currentData.settings.biometricLockEnabled) {
+                currentData.copy(settings = currentData.settings.copy(biometricLockEnabled = false))
+            } else {
+                currentData
+            }
             val nextKey = nextPassword?.let { store.deriveForNewPassword(it) }
             try {
-                store.save(currentData, nextPassword, nextKey)
+                store.save(nextData, nextPassword, nextKey)
             } catch (e: Exception) {
                 nextKey?.clear()
                 throw e
             }
             val oldKey = cachedPasswordKey
+            currentData = nextData
             cachedPasswordKey = nextKey
             activePassword = nextPassword
             oldKey?.clear()
@@ -223,7 +229,12 @@ class VaultRepository(
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings): AppSettings = mutate { d ->
-        val u = transform(d.settings)
+        val transformed = transform(d.settings)
+        val u = if (!activePassword.isNullOrEmpty() && transformed.biometricLockEnabled) {
+            transformed.copy(biometricLockEnabled = false)
+        } else {
+            transformed
+        }
         d.copy(settings = u) to u
     }
 
@@ -302,11 +313,12 @@ class VaultRepository(
         biometric: Boolean = currentData.settings.biometricLockEnabled,
         startupError: String? = null
     ) {
+        val effectiveBiometric = !hasPassword && biometric
         _state.value = VaultState(
             lockState = VaultLockState(
                 locked = locked,
                 hasPassword = hasPassword,
-                biometricEnabled = biometric,
+                biometricEnabled = effectiveBiometric,
                 startupError = startupError
             ),
             data = if (locked) VaultData() else currentData

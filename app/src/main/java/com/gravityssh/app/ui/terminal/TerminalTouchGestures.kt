@@ -46,7 +46,7 @@ internal suspend fun PointerInputScope.detectTerminalTouchGestures(
                 down.consume()
                 val isS = hit == START; val anc = if (isS) sel.end else sel.start; var last = if (isS) sel.start else sel.end
                 val dx = (p0.x - (px + (last.col + 0.5f) * w)).coerceIn(-rad, rad)
-                val dy = (p0.y - (py + (last.row + 0.5f) * h)).coerceIn(0.6f * h, rad * 1.4f)
+                val dy = (p0.y - (py + (last.row + 0.5f) * h)).coerceIn(0.6f * h, (rad * 1.4f).coerceAtLeast(0.6f * h))
                 while (true) {
                     val p = nextPos(down.id) ?: break
                     val n = cellAt(p.x - dx, p.y - dy)

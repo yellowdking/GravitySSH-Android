@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.model.SFTPFileEntry
+import com.gravityssh.app.ssh.SftpArchiveOps
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.AgAccent
 import com.gravityssh.app.ui.theme.AgCyan
@@ -146,9 +147,7 @@ fun SftpEntryActionDialog(
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val isArchive = !entry.isDir && listOf(".tar.gz", ".tgz", ".zip", ".tar", ".gz").any {
-        entry.name.lowercase().endsWith(it)
-    }
+    val isArchive = !entry.isDir && SftpArchiveOps.isSupportedArchiveName(entry.name)
     AlertDialog(
         onDismissRequest = { if (!loadingEdit) onDismiss() },
         containerColor = AgPanel,

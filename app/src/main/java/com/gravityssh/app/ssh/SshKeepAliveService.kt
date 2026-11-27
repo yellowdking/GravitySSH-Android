@@ -25,7 +25,12 @@ class SshKeepAliveService : Service() {
         val startedAsFgs = intent?.getBooleanExtra(EXTRA_STARTED_AS_FGS, false) == true
 
         if (intent?.action == ACTION_DISCONNECT_ALL) {
-            if (!isRunning && startedAsFgs) {
+            val needsFgs = synchronized(stateLock) {
+                startPending = false
+                latestActiveCount = 0
+                !isRunning && startedAsFgs
+            }
+            if (needsFgs) {
                 tryStartForeground(0)
             }
             runCatching { GravitySshApp.from(applicationContext).sshSessionManager.closeAllSessions() }
@@ -33,9 +38,13 @@ class SshKeepAliveService : Service() {
             return START_NOT_STICKY
         }
 
-        val count = intent?.getIntExtra(EXTRA_COUNT, 0) ?: 0
-        if (intent == null || count <= 0) {
-            if (!isRunning && startedAsFgs) {
+        val (effectiveCount, alreadyRunning) = synchronized(stateLock) {
+            startPending = false
+            val count = if (intent == null) 0 else latestActiveCount
+            count to isRunning
+        }
+        if (intent == null || effectiveCount <= 0) {
+            if (!alreadyRunning && startedAsFgs) {
                 tryStartForeground(0)
             }
             stopAndClear(startId)
@@ -43,16 +52,32 @@ class SshKeepAliveService : Service() {
         }
 
         ensureChannel(this)
-        if (isRunning) {
+        if (alreadyRunning) {
             runCatching {
                 getSystemService(NotificationManager::class.java)
-                    ?.notify(NOTIFICATION_ID, buildNotification(this, count))
+                    ?.notify(NOTIFICATION_ID, buildNotification(this, effectiveCount))
             }
             return START_NOT_STICKY
         }
 
-        if (tryStartForeground(count)) {
-            isRunning = true
+        if (tryStartForeground(effectiveCount)) {
+            val (shouldStopNow, latestCount) = synchronized(stateLock) {
+                if (latestActiveCount <= 0) {
+                    isRunning = false
+                    true to 0
+                } else {
+                    isRunning = true
+                    false to latestActiveCount
+                }
+            }
+            if (shouldStopNow) {
+                stopAndClear(startId)
+            } else if (latestCount != effectiveCount) {
+                runCatching {
+                    getSystemService(NotificationManager::class.java)
+                        ?.notify(NOTIFICATION_ID, buildNotification(this, latestCount))
+                }
+            }
         } else {
             stopAndClear(startId)
         }
@@ -64,12 +89,16 @@ class SshKeepAliveService : Service() {
     }
 
     override fun onDestroy() {
-        isRunning = false
+        synchronized(stateLock) {
+            isRunning = false
+        }
         super.onDestroy()
     }
 
     private fun stopAndClear(startId: Int) {
-        isRunning = false
+        synchronized(stateLock) {
+            isRunning = false
+        }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf(startId)
     }
@@ -105,38 +134,60 @@ class SshKeepAliveService : Service() {
         private const val EXTRA_STARTED_AS_FGS = "started_as_fgs"
         const val ACTION_DISCONNECT_ALL = "com.gravityssh.app.action.DISCONNECT_ALL"
 
-        @Volatile
+        private val stateLock = Any()
+
         private var isRunning: Boolean = false
+        private var startPending: Boolean = false
+        private var latestActiveCount: Int = 0
 
         fun update(context: Context, activeCount: Int) {
             val appCtx = context.applicationContext
-            if (activeCount > 0) {
-                if (isRunning) {
-                    runCatching {
-                        ensureChannel(appCtx)
-                        appCtx.getSystemService(NotificationManager::class.java)
-                            ?.notify(NOTIFICATION_ID, buildNotification(appCtx, activeCount))
+            val clamped = activeCount.coerceAtLeast(0)
+            var notifyCount: Int? = null
+            synchronized(stateLock) {
+                latestActiveCount = clamped
+                if (clamped > 0) {
+                    if (isRunning) {
+                        notifyCount = clamped
+                    } else if (!startPending) {
+                        startPending = true
+                        val intent = Intent(appCtx, SshKeepAliveService::class.java).apply {
+                            putExtra(EXTRA_COUNT, clamped)
+                            putExtra(EXTRA_STARTED_AS_FGS, true)
+                        }
+                        val started = try {
+                            ContextCompat.startForegroundService(appCtx, intent)
+                            true
+                        } catch (_: SecurityException) {
+                            // Background FGS restriction on Android 14/15
+                            false
+                        } catch (e: IllegalStateException) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                                // App is not in a valid state to start FGS
+                            }
+                            false
+                        } catch (_: RuntimeException) {
+                            // Ignore OS-level FGS start rejection
+                            false
+                        }
+                        if (!started) {
+                            startPending = false
+                        }
                     }
-                    return
+                } else if (isRunning) {
+                    isRunning = false
+                    val intent = Intent(appCtx, SshKeepAliveService::class.java)
+                    runCatching { appCtx.stopService(intent) }
                 }
-                val intent = Intent(appCtx, SshKeepAliveService::class.java).apply {
-                    putExtra(EXTRA_COUNT, activeCount)
-                    putExtra(EXTRA_STARTED_AS_FGS, true)
+                // If clamped == 0 and startPending == true, do NOT call stopService() prematurely;
+                // onStartCommand() will observe latestActiveCount <= 0, call tryStartForeground(0), then stopSelf().
+            }
+            notifyCount?.let { count ->
+                runCatching {
+                    ensureChannel(appCtx)
+                    appCtx.getSystemService(NotificationManager::class.java)
+                        ?.notify(NOTIFICATION_ID, buildNotification(appCtx, count))
                 }
-                try {
-                    ContextCompat.startForegroundService(appCtx, intent)
-                } catch (_: SecurityException) {
-                    // Background FGS restriction on Android 14/15
-                } catch (e: IllegalStateException) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
-                        // App is not in a valid state to start FGS
-                    }
-                } catch (_: RuntimeException) {
-                    // Ignore OS-level FGS start rejection
-                }
-            } else {
-                val intent = Intent(appCtx, SshKeepAliveService::class.java)
-                runCatching { appCtx.stopService(intent) }
             }
         }
 

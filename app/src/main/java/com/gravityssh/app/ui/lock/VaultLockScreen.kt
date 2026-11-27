@@ -123,7 +123,7 @@ fun VaultLockScreen(
                     }
                 }
 
-                if (lockState.biometricEnabled && canBiometric) {
+                if (lockState.biometricEnabled && !lockState.hasPassword && canBiometric) {
                     OutlinedButton(
                         onClick = { triggerBiometric() },
                         enabled = !busy,
