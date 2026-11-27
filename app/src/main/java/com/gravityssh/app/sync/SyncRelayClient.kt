@@ -2,15 +2,21 @@ package com.gravityssh.app.sync
 
 import com.gravityssh.app.model.AppJson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import okhttp3.ResponseBody
 import java.io.IOException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class RelayGoneException(message: String) : IOException(message)
 
@@ -21,14 +27,10 @@ open class SyncRelayClient(
     private val json = AppJson.json
     private val mediaType = "application/json; charset=utf-8".toMediaType()
 
-    private val defaultHostPort: String = run {
-        val u = SyncConfig.DEFAULT_RELAY_URL.toHttpUrl()
-        "${u.host}:${u.port}"
-    }
-
     private val pinnedClient: OkHttpClient by lazy { SyncHttpClients.buildPinnedClient(pinnedSpkiSha256) }
-    private val selfSignedIpClient: OkHttpClient by lazy { SyncHttpClients.buildSelfSignedIpClient() }
     private val standardClient: OkHttpClient get() = SyncHttpClients.baseClient
+    private val clientCacheLock = Any()
+    private val customClients = LinkedHashMap<String, OkHttpClient>(16, 0.75f, true)
 
     open suspend fun ping(relayUrl: String): Long = withContext(Dispatchers.IO) {
         val start = System.nanoTime()
@@ -125,7 +127,7 @@ open class SyncRelayClient(
         Unit
     }
 
-    private fun executePost(
+    private suspend fun executePost(
         relayUrl: String,
         path: String,
         rawBody: ByteArray,
@@ -142,7 +144,7 @@ open class SyncRelayClient(
         if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
     )
 
-    private fun executePostOrNullOn404(
+    private suspend fun executePostOrNullOn404(
         relayUrl: String,
         path: String,
         rawBody: ByteArray,
@@ -153,13 +155,9 @@ open class SyncRelayClient(
         if (rawBody.size > MAX_REQUEST_BYTES) {
             throw IOException("同步数据体积超过中继限制（2 MiB）")
         }
-        val base = SyncConfig.normalizeRelayUrl(relayUrl).ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
-        val url = "$base$path".toHttpUrl()
-        val client = when {
-            "${url.host}:${url.port}" == defaultHostPort -> pinnedClient
-            SyncConfig.isRawIpHost(url.host) -> selfSignedIpClient
-            else -> standardClient
-        }
+        val endpoint = SyncConfig.parseRelayEndpoint(relayUrl)
+        val url = "${endpoint.baseUrl}$path".toHttpUrl()
+        val client = selectClient(endpoint)
 
         val ts = System.currentTimeMillis() / 1000L
         val sig = SyncCryptoPrimitives.signAppGate(appGateKey, "POST", path, ts, rawBody)
@@ -172,23 +170,73 @@ open class SyncRelayClient(
             .header("X-GSSH-Sig", sig)
             .build()
 
-        client.newCall(request).execute().use { resp ->
-            val text = readBodyCapped(resp.body)
-            when (resp.code) {
-                404 -> {
-                    if (allow404) return null
-                    throw RelayGoneException(
-                        if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
-                    )
-                }
-                429 -> throw IOException("同步中继繁忙或请求过于频繁，请稍后重试")
-                409 -> throw IOException(conflictMessage)
-                413 -> throw IOException("同步数据体积超过中继限制（2 MiB）")
+        val (code, text) = executeCallCancellable(client, request)
+        when (code) {
+            404 -> {
+                if (allow404) return null
+                throw RelayGoneException(
+                    if (isPing) "中继服务鉴权失败或版本不支持 /v1/ping" else "同步码不存在、已过期或已被使用"
+                )
             }
-            if (!resp.isSuccessful) throw IOException("中继服务返回错误 (${resp.code})")
-            return text
+            429 -> throw IOException("同步中继繁忙或请求过于频繁，请稍后重试")
+            409 -> throw IOException(conflictMessage)
+            413 -> throw IOException("同步数据体积超过中继限制（2 MiB）")
+        }
+        if (code !in 200..299) throw IOException("中继服务返回错误 ($code)")
+        return text
+    }
+
+    private fun selectClient(endpoint: ResolvedRelayEndpoint): OkHttpClient {
+        endpoint.explicitSpkiPin?.let { pin ->
+            val key = "pin:${endpoint.host.lowercase()}:$pin"
+            return getOrCreateCustomClient(key) {
+                SyncHttpClients.buildPinnedClient(pin, endpoint.host)
+            }
+        }
+        if (endpoint.isDefaultRelay) return pinnedClient
+        if (endpoint.isRawIp) {
+            val key = "ip:${endpoint.hostPort}"
+            return getOrCreateCustomClient(key) {
+                SyncHttpClients.buildSelfSignedIpClient(endpoint.hostPort, endpoint.host)
+            }
+        }
+        return standardClient
+    }
+
+    private fun getOrCreateCustomClient(key: String, factory: () -> OkHttpClient): OkHttpClient {
+        synchronized(clientCacheLock) {
+            customClients[key]?.let { return it }
+            val created = factory()
+            if (customClients.size >= MAX_CACHED_CLIENTS) {
+                val eldestKey = customClients.entries.iterator().next().key
+                customClients.remove(eldestKey)
+            }
+            customClients[key] = created
+            return created
         }
     }
+
+    private suspend fun executeCallCancellable(client: OkHttpClient, request: Request): Pair<Int, String> =
+        suspendCancellableCoroutine { cont ->
+            val call = client.newCall(request)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.use { resp ->
+                        try {
+                            val text = readBodyCapped(resp.body)
+                            if (cont.isActive) cont.resume(resp.code to text)
+                        } catch (t: Throwable) {
+                            if (cont.isActive) cont.resumeWithException(t)
+                        }
+                    }
+                }
+            })
+        }
 
     private fun readBodyCapped(body: ResponseBody?): String {
         if (body == null) return ""
@@ -205,5 +253,6 @@ open class SyncRelayClient(
     companion object {
         private const val MAX_REQUEST_BYTES = 2 * 1024 * 1024
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+        private const val MAX_CACHED_CLIENTS = 16
     }
 }
