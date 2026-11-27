@@ -1,6 +1,8 @@
 package com.gravityssh.app.vault
 
 import com.gravityssh.app.InMemoryMasterKeyProvider
+import com.gravityssh.app.model.AppJson
+import com.gravityssh.app.model.AppSettings
 import com.gravityssh.app.model.AuthType
 import com.gravityssh.app.model.BuiltinOpsPresets
 import com.gravityssh.app.model.BuiltinTemplate
@@ -14,6 +16,7 @@ import com.gravityssh.app.model.SSH_PORT_PLACEHOLDER
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
+import com.gravityssh.app.model.VaultLockState
 import com.gravityssh.app.model.isSshPortTemplate
 import com.gravityssh.app.model.resolveSshPortCommand
 import com.gravityssh.app.ui.sanitizeUploadDisplayName
@@ -748,6 +751,105 @@ class VaultRepositoryTest {
         assertFalse(legacyResolved.contains("read NEW_PORT"))
         assertTrue(legacyResolved.contains("NEW_PORT=\"22022\""))
         assertTrue(legacyResolved.trim().startsWith("(") && legacyResolved.trim().endsWith(")"))
+    }
+
+    @Test
+    fun autoLockMinutesDefaultPersistenceClampingAndLegacyDecode() {
+        val file = File(tempFolder.root, "vault-autolock.gsv")
+        val kp = InMemoryMasterKeyProvider()
+        val repo = createRepo(file, kp)
+        repo.open()
+
+        // Default is 0 (disabled)
+        assertEquals(0, repo.state.value.data.settings.autoLockMinutes)
+
+        // Negative values clamp to 0
+        val neg = repo.updateSettings { it.copy(autoLockMinutes = -15) }
+        assertEquals(0, neg.autoLockMinutes)
+        assertEquals(0, repo.state.value.data.settings.autoLockMinutes)
+
+        // Values above 1440 clamp to 1440 (24h)
+        val high = repo.updateSettings { it.copy(autoLockMinutes = 9999) }
+        assertEquals(VaultCrudOps.MAX_AUTO_LOCK_MINUTES, high.autoLockMinutes)
+        assertEquals(1440, repo.state.value.data.settings.autoLockMinutes)
+
+        // Valid preset persists across reopen
+        val saved = repo.updateSettings { it.copy(autoLockMinutes = 15) }
+        assertEquals(15, saved.autoLockMinutes)
+
+        val reopened = createRepo(file, kp)
+        reopened.open()
+        assertEquals(15, reopened.state.value.data.settings.autoLockMinutes)
+
+        // Legacy settings JSON without autoLockMinutes deserializes cleanly to 0
+        val legacySettings = AppJson.json.decodeFromString(AppSettings.serializer(), """{"terminalFontSize":14}""")
+        assertEquals(0, legacySettings.autoLockMinutes)
+        assertEquals(14, legacySettings.terminalFontSize)
+
+        // On-disk out-of-range autoLockMinutes is clamped during persistence decode
+        val rawOutOfRange = """{"version":2,"settings":{"autoLockMinutes":5000}}""".toByteArray(Charsets.UTF_8)
+        file.writeBytes(VaultCrypto(kp).seal(rawOutOfRange, password = null))
+        val clampedReopen = createRepo(file, kp)
+        clampedReopen.open()
+        assertEquals(1440, clampedReopen.state.value.data.settings.autoLockMinutes)
+    }
+
+    @Test
+    fun autoLockEligibilityHelperAndRepositoryTimeoutBehavior() {
+        val unlockedNoProtection = VaultLockState(locked = false, hasPassword = false, biometricEnabled = false, initialized = true)
+        val unlockedPw = VaultLockState(locked = false, hasPassword = true, biometricEnabled = false, initialized = true)
+        val unlockedBio = VaultLockState(locked = false, hasPassword = false, biometricEnabled = true, initialized = true)
+        val lockedPw = VaultLockState(locked = true, hasPassword = true, biometricEnabled = false, initialized = true)
+        val uninitializedPw = VaultLockState(locked = false, hasPassword = true, biometricEnabled = false, initialized = false)
+
+        // Disabled timeout or missing lock protection -> never eligible
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(unlockedPw, 0, 10_000L, 900_000L))
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(unlockedPw, -5, 10_000L, 900_000L))
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(unlockedNoProtection, 1, 10_000L, 900_000L))
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(lockedPw, 1, 10_000L, 900_000L))
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(uninitializedPw, 1, 10_000L, 900_000L))
+
+        // Invalid or non-monotonic timestamps -> never eligible
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(unlockedPw, 1, 0L, 900_000L))
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(unlockedPw, 1, 500_000L, 400_000L))
+
+        // Boundary checks for 5 minutes (300_000 ms)
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(unlockedPw, 5, 1_000L, 300_999L))
+        assertTrue(VaultCrudOps.shouldAutoLockAfterBackground(unlockedPw, 5, 1_000L, 301_000L))
+
+        // Upper clamp check (9999 -> 1440 minutes = 86_400_000 ms)
+        assertFalse(VaultCrudOps.shouldAutoLockAfterBackground(unlockedBio, 9999, 1_000L, 1_000L + 86_399_999L))
+        assertTrue(VaultCrudOps.shouldAutoLockAfterBackground(unlockedBio, 9999, 1_000L, 1_000L + 86_400_000L))
+
+        // End-to-end VaultRepository checks: password vault
+        val pwRepo = createRepo(File(tempFolder.root, "vault-al-pw.gsv"))
+        pwRepo.open()
+        pwRepo.updateSettings { it.copy(autoLockMinutes = 5) }
+        // No password/biometric yet -> does not lock
+        assertFalse(pwRepo.shouldAutoLock(10_000L, 10_000L + 600_000L))
+        assertFalse(pwRepo.lockIfAutoLockElapsed(10_000L, 10_000L + 600_000L))
+        assertFalse(pwRepo.state.value.lockState.locked)
+
+        assertTrue(pwRepo.setMasterPassword("", "pw-auto-lock").isSuccess)
+        assertFalse(pwRepo.shouldAutoLock(10_000L, 10_000L + 299_999L))
+        assertTrue(pwRepo.shouldAutoLock(10_000L, 10_000L + 300_000L))
+        assertTrue(pwRepo.lockIfAutoLockElapsed(10_000L, 10_000L + 300_000L))
+        assertTrue(pwRepo.state.value.lockState.locked)
+
+        // End-to-end VaultRepository checks: biometric vault
+        val bioRepo = createRepo(File(tempFolder.root, "vault-al-bio.gsv"))
+        bioRepo.open()
+        bioRepo.updateSettings { it.copy(biometricLockEnabled = true, autoLockMinutes = 1) }
+        val lockCount = AtomicInteger(0)
+        bioRepo.addOnLockListener { lockCount.incrementAndGet() }
+
+        assertFalse(bioRepo.lockIfAutoLockElapsed(5_000L, 5_000L + 59_999L))
+        assertFalse(bioRepo.state.value.lockState.locked)
+        assertEquals(0, lockCount.get())
+
+        assertTrue(bioRepo.lockIfAutoLockElapsed(5_000L, 5_000L + 60_000L))
+        assertTrue(bioRepo.state.value.lockState.locked)
+        assertEquals(1, lockCount.get())
     }
 
     private fun sealV1ForTest(
