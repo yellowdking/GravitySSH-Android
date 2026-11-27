@@ -71,12 +71,12 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     var fSp by remember(cfg.terminalFontSize) { mutableFloatStateOf(cfg.terminalFontSize.toFloat()) }
     var cOn by remember(sid) { mutableStateOf(false) }
     var aOn by remember(sid) { mutableStateOf(false) }
-    var mk by remember { mutableStateOf(false) }
-    var sr by remember { mutableStateOf(false) }
-    var sq by remember { mutableStateOf("") }
-    var sf by remember { mutableStateOf(false) }
-    var dt by remember { mutableStateOf<Int?>(null) }
-    var ps by remember { mutableStateOf<Pair<String, PasteInspection>?>(null) }
+    var mk by remember(sid) { mutableStateOf(false) }
+    var sr by remember(sid) { mutableStateOf(false) }
+    var sq by remember(sid) { mutableStateOf("") }
+    var sf by remember(sid) { mutableStateOf(false) }
+    var dt by remember(sid) { mutableStateOf<Int?>(null) }
+    var ps by remember(sid) { mutableStateOf<Pair<String, PasteInspection>?>(null) }
     var sel by remember(sid) { mutableStateOf<TextSelection?>(null) }
     var off by remember(sid) { mutableIntStateOf(0) }
     var dis by remember(sid) { mutableStateOf<String?>(null) }
