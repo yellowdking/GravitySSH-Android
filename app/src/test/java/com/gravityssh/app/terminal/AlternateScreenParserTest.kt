@@ -113,4 +113,25 @@ class AlternateScreenParserTest {
         ctrl.onRemoteOutput("\u001B[?1002;1006l")
         assertFalse(ctrl.isMouseTrackingEnabled() || ctrl.isSgrMouseMode())
     }
+
+    @Test
+    fun splitAndCompoundAltScreenDisablesKeywordHighlight() {
+        val ctrl = TerminalSessionController("s-split-alt", 40, 10, keywordHighlightEnabled = { true })
+        // Split compound alt-screen enter across 3 chunks
+        ctrl.onRemoteOutput("\u001B")
+        ctrl.onRemoteOutput("[?1;1049")
+        ctrl.onRemoteOutput("hERROR")
+        assertTrue(ctrl.isAlternateScreen())
+        assertEquals("ERROR", ctrl.extractPlainText())
+        assertEquals(TerminalColors.DEFAULT_FG, ctrl.snapshot().lines[0][0].fg)
+
+        ctrl.onRemoteOutput("\u001B[?1049l")
+        assertFalse(ctrl.isAlternateScreen())
+
+        // Leading zero in private mode (?01049h)
+        ctrl.onRemoteOutput("\u001B[?01049hFATAL")
+        assertTrue(ctrl.isAlternateScreen())
+        assertEquals("FATAL", ctrl.extractPlainText())
+        assertEquals(TerminalColors.DEFAULT_FG, ctrl.snapshot().lines[0][0].fg)
+    }
 }

@@ -101,25 +101,27 @@ class SmartAutocompleteAndSelectionTest {
  @Test
  fun webStyleWordSelectionAndMultiLineExtraction() {
   val ctrl=TerminalSessionController("sel1",initialCols=40,initialRows=6,keywordHighlightEnabled={false})
-  ctrl.onRemoteOutput("addr 107.172.98.169:54843 ok   \r\nsecond line   \r\nthird")
+  ctrl.onRemoteOutput("addr 198.51.100.10:54843 ok   \r\nsecond line   \r\nthird")
   val snap=ctrl.snapshot(0)
 
   val w=sh.selectWordAt(snap,row=0,col=12)
-  eq(CellPos(0,5),w.start); eq(CellPos(0,24),w.end)
-  eq("107.172.98.169:54843",sh.extractText(snap,w))
-  eq("107.172.98.169:54843 ok\nsecond",sh.extractText(snap,TextSelection(CellPos(0,5),CellPos(1,5))))
+  eq(CellPos(0,5),w.start); eq(CellPos(0,23),w.end)
+  eq("198.51.100.10:54843",sh.extractText(snap,w))
+  eq("198.51.100.10:54843 ok\nsecond",sh.extractText(snap,TextSelection(CellPos(0,5),CellPos(1,5))))
 
   val cw=10f; val ch=20f; val px=12f; val py=4f; val r=30f
   eq(SelectionHandle.START,sh.hitTestHandle(px+5*cw-r*0.25f,py+ch+r*0.45f,w,cw,ch,px,py,r))
-  eq(SelectionHandle.END,sh.hitTestHandle(px+25*cw+r*0.25f,py+ch+r*0.45f,w,cw,ch,px,py,r))
+  eq(SelectionHandle.END,sh.hitTestHandle(px+24*cw+r*0.25f,py+ch+r*0.45f,w,cw,ch,px,py,r))
   eq(SelectionHandle.NONE,sh.hitTestHandle(390f,150f,w,cw,ch,px,py,r))
 
-  // CJK wide selection skips continuation cells cleanly
+  // CJK wide selection skips continuation cells and left-snaps when starting on continuation cell
   val cjkCtrl=TerminalSessionController("sel2",initialCols=20,initialRows=4,keywordHighlightEnabled={false})
   cjkCtrl.onRemoteOutput("日志 警告中文 test")
   val cjkSnap=cjkCtrl.snapshot(0)
   val cjkWord=sh.selectWordAt(cjkSnap,row=0,col=6)
   eq("警告中文",sh.extractText(cjkSnap,cjkWord))
+  eq("警告中",sh.extractText(cjkSnap,TextSelection(CellPos(0,6),CellPos(0,10))))
+  eq("日",sh.extractText(cjkSnap,TextSelection(CellPos(0,1),CellPos(0,1))))
  }
 
  @Test
