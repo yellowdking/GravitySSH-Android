@@ -18,9 +18,12 @@ import com.gravityssh.app.terminal.AutocompleteEngine as Ac
 import com.gravityssh.app.terminal.AutocompleteParser as Ap
 import com.gravityssh.app.ui.*
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 
 private data class ActiveTabMeta(
     val sessionId: String,
@@ -38,9 +41,19 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     val cfg by remember(vm) {
         vm.vaultState.map { it.data.settings }.distinctUntilChanged()
     }.collectState(initialValue = vm.vaultState.value.data.settings)
-    val hist by remember(vm) {
-        vm.vaultState.map { it.data.history }.distinctUntilChanged()
-    }.collectState(initialValue = vm.vaultState.value.data.history)
+    val hist by remember(vm, cfg.autocompleteEnabled, cfg.autocompleteFromHistory) {
+        if (cfg.autocompleteEnabled && cfg.autocompleteFromHistory) {
+            vm.vaultState.map { it.data.history }.distinctUntilChanged()
+        } else {
+            flowOf(emptyList<CommandRecord>())
+        }
+    }.collectState(
+        initialValue = if (cfg.autocompleteEnabled && cfg.autocompleteFromHistory) {
+            vm.vaultState.value.data.history
+        } else {
+            emptyList()
+        }
+    )
     val tab by remember(vm) {
         combine(vm.sessionTabs, vm.activeSessionId) { tabs, aid ->
             (tabs.find { it.sessionId == aid } ?: tabs.firstOrNull())?.let {
@@ -91,7 +104,6 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     val cwd = activeTab.currentDir.trimEnd('/').ifBlank { "/" }
     LaunchedEffect(activeSid, ctrl) {
         off = 0; dis = null; sel = null
-        ctrl.setInputSender { mgr.sendInput(activeSid, it) }
     }
 
     val ln by ctrl.currentInputLine.collectState()
@@ -111,9 +123,27 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     val tm = remember(cfg.touchCursorMode) { TouchCursorMode.fromId(cfg.touchCursorMode) }
     val ts = remember(cfg.touchCursorSensitivity) { TouchSensitivity.fromId(cfg.touchCursorSensitivity) }
     val re = if (td != null) te else ce
-    val activeHist = if (cfg.autocompleteEnabled && cfg.autocompleteFromHistory) hist else emptyList()
-    val sg = remember(ln, activeHist, cfg, re, ce, cwd, activeTab.homeDir, activeTab.serverId) {
-        Ac.suggest(ln, emptyList(), activeHist, cfg, 3, re, cwd, activeTab.homeDir, activeTab.serverId, ce)
+    var sg by remember(activeSid) { mutableStateOf<List<CompletionItem>>(emptyList()) }
+    LaunchedEffect(
+        activeSid,
+        ln,
+        hist,
+        cfg.autocompleteEnabled,
+        cfg.autocompleteFromHistory,
+        alt,
+        re,
+        ce,
+        cwd,
+        activeTab.homeDir,
+        activeTab.serverId
+    ) {
+        if (alt || !cfg.autocompleteEnabled || ln.isBlank()) {
+            sg = emptyList()
+            return@LaunchedEffect
+        }
+        sg = withContext(Dispatchers.Default) {
+            Ac.suggest(ln, emptyList(), hist, cfg, 3, re, cwd, activeTab.homeDir, activeTab.serverId, ce)
+        }
     }
 
     fun send(t: String) {
