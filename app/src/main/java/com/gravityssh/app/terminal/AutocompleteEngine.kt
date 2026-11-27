@@ -33,7 +33,7 @@ object AutocompleteEngine {
   val p=Parser.parseLine(input,currentDir,homeDir)
   if (p.activeSeg.isEmpty()) return emptyList()
 
-  val cwd=normDir(currentDir);val pq=p.pathQuery
+  val cwd=Parser.normalizePath(currentDir);val pq=p.pathQuery
   val sig=Ctx.scanFolderSignals(cwdEntries.ifEmpty {if (pq!=null&&pq.dirToList==cwd) remoteEntries else emptyList()},cwd)
   val best=LinkedHashMap<String,CompletionItem>()
   fun put(c:String,d:String,cat:String,src:String,ins:String,sc:Int) {
@@ -92,14 +92,18 @@ object AutocompleteEngine {
     put(c.tokenText,c.description,c.tokenText.substringBefore(' '),"builtin",p.tokPrefix+c.tokenText+if (c.appendSpace) " " else "",(470-i*10).coerceIn(440,470))
    }
    for ((cmd,desc) in Cat.rootCommands) if (cmd.startsWith(q1)&&cmd!=q1) put(cmd,desc,cmd,"builtin","${p.tokPrefix}$cmd ",(340-(cmd.length-q1.length).coerceAtMost(40)).coerceIn(240,340))
-   if (q1.length>=2) for (b in BuiltinCommands.all) {
-    val bl=b.command.trimEnd().lowercase()
-    if (bl.startsWith(q1)&&bl!=q1) put(b.command.trimEnd(),b.description,b.category,"builtin",p.tokPrefix+b.command,(280-(bl.length-q1.length).coerceAtMost(40)).coerceIn(240,340))
+   if (q1.length>=2) {
+    for ((cmd,subs) in SubcommandData.l1) {
+     if (!cmd.startsWith(q1)) continue
+     for (sub in subs) {
+      val full="$cmd ${sub.tokenText}"
+      val ins=p.tokPrefix+full+if (sub.appendSpace) " " else ""
+      put(full,sub.description,cmd,"builtin",ins,(280-(full.length-q1.length).coerceAtMost(40)).coerceIn(240,340))
+     }
+    }
    }
   }
 
   return best.values.sortedByDescending {it.score}.take(limit)
  }
-
- private fun normDir(p:String)=ArrayDeque<String>().apply {for (s in p.ifBlank {"/"}.split('/')) if (s=="..") removeLastOrNull() else if (s.isNotEmpty()&&s!=".") addLast(s)}.joinToString("/","/")
 }

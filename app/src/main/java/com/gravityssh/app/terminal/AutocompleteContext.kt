@@ -6,7 +6,7 @@ import kotlin.math.*
 
 data class FolderSignals(
  val hasCompose:Boolean=false,val hasDockerfile:Boolean=false,val hasGit:Boolean=false,val hasNode:Boolean=false,
- val hasMake:Boolean=false,val hasGo:Boolean=false,val hasNginx:Boolean=false,val hasSh:Boolean=false
+ val hasMake:Boolean=false,val hasGo:Boolean=false,val hasNginx:Boolean=false
 )
 
 object AutocompleteContext {
@@ -28,6 +28,56 @@ object AutocompleteContext {
   pk("nginx -t^语法;nginx -s reload^重载")
  )
 
+ private data class ParsedHistoryEntry(
+  val raw: String,
+  val lower: String,
+  val normKey: String,
+  val serverId: String,
+  val epochMs: Long?,
+  val index: Int
+ )
+
+ private class HistoryCache(
+  val listRef: List<CommandRecord>,
+  val size: Int,
+  val headId: String?,
+  val headCmd: String?,
+  val headTs: String?,
+  val entries: List<ParsedHistoryEntry>
+ )
+
+ @Volatile
+ private var historyCache: HistoryCache? = null
+
+ private fun parsedHistory(history: List<CommandRecord>): List<ParsedHistoryEntry> {
+  val head = history.firstOrNull()
+  val cached = historyCache
+  if (cached != null &&
+   cached.listRef === history &&
+   cached.size == history.size &&
+   cached.headId == head?.id &&
+   cached.headCmd == head?.command &&
+   cached.headTs == head?.executedAt
+  ) {
+   return cached.entries
+  }
+  val limit = minOf(history.size, 400)
+  val parsed = ArrayList<ParsedHistoryEntry>(limit)
+  for (i in 0 until limit) {
+   val r = history[i]
+   val raw = r.command.trim()
+   if (SubcommandCatalog.isUnsafeHistory(raw)) continue
+   val epochMs = if (r.executedAt.isBlank()) null else try {
+    Instant.parse(r.executedAt).toEpochMilli()
+   } catch (_: Exception) {
+    null
+   }
+   parsed.add(ParsedHistoryEntry(raw, raw.lowercase(), norm(raw), r.serverId, epochMs, i))
+  }
+  historyCache = HistoryCache(history, history.size, head?.id, head?.command, head?.executedAt, parsed)
+  return parsed
+ }
+
  fun scanFolderSignals(cwdEntries: List<SFTPFileEntry>, cwd: String): FolderSignals {
   var b=if (cwd.startsWith("/etc/nginx")) 64 else 0
   for (e in cwdEntries) {
@@ -42,12 +92,13 @@ object AutocompleteContext {
     "nginx.conf"->b=b or 64
    }
    if (n=="dockerfile"||n.startsWith("dockerfile.")) b=b or 2
-   if (n.endsWith(".sh")) b=b or 128
   }
-  return FolderSignals(b and 1!=0,b and 2!=0,b and 4!=0,b and 8!=0,b and 16!=0,b and 32!=0,b and 64!=0,b and 128!=0)
+  return FolderSignals(b and 1!=0,b and 2!=0,b and 4!=0,b and 8!=0,b and 16!=0,b and 32!=0,b and 64!=0)
  }
+
  fun fileExtDelta(cmd: String, prevTok: String, entry: SFTPFileEntry, isFirstToken: Boolean): Int =
   SubcommandCatalog.fileExtScore(cmd, prevTok, entry, isFirstToken)
+
  fun folderSubcmdBoost(cmdPath: String, token: String, sig: FolderSignals): Int {
   val t=token.lowercase()
   return when (cmdPath.lowercase()) {
@@ -59,32 +110,35 @@ object AutocompleteContext {
    else->0
   }
  }
+
  fun folderRootSuggestions(prefix: String, sig: FolderSignals): List<SubcmdCandidate> {
   val pl=prefix.lowercase();if (pl.length<2) return emptyList()
   val fs=booleanArrayOf(sig.hasCompose,sig.hasDockerfile,sig.hasGit,sig.hasNode,sig.hasMake,sig.hasGo,sig.hasNginx)
   return fs.indices.filter {fs[it]}.flatMap {RT[it]}.filter {val t=it.tokenText.lowercase();t.startsWith(pl)&&(t!=pl||it.appendSpace)}
  }
- private class Agg(var cmd:String,val k:String,var f:Int,var lf:Int,var a:Double,var la:Double,var loc:Boolean)
+
+ private class Agg(var cmd:String,var lower:String,val k:String,var f:Int,var lf:Int,var a:Double,var la:Double,var loc:Boolean)
+
  fun rankHistory(p: ParsedLine, input: String, currentServerId: String, history: List<CommandRecord>, limit: Int): List<CompletionItem> {
   if (history.isEmpty()||limit<=0||p.activeSeg.isEmpty()) return emptyList()
   val sq=p.activeSeg;val sd=SubcommandData;val ef=p.effective
   if (!p.endsWithSpace&&ef.size<=1&&sq.length<2&&p.pathQuery==null) return emptyList()
   if (p.endsWithSpace&&(ef.isEmpty()||ef.size==1&&ef[0].lowercase().let {it !in sd.FILE_PRIORITY_CMDS&&it !in sd.SUBCMD_ROOTS})) return emptyList()
   val now=System.currentTimeMillis();val m=LinkedHashMap<String,Agg>()
-  for ((i,r) in history.take(400).withIndex()) {
-   val raw=r.command.trim();if (SubcommandCatalog.isUnsafeHistory(raw)) continue
-   val k=norm(raw);val loc=currentServerId!=""&&r.serverId==currentServerId
-   val ag=ageH(r.executedAt,now,i);val ex=m[k]
-   if (ex==null) m[k]=Agg(raw,k,1,if (loc) 1 else 0,ag,if (loc) ag else 1e9,loc)
+  for (e in parsedHistory(history)) {
+   val loc=currentServerId!=""&&e.serverId==currentServerId
+   val ag=if (e.epochMs!=null) maxOf((now-e.epochMs)/36e5,0.0) else e.index*2.0
+   val ex=m[e.normKey]
+   if (ex==null) m[e.normKey]=Agg(e.raw,e.lower,e.normKey,1,if (loc) 1 else 0,ag,if (loc) ag else 1e9,loc)
    else {
     ex.f=minOf(ex.f+1,30);ex.a=minOf(ex.a,ag)
-    if (loc) {if (!ex.loc) ex.cmd=raw;ex.loc=true;ex.lf=minOf(ex.lf+1,30);ex.la=minOf(ex.la,ag)}
+    if (loc) {if (!ex.loc) {ex.cmd=e.raw;ex.lower=e.lower};ex.loc=true;ex.lf=minOf(ex.lf+1,30);ex.la=minOf(ex.la,ag)}
    }
   }
   val fq=input.trimStart();val ld=input.take(input.length-fq.length)
   val fl=fq.lowercase();val sl=sq.lowercase();val nf=norm(fq);val ns=norm(sq);val hc=p.segPrefix!=""
   return m.values.mapNotNull {a->
-   val cl=a.cmd.lowercase()
+   val cl=a.lower
    val mf=cl.startsWith(fl)&&a.k!=nf;val ms=!mf&&hc&&cl.startsWith(sl)&&a.k!=ns
    if (!mf&&!ms) return@mapNotNull null
    val ins=if (mf) ld+a.cmd else p.segPrefix+a.cmd;if (norm(ins)==nf) return@mapNotNull null
@@ -94,8 +148,9 @@ object AutocompleteContext {
    CompletionItem(a.cmd,cat,cat,if (a.loc) "history_local" else "history",ins,s)
   }.sortedByDescending {it.score}.take(limit)
  }
+
  private fun sc(b:Int,ag:Double,fr:Int,ex:Int,r:Int,f:Int,fc:Int,e:Int,hi:Int)=
   (b+(r*exp(-ag/72)).roundToInt()+minOf((f*ln(1.0+fr)).roundToInt(),fc)+e-ex*e/40).coerceIn(b,hi)
+
  private fun norm(s:String)=s.trim().replace(WS," ").lowercase()
- private fun ageH(ts:String,now:Long,i:Int)=if (ts.isBlank()) i*2.0 else try {maxOf((now-Instant.parse(ts).toEpochMilli())/36e5,0.0)} catch (_:Exception) {i*2.0}
 }

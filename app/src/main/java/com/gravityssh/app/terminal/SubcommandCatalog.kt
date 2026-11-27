@@ -3,9 +3,6 @@ package com.gravityssh.app.terminal
 import com.gravityssh.app.model.SFTPFileEntry
 
 object SubcommandCatalog {
- val FILE_PRIORITY_CMDS: Set<String> get() = SubcommandData.FILE_PRIORITY_CMDS
- val DIR_ONLY_CMDS: Set<String> get() = SubcommandData.DIR_ONLY_CMDS
- val SUBCMD_ROOTS: Set<String> get() = SubcommandData.SUBCMD_ROOTS
  val FILE_FLAGS: Set<String> get() = SubcommandData.FILE_FLAGS
  val rootCommands: List<Pair<String, String>> get() = SubcommandData.rootCommands
 
@@ -26,18 +23,16 @@ object SubcommandCatalog {
 
  fun cmdPath(eff: List<String>, endsWithSpace: Boolean): String {
   if (eff.isEmpty()) return ""
-  val t=strip(eff)
-  return if (t.size==2&&endsWithSpace||t.size==3&&!endsWithSpace) "${t[0].lowercase()} ${t[1].lowercase()}" else t[0].lowercase()
+  return if (eff.size==2&&endsWithSpace||eff.size==3&&!endsWithSpace) "${eff[0].lowercase()} ${eff[1].lowercase()}" else eff[0].lowercase()
  }
 
  fun matchSubcommands(eff: List<String>, endsWithSpace: Boolean): List<SubcmdCandidate> {
   if (eff.isEmpty()) return emptyList()
-  val t=strip(eff)
   val (pool,pfx)=when {
-   t.size==1&&endsWithSpace->SubcommandData.l1[t[0].lowercase()] to ""
-   t.size==2&&!endsWithSpace->SubcommandData.l1[t[0].lowercase()] to t[1].lowercase()
-   t.size==2&&endsWithSpace->SubcommandData.l2["${t[0].lowercase()} ${t[1].lowercase()}"] to ""
-   t.size==3&&!endsWithSpace->SubcommandData.l2["${t[0].lowercase()} ${t[1].lowercase()}"] to t[2].lowercase()
+   eff.size==1&&endsWithSpace->SubcommandData.l1[eff[0].lowercase()] to ""
+   eff.size==2&&!endsWithSpace->SubcommandData.l1[eff[0].lowercase()] to eff[1].lowercase()
+   eff.size==2&&endsWithSpace->SubcommandData.l2["${eff[0].lowercase()} ${eff[1].lowercase()}"] to ""
+   eff.size==3&&!endsWithSpace->SubcommandData.l2["${eff[0].lowercase()} ${eff[1].lowercase()}"] to eff[2].lowercase()
    else->null to ""
   }
   if (pool.isNullOrEmpty()) return emptyList()
@@ -45,9 +40,7 @@ object SubcommandCatalog {
   return pool.filter {val l=it.tokenText.lowercase();l.startsWith(pfx)&&!(l==pfx&&!it.appendSpace)}
  }
 
- fun matchFlags(eff: List<String>, curTok: String): List<SubcmdCandidate> = SubcommandFlags.matchFlags(strip(eff), curTok)
-
- private fun strip(t:List<String>)=if (t.size>=2&&t[0].equals("sudo",true)) t.drop(1) else t
+ fun matchFlags(eff: List<String>, curTok: String): List<SubcmdCandidate> = SubcommandFlags.matchFlags(eff, curTok)
 
  internal fun fileExtScore(cmd:String,prevTok:String,e:SFTPFileEntry,first:Boolean):Int {
   if (e.isDir) return 0

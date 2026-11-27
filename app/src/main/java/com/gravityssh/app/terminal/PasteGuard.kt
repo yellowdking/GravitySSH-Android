@@ -27,12 +27,19 @@ object PasteGuard {
         "(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_\\u0400-\\u04FF-]*[\\u0400-\\u04FF])[A-Za-z0-9_\\u0400-\\u04FF-]+"
     )
 
+    private const val RM_TARGETS = "(?:/(?:\\s|\$|\\*|;|\\||&)|~/?(?:\\s|\$|\\*|;|\\||&)|\\*(?:\\s|\$|;|\\||&))"
     private val DANGEROUS_PATTERNS: List<Pair<Regex, String>> = listOf(
-        Regex("\\brm\\s+-[^\\n]*[rR][^\\n]*f[^\\n]*\\s+(/(\\s|\$|\\*)|~/?\\s|\\*)") to "包含高危递归强制删除 (rm -rf)",
+        Regex(
+            "\\brm\\s+(?:" +
+                "(?:-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*)|" +
+                "(?:(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\\s+(?:-[a-zA-Z-]+\\s+)*(?:-[a-zA-Z]*f[a-zA-Z]*|--force))|" +
+                "(?:(?:-[a-zA-Z]*f[a-zA-Z]*|--force)\\s+(?:-[a-zA-Z-]+\\s+)*(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive))" +
+                ")(?:\\s+-[a-zA-Z-]+)*\\s+$RM_TARGETS"
+        ) to "包含高危递归强制删除 (rm -rf)",
         Regex("\\bmkfs(\\.\\w+)?\\b") to "包含磁盘格式化命令 (mkfs)",
         Regex("\\bdd\\s+[^\\n]*\\bof=/dev/") to "包含直接覆写磁盘设备 (dd of=/dev/...)",
         Regex(":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:") to "包含 Fork 炸弹",
-        Regex("\\bchmod\\s+-R\\s+777\\s+/(\\s|\$)") to "包含根目录全权放开 (chmod -R 777 /)",
+        Regex("\\bchmod\\s+(?:(?:-R|--recursive)\\s+0?777|0?777\\s+(?:-R|--recursive))\\s+/(?:\\s|\$|\\*|;|\\||&)") to "包含根目录全权放开 (chmod -R 777 /)",
         Regex(">\\s*/dev/(sd|nvme|vd|hd)[a-z]") to "包含重定向覆写块设备",
         Regex("\\b(shutdown|poweroff|reboot|init\\s+0)\\b") to "包含关机或重启系统命令",
         Regex("\\biptables\\s+(-[A-Za-z]+\\s+)*-F\\b") to "包含清空防火墙规则 (iptables -F)"
@@ -53,10 +60,11 @@ object PasteGuard {
         if (text.isEmpty()) {
             return PasteInspection(needsConfirm = false, hasHiddenChars = false, warnings = emptyList())
         }
+        val normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         val warnings = mutableListOf<PasteWarning>()
         var hasHidden = false
 
-        if (HIDDEN_CHARS_RE.containsMatchIn(text)) {
+        if (HIDDEN_CHARS_RE.containsMatchIn(normalized)) {
             hasHidden = true
             warnings.add(
                 PasteWarning(
@@ -67,7 +75,7 @@ object PasteGuard {
             )
         }
 
-        if (MIXED_LATIN_CYRILLIC_RE.containsMatchIn(text)) {
+        if (MIXED_LATIN_CYRILLIC_RE.containsMatchIn(normalized)) {
             warnings.add(
                 PasteWarning(
                     kind = PasteWarningKind.HOMOGLYPH,
@@ -78,13 +86,13 @@ object PasteGuard {
         }
 
         for ((re, detail) in DANGEROUS_PATTERNS) {
-            if (re.containsMatchIn(text)) {
+            if (re.containsMatchIn(normalized)) {
                 warnings.add(PasteWarning(PasteWarningKind.DANGER, "高危系统命令", detail))
                 break
             }
         }
 
-        if (PIPE_SHELL_RE.containsMatchIn(text)) {
+        if (PIPE_SHELL_RE.containsMatchIn(normalized)) {
             warnings.add(
                 PasteWarning(
                     kind = PasteWarningKind.PIPE_SHELL,
@@ -94,15 +102,25 @@ object PasteGuard {
             )
         }
 
-        val lines = text.split('\n').filter { it.trim().isNotEmpty() }
-        if (!bracketedPasteActive && lines.size > 1) {
-            warnings.add(
-                PasteWarning(
-                    kind = PasteWarningKind.MULTILINE,
-                    label = "多行立即执行 (${lines.size} 行)",
-                    detail = "当前远端未开启括号粘贴，多行内容会立即逐行回车执行"
+        val lines = normalized.split('\n').filter { it.trim().isNotEmpty() }
+        if (!bracketedPasteActive) {
+            if (lines.size > 1) {
+                warnings.add(
+                    PasteWarning(
+                        kind = PasteWarningKind.MULTILINE,
+                        label = "多行立即执行 (${lines.size} 行)",
+                        detail = "当前远端未开启括号粘贴，多行内容会立即逐行回车执行"
+                    )
                 )
-            )
+            } else if ('\n' in normalized) {
+                warnings.add(
+                    PasteWarning(
+                        kind = PasteWarningKind.MULTILINE,
+                        label = "含换行将立即执行",
+                        detail = "当前远端未开启括号粘贴，末尾换行符会使命令立即回车执行"
+                    )
+                )
+            }
         }
 
         return PasteInspection(

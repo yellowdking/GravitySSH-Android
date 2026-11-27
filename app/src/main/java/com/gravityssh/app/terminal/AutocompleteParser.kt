@@ -78,15 +78,15 @@ object AutocompleteParser {
     if (!sl&&!ff&&(c in sd.SUBCMD_ROOTS||t.isEmpty()&&c !in sd.FILE_PRIORITY_CMDS)) return@run null
     c in sd.DIR_ONLY_CMDS
    }
-   val r=t.removePrefix("~/");val tl=r.length<t.length;val base=norm((if (tl) homeDir else cwd).ifBlank {"/"})
+   val r=t.removePrefix("~/");val tl=r.length<t.length;val base=normalizePath(if (tl) homeDir else cwd)
    val px=if (tl) "~/" else "";val k=r.lastIndexOf('/')
    if (k<0) return@run PathQuery(base,r,px,d)
    val dp=r.take(k)
-   PathQuery(norm(if (!tl&&r.startsWith("/")) dp.ifEmpty {"/"} else "$base/$dp"),r.drop(k+1),px+r.take(k+1),d)
+   PathQuery(normalizePath(if (!tl&&r.startsWith("/")) dp.ifEmpty {"/"} else "$base/$dp"),r.drop(k+1),px+r.take(k+1),d)
   }
   return ParsedLine(p,seg,p+seg.take(cur.start),ts,eff,cur,prv,sp,pq)
  }
- private fun norm(p:String)=ArrayDeque<String>().apply {for (s in p.split('/')) if (s=="..") removeLastOrNull() else if (s.isNotEmpty()&&s!=".") addLast(s)}.joinToString("/","/")
+ fun normalizePath(p:String)=ArrayDeque<String>().apply {for (s in p.ifBlank {"/"}.split('/')) if (s=="..") removeLastOrNull() else if (s.isNotEmpty()&&s!=".") addLast(s)}.joinToString("/","/")
  private fun esc(s:String,cs:String)=buildString {for (c in s) {if (c in cs) append('\\');append(c)}}
  fun escapePathToken(tokenDir:String,name:String,isDir:Boolean,quote:Char):String {
   val p=tokenDir+name+if (isDir) "/" else "";val cl=if (isDir) "" else "$quote"
