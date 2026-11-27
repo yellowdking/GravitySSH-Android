@@ -3,10 +3,8 @@ package com.gravityssh.app.vault
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
-import java.security.SecureRandom
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import javax.crypto.spec.SecretKeySpec
 
 interface MasterKeyProvider {
     fun getOrCreateKey(): SecretKey
@@ -37,11 +35,4 @@ class AndroidKeystoreMasterKeyProvider(
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val DEFAULT_ALIAS = "GravitySSHVaultMasterKey"
     }
-}
-
-class InMemoryMasterKeyProvider(
-    keyBytes: ByteArray = ByteArray(32).also { SecureRandom().nextBytes(it) }
-) : MasterKeyProvider {
-    private val key = SecretKeySpec(keyBytes.copyOf(32), "AES")
-    override fun getOrCreateKey(): SecretKey = key
 }

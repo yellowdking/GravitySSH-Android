@@ -1,10 +1,12 @@
 package com.gravityssh.app.vault
 
+import com.gravityssh.app.model.AppJson
 import com.gravityssh.app.model.BuiltinOpsPresets
 import com.gravityssh.app.model.VaultData
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 internal data class VaultOpenResult(
     val locked: Boolean,
@@ -17,50 +19,69 @@ internal class VaultPersistence(
     private val vaultFile: File,
     private val crypto: VaultCrypto
 ) {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-        coerceInputValues = true
-    }
-
-    fun path(): String = vaultFile.absolutePath
+    private val json = AppJson.json
 
     fun openInitial(): VaultOpenResult {
         if (!vaultFile.exists()) {
             val init = VaultData(templates = BuiltinOpsPresets.all())
-            save(init, null)
+            save(init, password = null, cachedKey = null)
             return VaultOpenResult(locked = false, hasPassword = false, biometric = false, data = init)
         }
-        return when (crypto.readMode(vaultFile.readBytes())) {
+        val blob = vaultFile.readBytes()
+        return when (crypto.readMode(blob)) {
             VaultCrypto.MODE_PASSWORD -> VaultOpenResult(locked = true, hasPassword = true, biometric = false, data = VaultData())
             VaultCrypto.MODE_BIOMETRIC -> VaultOpenResult(locked = true, hasPassword = false, biometric = true, data = VaultData())
             else -> {
-                val data = load(null)
+                val data = decode(crypto.open(blob, null))
                 VaultOpenResult(locked = false, hasPassword = false, biometric = data.settings.biometricLockEnabled, data = data)
             }
         }
     }
 
-    fun loadForBiometric(cachedPassword: String?): Pair<VaultData, Boolean> {
+    fun loadWithKeyCache(password: String? = null): Pair<VaultData, CachedPasswordKey?> {
+        val (plain, cachedKey) = crypto.openWithKeyCache(vaultFile.readBytes(), password)
+        return try {
+            decode(plain) to cachedKey
+        } catch (e: Exception) {
+            cachedKey?.clear()
+            throw e
+        }
+    }
+
+    fun loadForBiometric(cachedPassword: String?): Triple<VaultData, Boolean, CachedPasswordKey?> {
         val blob = vaultFile.readBytes()
         val pw = if (crypto.isPasswordProtected(blob)) {
             cachedPassword?.takeIf { it.isNotEmpty() } ?: throw SecurityException("请先输入主密码解锁")
-        } else null
-        return decode(crypto.open(blob, pw)) to (pw != null)
+        } else {
+            null
+        }
+        val (plain, cachedKey) = crypto.openWithKeyCache(blob, pw)
+        return try {
+            Triple(decode(plain), pw != null, cachedKey)
+        } catch (e: Exception) {
+            cachedKey?.clear()
+            throw e
+        }
     }
 
-    fun load(password: String? = null): VaultData = decode(crypto.open(vaultFile.readBytes(), password))
+    fun deriveForNewPassword(password: String): CachedPasswordKey =
+        crypto.deriveForNewPassword(password)
 
-    fun save(data: VaultData, password: String?) {
-        vaultFile.parentFile?.mkdirs()
+    fun save(data: VaultData, password: String?, cachedKey: CachedPasswordKey? = null) {
         val plain = json.encodeToString(data).toByteArray(Charsets.UTF_8)
-        val blob = crypto.seal(plain, password, data.settings.biometricLockEnabled)
-        val tmp = File(vaultFile.parentFile, "${vaultFile.name}.tmp")
-        tmp.writeBytes(blob)
-        if (!tmp.renameTo(vaultFile)) {
-            vaultFile.writeBytes(blob)
-            tmp.delete()
+        val blob = if (cachedKey != null) {
+            crypto.sealWithCachedKey(plain, cachedKey, data.settings.biometricLockEnabled)
+        } else {
+            crypto.seal(plain, password, data.settings.biometricLockEnabled)
         }
+        AtomicFileOps.writeBytesAtomic(vaultFile, blob)
+    }
+
+    fun backupCorruptedFile(): File? {
+        if (!vaultFile.exists()) return null
+        val backup = File(vaultFile.parentFile ?: File("."), "${vaultFile.name}.corrupt.${System.currentTimeMillis()}")
+        Files.move(vaultFile.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        return backup
     }
 
     private fun decode(plain: ByteArray): VaultData =
