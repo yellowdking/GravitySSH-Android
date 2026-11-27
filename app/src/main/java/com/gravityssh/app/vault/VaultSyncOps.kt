@@ -64,23 +64,26 @@ object VaultSyncOps {
         }
 
         val now = Instant.now().toString()
-        val cleanKeys = bundle.sshKeys.map { sanitizeKey(it, now) }
+        val cleanKeys = bundle.sshKeys.mapNotNull { sanitizeKey(it, now) }
         val cleanServers = bundle.servers.mapNotNull { sanitizeServer(it, now) }
         val cleanShortcuts = bundle.shortcuts.mapNotNull { sanitizeShortcut(it, now) }
         val cleanTemplates = sanitizeTemplates(bundle.templates)
 
         if (mode == SyncImportMode.OVERWRITE) {
+            val overwriteKeys = deduplicateKeys(cleanKeys.map { it.second })
+            val overwriteServers = deduplicateServers(cleanServers.map { it.second }).toMutableList()
+            breakJumpCycles(overwriteServers, targetIds = null)
             val next = current.copy(
-                servers = cleanServers.map { it.second },
-                sshKeys = cleanKeys.map { it.second },
+                servers = overwriteServers,
+                sshKeys = overwriteKeys,
                 shortcuts = cleanShortcuts,
                 templates = cleanTemplates
             )
             return next to SyncImportSummary(
                 mode = mode,
-                serversAdded = cleanServers.size,
+                serversAdded = overwriteServers.size,
                 serversUpdated = 0,
-                keysAdded = cleanKeys.size,
+                keysAdded = overwriteKeys.size,
                 keysUpdated = 0,
                 shortcutsAdded = cleanShortcuts.size,
                 shortcutsUpdated = 0,
@@ -152,6 +155,9 @@ object VaultSyncOps {
                     cur.jumpHost.host.trim().equals(inc.jumpHost.host.trim(), ignoreCase = true) &&
                     cur.jumpHost.port == inc.jumpHost.port &&
                     cur.jumpHost.username.trim() == inc.jumpHost.username.trim()
+                val sameMainEndpoint = cur.host.trim().equals(inc.host.trim(), ignoreCase = true) &&
+                    cur.port == inc.port &&
+                    cur.username.trim() == inc.username.trim()
                 val mergedSshKeyId = if (inc.authType == AuthType.PASSWORD) {
                     inc.sshKeyId
                 } else {
@@ -164,7 +170,7 @@ object VaultSyncOps {
                 }
                 outServers[idx] = inc.copy(
                     id = finalId,
-                    password = inc.password.ifEmpty { cur.password },
+                    password = if (sameMainEndpoint) inc.password.ifEmpty { cur.password } else inc.password,
                     sshKeyId = mergedSshKeyId,
                     proxy = inc.proxy.copy(
                         password = if (sameProxy) inc.proxy.password.ifEmpty { cur.proxy.password } else inc.proxy.password
@@ -197,6 +203,8 @@ object VaultSyncOps {
                 }
             }
         }
+        // 2c. Break any self-reference or multi-hop jump cycles introduced by incoming/merged servers
+        breakJumpCycles(outServers, targetIds = touchedServerIds)
 
         // 3. Merge shortcuts
         val outShortcuts = current.shortcuts.toMutableList()
@@ -278,16 +286,22 @@ object VaultSyncOps {
         )
     }
 
-    private fun sanitizeKey(raw: SSHKeyRecord, now: String): Pair<String, SSHKeyRecord> {
+    private fun sanitizeKey(raw: SSHKeyRecord, now: String): Pair<String, SSHKeyRecord>? {
         val origId = raw.id.trim()
+        val fingerprint = raw.fingerprint.trim()
+        val publicKey = raw.publicKey.trim().takeUnless { it.contains('\u0000') || it.contains('\r') || it.contains('\n') }.orEmpty()
+        val privateKeyPem = raw.privateKeyPem.trim()
+        if (origId.isBlank() && fingerprint.isBlank() && publicKey.isBlank() && privateKeyPem.isBlank()) {
+            return null
+        }
         val id = origId.ifBlank { UUID.randomUUID().toString() }
         val clean = raw.copy(
             id = id,
             name = raw.name.trim().ifBlank { "SSH Key" },
             keyType = raw.keyType.trim().ifBlank { "ed25519" },
-            fingerprint = raw.fingerprint.trim(),
-            publicKey = raw.publicKey.trim(),
-            privateKeyPem = raw.privateKeyPem.trim(),
+            fingerprint = fingerprint,
+            publicKey = publicKey,
+            privateKeyPem = privateKeyPem,
             comment = raw.comment.trim(),
             createdAt = raw.createdAt.trim().ifBlank { now }
         )
@@ -304,21 +318,34 @@ object VaultSyncOps {
         val authType = raw.authType.trim().lowercase().takeIf { it in VALID_AUTH_TYPES } ?: AuthType.PASSWORD
 
         val proxyType = raw.proxy.type.trim().lowercase().takeIf { it in VALID_PROXY_TYPES } ?: ProxyType.NONE
+        val proxyPort = when (proxyType) {
+            ProxyType.SOCKS5 -> if (raw.proxy.port <= 0) 1080 else raw.proxy.port.coerceIn(1, 65535)
+            ProxyType.HTTP -> if (raw.proxy.port <= 0) 8080 else raw.proxy.port.coerceIn(1, 65535)
+            else -> 0
+        }
         val cleanProxy = ProxyConfig(
             type = proxyType,
             host = raw.proxy.host.trim(),
-            port = if (proxyType == ProxyType.NONE) 0 else raw.proxy.port.coerceIn(0, 65535),
+            port = proxyPort,
             username = raw.proxy.username.trim(),
             password = raw.proxy.password
         )
 
-        val jumpMode = raw.jumpHost.mode.trim().lowercase().takeIf { it in VALID_JUMP_MODES } ?: JumpMode.NONE
+        val rawJumpMode = raw.jumpHost.mode.trim().lowercase().takeIf { it in VALID_JUMP_MODES } ?: JumpMode.NONE
+        val rawJumpServerId = raw.jumpHost.serverId.trim()
+        val jumpMode = if (rawJumpMode == JumpMode.SERVER && (rawJumpServerId.isEmpty() || rawJumpServerId == id)) {
+            JumpMode.NONE
+        } else {
+            rawJumpMode
+        }
+        val jumpServerId = if (jumpMode == JumpMode.SERVER) rawJumpServerId else ""
         val jumpAuthType = raw.jumpHost.authType.trim().lowercase().takeIf { it in VALID_AUTH_TYPES } ?: AuthType.PASSWORD
+        val jumpPort = if (raw.jumpHost.port <= 0) 22 else raw.jumpHost.port.coerceIn(1, 65535)
         val cleanJump = JumpHostConfig(
             mode = jumpMode,
-            serverId = raw.jumpHost.serverId.trim(),
+            serverId = jumpServerId,
             host = raw.jumpHost.host.trim(),
-            port = raw.jumpHost.port.coerceIn(1, 65535),
+            port = jumpPort,
             username = raw.jumpHost.username.trim(),
             authType = jumpAuthType,
             password = raw.jumpHost.password,
@@ -326,20 +353,24 @@ object VaultSyncOps {
             useMainProxy = raw.jumpHost.useMainProxy
         )
 
+        val cleanPort = if (raw.port <= 0) 22 else raw.port.coerceIn(1, 65535)
+        val cleanTimeout = if (raw.timeoutSeconds <= 0) 15 else raw.timeoutSeconds.coerceIn(3, 120)
+        val cleanKeepAlive = raw.keepAliveSeconds.coerceIn(0, 600)
+
         val clean = raw.copy(
             id = id,
             name = raw.name.trim().ifBlank { "$username@$host" },
             group = raw.group.trim().ifBlank { "默认分组" },
             color = raw.color.trim().ifBlank { "#6366F1" },
             host = host,
-            port = raw.port.coerceIn(1, 65535),
+            port = cleanPort,
             username = username,
             authType = authType,
             sshKeyId = raw.sshKeyId.trim(),
             proxy = cleanProxy,
             jumpHost = cleanJump,
-            timeoutSeconds = raw.timeoutSeconds.coerceIn(3, 120),
-            keepAliveSeconds = raw.keepAliveSeconds.coerceIn(0, 300),
+            timeoutSeconds = cleanTimeout,
+            keepAliveSeconds = cleanKeepAlive,
             defaultRemotePath = raw.defaultRemotePath.trim(),
             startupCommand = raw.startupCommand.trim(),
             notes = raw.notes.trim(),
@@ -350,10 +381,55 @@ object VaultSyncOps {
         return origId to clean
     }
 
+    private fun deduplicateKeys(keys: List<SSHKeyRecord>): List<SSHKeyRecord> {
+        val seen = HashSet<String>(keys.size)
+        return keys.map { k ->
+            if (seen.add(k.id)) k else k.copy(id = UUID.randomUUID().toString())
+        }
+    }
+
+    private fun deduplicateServers(servers: List<ServerConfig>): List<ServerConfig> {
+        val seen = HashSet<String>(servers.size)
+        return servers.map { s ->
+            if (seen.add(s.id)) s else s.copy(id = UUID.randomUUID().toString())
+        }
+    }
+
+    internal fun hasJumpCycle(servers: List<ServerConfig>, selfId: String, jumpServerId: String): Boolean {
+        val start = jumpServerId.trim()
+        if (start.isEmpty()) return false
+        val byId = servers.associateBy { it.id }
+        val visited = HashSet<String>()
+        val cleanSelf = selfId.trim()
+        if (cleanSelf.isNotEmpty()) visited.add(cleanSelf)
+        var cur = start
+        while (cur.isNotEmpty()) {
+            if (!visited.add(cur)) return true
+            val next = byId[cur] ?: return false
+            if (next.jumpHost.mode != JumpMode.SERVER) return false
+            cur = next.jumpHost.serverId.trim()
+        }
+        return false
+    }
+
+    private fun breakJumpCycles(servers: MutableList<ServerConfig>, targetIds: Set<String>?) {
+        for (i in servers.indices) {
+            val srv = servers[i]
+            if (targetIds != null && srv.id !in targetIds) continue
+            if (srv.jumpHost.mode != JumpMode.SERVER) continue
+            val jumpId = srv.jumpHost.serverId.trim()
+            if (jumpId.isEmpty() || jumpId == srv.id || hasJumpCycle(servers, srv.id, jumpId)) {
+                servers[i] = srv.copy(
+                    jumpHost = srv.jumpHost.copy(mode = JumpMode.NONE, serverId = "")
+                )
+            }
+        }
+    }
+
     private fun sanitizeShortcut(raw: CommandShortcut, now: String): CommandShortcut? {
         val name = raw.name.trim()
         val command = raw.command.trim()
-        if (name.isBlank() && command.isBlank()) return null
+        if (command.isBlank()) return null
         return raw.copy(
             id = raw.id.trim().ifBlank { UUID.randomUUID().toString() },
             name = name.ifBlank { command.take(24) },
@@ -369,6 +445,7 @@ object VaultSyncOps {
     private fun sanitizeTemplates(rawList: List<BuiltinTemplate>): List<BuiltinTemplate> {
         val validPresets = validPresetIds
         val seenPresets = HashSet<String>()
+        val seenIds = HashSet<String>()
         val out = ArrayList<BuiltinTemplate>(rawList.size)
         for (raw in rawList) {
             val clean = sanitizeTemplate(raw) ?: continue
@@ -380,13 +457,14 @@ object VaultSyncOps {
             } else {
                 ""
             }
-            val effectiveId = if (effectivePresetId.isEmpty() && clean.id in validPresets) {
-                UUID.randomUUID().toString()
-            } else if (effectivePresetId.isNotEmpty()) {
+            val effectiveId = if (effectivePresetId.isNotEmpty()) {
                 effectivePresetId
+            } else if (clean.id in validPresets || clean.id in seenIds) {
+                UUID.randomUUID().toString()
             } else {
                 clean.id
             }
+            seenIds.add(effectiveId)
             out.add(clean.copy(id = effectiveId, presetId = effectivePresetId))
         }
         return out
@@ -395,7 +473,7 @@ object VaultSyncOps {
     private fun sanitizeTemplate(raw: BuiltinTemplate): BuiltinTemplate? {
         val name = raw.name.trim()
         val command = raw.command.trim()
-        if (name.isBlank() && command.isBlank()) return null
+        if (command.isBlank()) return null
         return raw.copy(
             id = raw.id.trim().ifBlank { UUID.randomUUID().toString() },
             presetId = raw.presetId.trim(),

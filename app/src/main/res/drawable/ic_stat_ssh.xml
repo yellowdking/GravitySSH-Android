@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Monochrome white terminal frame for Android status bar -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineJoin="round"
+        android:pathData="M4,4 L20,4 A2,2 0 0,1 22,6 L22,18 A2,2 0 0,1 20,20 L4,20 A2,2 0 0,1 2,18 L2,6 A2,2 0 0,1 4,4 Z" />
+    <!-- Prompt chevron > -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M6.5,8.5 L10.5,12 L6.5,15.5" />
+    <!-- Cursor underscore _ -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M12.5,15.5 L17.5,15.5" />
+</vector>
