@@ -17,8 +17,10 @@ import com.gravityssh.app.ui.theme.*
 @Composable
 fun SyncPreviewCard(
     preview: SyncReceivePreview,
+    busy: Boolean = false,
     onMerge: () -> Unit,
-    onRequestOverwrite: () -> Unit
+    onRequestOverwrite: () -> Unit,
+    onDiscard: (() -> Unit)? = null
 ) {
     AgCard(borderColor = AgAccent) {
         Text("解密成功 · 待导入数据预览", style = MaterialTheme.typography.titleMedium, color = AgCyan)
@@ -28,17 +30,27 @@ fun SyncPreviewCard(
         Spacer(Modifier.height(12.dp))
         Button(
             onClick = onMerge,
+            enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
-        ) { Text("安全合并（推荐）", color = Color.White) }
+        ) { Text(if (busy) "正在导入..." else "安全合并（推荐）", color = Color.White) }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(
             onClick = onRequestOverwrite,
+            enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(10.dp),
             border = BorderStroke(1.dp, AgDanger)
         ) { Text("完全覆盖本地数据", color = AgDanger) }
+        if (onDiscard != null) {
+            Spacer(Modifier.height(4.dp))
+            TextButton(
+                onClick = onDiscard,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("放弃此预览", color = AgMuted) }
+        }
     }
 }
 

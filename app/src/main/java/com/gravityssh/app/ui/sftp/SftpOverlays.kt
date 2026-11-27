@@ -12,6 +12,7 @@ import com.gravityssh.app.model.SFTPFileEntry
 import com.gravityssh.app.ssh.SftpService
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.runSftpOp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
@@ -64,16 +65,17 @@ internal fun SftpOverlays(
                 if (loadingEdit) return@SftpEntryActionDialog
                 loadingEdit = true
                 scope.launch {
-                    runCatching { sftp.readTextFile(sessionId, entry.path) }
-                        .onSuccess {
-                            loadingEdit = false
-                            onDismissSelected()
-                            onOpenEditor(it)
-                        }
-                        .onFailure {
-                            loadingEdit = false
-                            onToast("打开失败: ${it.message}")
-                        }
+                    try {
+                        val content = sftp.readTextFile(sessionId, entry.path)
+                        onDismissSelected()
+                        onOpenEditor(content)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        onToast("打开失败: ${e.message}")
+                    } finally {
+                        loadingEdit = false
+                    }
                 }
             },
             onDownload = { onStartDownload(entry) },
@@ -143,16 +145,17 @@ internal fun SftpOverlays(
         SftpEditorDialog(
             file = file,
             onSave = { newContent ->
-                runCatching {
+                try {
                     viewModel.viewModelScope.async {
                         sftp.writeTextFile(sessionId, file.path, newContent)
                     }.await()
-                }.onSuccess {
                     onToast("文件已保存")
                     onDismissEditor()
                     onReload()
-                }.onFailure {
-                    onToast("保存失败: ${it.message}")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    onToast("保存失败: ${e.message}")
                 }
             },
             onDismiss = onDismissEditor

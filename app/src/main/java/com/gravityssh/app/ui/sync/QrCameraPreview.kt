@@ -28,10 +28,23 @@ import com.google.zxing.BinaryBitmap
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
+import com.gravityssh.app.sync.SyncConfig
+import com.gravityssh.app.sync.SyncCrypto
 import com.gravityssh.app.ui.theme.AgDanger
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+internal fun isValidGravitySshQrPayload(raw: String): Boolean {
+    val trimmed = raw.trim()
+    if (!trimmed.startsWith(SyncConfig.QR_SCHEME_PREFIX, ignoreCase = true) &&
+        !trimmed.startsWith("gssh-sync://", ignoreCase = true)
+    ) {
+        return false
+    }
+    return runCatching { SyncCrypto.canonicalizeCode(trimmed) }.isSuccess
+}
 
 @Composable
 fun QrCameraPreview(onScanned: (String) -> Unit) {
@@ -40,14 +53,28 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
     val executor = remember { Executors.newSingleThreadExecutor() }
     val delivered = remember { AtomicBoolean(false) }
     val disposed = remember { AtomicBoolean(false) }
-    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    val cameraProviderRef = remember { AtomicReference<ProcessCameraProvider?>(null) }
+    val previewRef = remember { AtomicReference<Preview?>(null) }
+    val analysisRef = remember { AtomicReference<ImageAnalysis?>(null) }
     var cameraError by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
             disposed.set(true)
-            runCatching { cameraProvider?.unbindAll() }
-            cameraProvider = null
+            val analysis = analysisRef.getAndSet(null)
+            val preview = previewRef.getAndSet(null)
+            val provider = cameraProviderRef.getAndSet(null)
+            runCatching { analysis?.clearAnalyzer() }
+            runCatching {
+                if (provider != null) {
+                    when {
+                        preview != null && analysis != null -> provider.unbind(preview, analysis)
+                        preview != null -> provider.unbind(preview)
+                        analysis != null -> provider.unbind(analysis)
+                        else -> provider.unbindAll()
+                    }
+                }
+            }
             executor.shutdown()
         }
     }
@@ -64,10 +91,13 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
                     runCatching {
                         val provider = providerFuture.get()
                         if (disposed.get()) {
-                            provider.unbindAll()
                             return@addListener
                         }
-                        cameraProvider = provider
+                        val selector = when {
+                            provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> CameraSelector.DEFAULT_BACK_CAMERA
+                            provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> CameraSelector.DEFAULT_FRONT_CAMERA
+                            else -> throw IllegalStateException("未检测到可用摄像头")
+                        }
                         val preview = Preview.Builder().build().also {
                             it.surfaceProvider = previewView.surfaceProvider
                         }
@@ -94,9 +124,10 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
                                             dst = yuvBuf
                                         )
                                         decodeQr(width, height, yuvBuf, reader)?.let { text ->
-                                            if (delivered.compareAndSet(false, true)) {
+                                            val candidate = text.trim()
+                                            if (isValidGravitySshQrPayload(candidate) && delivered.compareAndSet(false, true)) {
                                                 mainExecutor.execute {
-                                                    if (!disposed.get()) currentOnScanned(text)
+                                                    if (!disposed.get()) currentOnScanned(candidate)
                                                 }
                                             }
                                         }
@@ -106,10 +137,13 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
                                 proxy.close()
                             }
                         }
+                        cameraProviderRef.set(provider)
+                        previewRef.set(preview)
+                        analysisRef.set(analysis)
                         provider.unbindAll()
                         provider.bindToLifecycle(
                             lifecycleOwner,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            selector,
                             preview,
                             analysis
                         )
