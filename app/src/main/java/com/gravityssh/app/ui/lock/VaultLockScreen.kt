@@ -27,10 +27,12 @@ import com.gravityssh.app.ui.components.AgPasswordField
 import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.components.BiometricHelper
 import com.gravityssh.app.ui.theme.*
+import com.gravityssh.app.vault.MasterKeyProvider
 
 @Composable
 fun VaultLockScreen(
     lockState: VaultLockState,
+    masterKeyProvider: MasterKeyProvider? = null,
     onUnlockPassword: (String, (Result<Unit>) -> Unit) -> Unit,
     onUnlockBiometric: ((Result<Unit>) -> Unit) -> Unit,
     onResetCorruptedVault: ((Result<Unit>) -> Unit) -> Unit
@@ -79,6 +81,8 @@ fun VaultLockScreen(
         BiometricHelper.authenticate(
             context = context,
             negativeButtonText = if (lockState.hasPassword) "使用密码" else "取消",
+            cryptoProvider = masterKeyProvider,
+            allowDeviceCredentialFallback = true,
             onSuccess = {
                 busy = true
                 errorMsg = null

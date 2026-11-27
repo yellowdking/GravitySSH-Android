@@ -15,6 +15,7 @@ import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
@@ -87,7 +88,19 @@ fun DeployKeyDialog(
                     if (targets.isEmpty()) return@Button
                     busy = true
                     results = emptyList()
-                    scope.launch { results = onDeploy(targets); busy = false }
+                    scope.launch {
+                        try {
+                            results = onDeploy(targets)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            results = targets.map {
+                                KeyDeployResult(it.id, it.name, ok = false, message = e.message ?: "部署异常")
+                            }
+                        } finally {
+                            busy = false
+                        }
+                    }
                 },
                 enabled = !busy && selectedIds.isNotEmpty(),
                 colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
