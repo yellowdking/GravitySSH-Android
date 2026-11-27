@@ -3,7 +3,7 @@ package com.gravityssh.app.sync
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 object SyncConfig {
-    const val DEFAULT_RELAY_URL = "https://107.172.98.169:54843"
+    const val DEFAULT_RELAY_URL = "https://43.155.231.14:54843"
     const val CLIENT_HEADER = "GravitySSH/1"
     const val DEFAULT_TTL_SECONDS = 300
     const val PAIR_POLL_INTERVAL_MS = 1500L
@@ -11,8 +11,8 @@ object SyncConfig {
     const val CHANNEL_PREFIX = "gssh-sync-channel-v1:"
     const val QR_SCHEME_PREFIX = "gssh-sync://v1?code="
 
-    // Live credentials from relay-ops deployment on 107.172.98.169:54843
-    const val PINNED_SPKI_SHA256 = "8d02a67e23e9f5af5922a8e700a6309dfa4ce335baca7125452fe22f4e5e29ba"
+    // Live credentials from relay-ops deployment on 43.155.231.14:54843
+    const val PINNED_SPKI_SHA256 = "ca1a5f441de4962b6269449325ded3a284a0a8a9d8fd3d995ffcb218c8eb7575"
     const val APP_GATE_KEY = "fb6f39e339dffe1141537e5e8154491cce0044c7bc2ecb26b17828571b9d5aae"
 
     private val IPV4_RE = Regex(

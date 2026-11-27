@@ -87,7 +87,7 @@ class SyncCryptoInteropTest {
         assertEquals("https://sync.example.com:8443", SyncConfig.normalizeRelayUrl("sync.example.com:8443"))
         assertEquals("https://sync.example.com/relay", SyncConfig.normalizeRelayUrl("https://sync.example.com/relay/"))
         assertEquals("https://sync.example.com:8443/api/sync", SyncConfig.normalizeRelayUrl("sync.example.com:8443/api/sync/"))
-        assertTrue(SyncConfig.isRawIpHost("107.172.98.169"))
+        assertTrue(SyncConfig.isRawIpHost("43.155.231.14"))
         assertTrue(SyncConfig.isRawIpHost("[2001:db8::1]"))
         assertFalse(SyncConfig.isRawIpHost("sync.example.com"))
         assertTrue(runCatching { SyncConfig.normalizeRelayUrl("http://1.2.3.4:54843") }.isFailure)
