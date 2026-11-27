@@ -279,7 +279,7 @@ class SshBatch3CoreAndPerfTest {
     }
 
     @Test
-    fun sshSessionWorkerMetricsPausePredicateAndFlowWaitSuspendCleanly() = runBlocking {
+    fun sshSessionWorkerMetricsPausePredicateAndFlowWaitSuspendCleanly(): Unit = runBlocking {
         // Pure predicate truth table
         assertTrue(SshSessionWorker.shouldSampleMetrics("s1", "s1", appForeground = true, monitorBarEnabled = true))
         assertFalse(SshSessionWorker.shouldSampleMetrics("s1", "s2", appForeground = true, monitorBarEnabled = true))
@@ -322,7 +322,7 @@ class SshBatch3CoreAndPerfTest {
         // Returning to s1 wakes promptly
         activeFlow.value = "s1"
         withTimeout(2_000L) { woke.await() }
-        waiter.await()
+        assertTrue(waiter.await())
     }
 
     private fun readFully(inp: java.io.InputStream, buf: ByteArray) {
