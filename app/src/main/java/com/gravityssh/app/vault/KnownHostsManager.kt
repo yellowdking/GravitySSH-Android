@@ -27,12 +27,14 @@ data class KnownHostEntry(
 )
 
 class KnownHostsManager(
-    private val storageFile: File
+    private val storageFile: File,
+    autoLoad: Boolean = true
 ) : HostKeyVerifier {
 
     private val lock = Any()
     private val json = AppJson.json
     private val entries = LinkedHashMap<String, KnownHostEntry>()
+    private var loaded = false
 
     private val _knownHosts = MutableStateFlow<List<KnownHostEntry>>(emptyList())
     val knownHosts: StateFlow<List<KnownHostEntry>> = _knownHosts.asStateFlow()
@@ -41,10 +43,21 @@ class KnownHostsManager(
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     init {
-        load()
+        if (autoLoad) {
+            load()
+        }
+    }
+
+    fun load() {
+        synchronized(lock) {
+            if (!loaded) {
+                loadLocked()
+            }
+        }
     }
 
     override fun verify(hostname: String, port: Int, key: PublicKey): Boolean = synchronized(lock) {
+        ensureLoadedLocked()
         val hostKey = keyFor(hostname, port)
         val fp = SecurityUtils.getFingerprint(key)
         val existing = entries[hostKey]
@@ -67,16 +80,14 @@ class KnownHostsManager(
     }
 
     override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = synchronized(lock) {
+        ensureLoadedLocked()
         val entry = entries[keyFor(hostname, port)] ?: return emptyList()
         // Only advertise valid RFC 4253 SSH key type names (e.g. ssh-ed25519, ssh-rsa, ecdsa-sha2-*)
         if (entry.algorithm.contains('-')) listOf(entry.algorithm) else emptyList()
     }
 
-    fun listKnownHosts(): List<KnownHostEntry> = synchronized(lock) {
-        entries.values.toList()
-    }
-
     fun clearHost(host: String, port: Int): Boolean = synchronized(lock) {
+        ensureLoadedLocked()
         val removed = entries.remove(keyFor(host, port)) != null
         if (removed) {
             saveLocked()
@@ -86,6 +97,7 @@ class KnownHostsManager(
     }
 
     fun clearHostByKey(hostPort: String): Boolean = synchronized(lock) {
+        ensureLoadedLocked()
         val removed = entries.remove(hostPort) != null
         if (removed) {
             saveLocked()
@@ -95,6 +107,7 @@ class KnownHostsManager(
     }
 
     fun clearAll(): Int = synchronized(lock) {
+        ensureLoadedLocked()
         val count = entries.size
         entries.clear()
         saveLocked()
@@ -104,28 +117,33 @@ class KnownHostsManager(
 
     private fun keyFor(host: String, port: Int): String = "${host.trim().lowercase()}:$port"
 
-    private fun load() {
-        synchronized(lock) {
-            if (!storageFile.exists()) {
-                emitLocked()
-                return
-            }
-            try {
-                val list = json.decodeFromString<List<KnownHostEntry>>(storageFile.readText(Charsets.UTF_8))
-                entries.clear()
-                list.forEach { entries[it.hostPort] = it }
-                _lastError.value = null
-            } catch (e: Exception) {
-                runCatching { Log.e(TAG, "Corrupt known_hosts file, backing up", e) }
-                val backup = File(storageFile.parentFile ?: File("."), "${storageFile.name}.corrupt")
-                runCatching {
-                    Files.move(storageFile.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }
-                entries.clear()
-                _lastError.value = "主机指纹缓存已损坏，已备份至 ${backup.name}：${e.message ?: e.javaClass.simpleName}"
-            }
-            emitLocked()
+    private fun ensureLoadedLocked() {
+        if (!loaded) {
+            loadLocked()
         }
+    }
+
+    private fun loadLocked() {
+        loaded = true
+        if (!storageFile.exists()) {
+            emitLocked()
+            return
+        }
+        try {
+            val list = json.decodeFromString<List<KnownHostEntry>>(storageFile.readText(Charsets.UTF_8))
+            entries.clear()
+            list.forEach { entries[it.hostPort] = it }
+            _lastError.value = null
+        } catch (e: Exception) {
+            runCatching { Log.e(TAG, "Corrupt known_hosts file, backing up", e) }
+            val backup = File(storageFile.parentFile ?: File("."), "${storageFile.name}.corrupt")
+            runCatching {
+                Files.move(storageFile.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            entries.clear()
+            _lastError.value = "主机指纹缓存已损坏，已备份至 ${backup.name}：${e.message ?: e.javaClass.simpleName}"
+        }
+        emitLocked()
     }
 
     private fun saveLocked() {

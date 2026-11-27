@@ -118,6 +118,12 @@ internal object VaultCrudOps {
             executedAt = Instant.now().toString()
         )
         val maxLen = data.settings.maxHistoryEntries.coerceIn(100, 10000)
-        return data.copy(history = (listOf(rec) + data.history).take(maxLen))
+        val existingCount = minOf(data.history.size, maxLen - 1)
+        val nextHistory = ArrayList<CommandRecord>(existingCount + 1)
+        nextHistory.add(rec)
+        for (i in 0 until existingCount) {
+            nextHistory.add(data.history[i])
+        }
+        return data.copy(history = nextHistory)
     }
 }

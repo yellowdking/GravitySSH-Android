@@ -2,7 +2,6 @@ package com.gravityssh.app.terminal
 
 class AnsiParser(
     private val buffer: TerminalBuffer,
-    private val onTitleChanged: (String) -> Unit = {},
     private val onCwdChanged: (String) -> Unit = {},
     private val onReply: ((String) -> Unit)? = null
 ) {
@@ -163,12 +162,9 @@ class AnsiParser(
         val sep = raw.indexOf(';')
         if (sep <= 0) return
         val arg = raw.substring(sep + 1)
-        when (raw.substring(0, sep)) {
-            "0", "2" -> onTitleChanged(arg)
-            "7" -> {
-                val path = parseOsc7Path(arg)
-                if (path.isNotEmpty()) onCwdChanged(path)
-            }
+        if (raw.substring(0, sep) == "7") {
+            val path = parseOsc7Path(arg)
+            if (path.isNotEmpty()) onCwdChanged(path)
         }
     }
 

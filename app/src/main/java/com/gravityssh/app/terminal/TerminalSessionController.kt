@@ -54,7 +54,7 @@ class TerminalSessionController(
 
     fun onRemoteOutput(rawText: String) {
         if (rawText.isEmpty()) return
-        val skipHighlight = buffer.isAlternateScreen || TerminalModes.containsAltScreenEnter(rawText)
+        val skipHighlight = buffer.isAltScreen || TerminalModes.containsAltScreenEnter(rawText)
         val processed = if (skipHighlight) {
             val pending = highlighter.flushPending()
             highlighter.reset()
@@ -77,7 +77,7 @@ class TerminalSessionController(
         val prev = _currentInputLine.value
         if (data.contains('\r') || data.contains('\n')) {
             val committed = prev.trim()
-            if (committed.isNotEmpty() && !buffer.isAlternateScreen) {
+            if (committed.isNotEmpty() && !buffer.isAltScreen) {
                 onCommandCommitted(committed)
             }
         }
@@ -94,7 +94,7 @@ class TerminalSessionController(
 
     fun extractPlainText(scrollOffset: Int = 0): String = buffer.extractPlainText(scrollOffset)
 
-    fun isAlternateScreen(): Boolean = buffer.isAlternateScreen
+    fun isAlternateScreen(): Boolean = buffer.isAltScreen
 
     fun isNanoDetected(): Boolean = buffer.isNanoScreenHint()
 
@@ -126,8 +126,8 @@ class TerminalSessionController(
     }
 
     private fun syncModeFlows() {
-        _bracketedPaste.value = buffer.bracketedPasteMode
-        val alt = buffer.isAlternateScreen
+        _bracketedPaste.value = buffer.bracketedPaste
+        val alt = buffer.isAltScreen
         _alternateScreen.value = alt
         _nanoDetected.value = if (alt) buffer.isNanoScreenHint() else false
     }

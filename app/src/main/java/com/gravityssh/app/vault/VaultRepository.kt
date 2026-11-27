@@ -38,10 +38,10 @@ class VaultRepository(
     private var activePassword: String? = null
     private var cachedPasswordKey: CachedPasswordKey? = null
     private var currentData: VaultData = VaultData()
-    private var historyDirty: Boolean = false
-    private var historyFlushJob: Job? = null
+    private var pendingDirty: Boolean = false
+    private var debouncedFlushJob: Job? = null
 
-    private val _state = MutableStateFlow(VaultState())
+    private val _state = MutableStateFlow(VaultState(lockState = VaultLockState(locked = true)))
     val state: StateFlow<VaultState> = _state.asStateFlow()
 
     fun addOnLockListener(listener: () -> Unit) {
@@ -53,8 +53,8 @@ class VaultRepository(
             val res = store.openInitial()
             clearSecretsLocked()
             currentData = res.data
-            historyDirty = false
-            cancelHistoryFlushLocked()
+            pendingDirty = false
+            cancelDebouncedFlushLocked()
             emitStateLocked(
                 locked = res.locked,
                 hasPassword = res.hasPassword,
@@ -65,8 +65,8 @@ class VaultRepository(
             runCatching { Log.e(TAG, "Failed to open vault", e) }
             clearSecretsLocked()
             currentData = VaultData()
-            historyDirty = false
-            cancelHistoryFlushLocked()
+            pendingDirty = false
+            cancelDebouncedFlushLocked()
             emitStateLocked(
                 locked = true,
                 hasPassword = false,
@@ -82,8 +82,8 @@ class VaultRepository(
             val res = store.openInitial()
             clearSecretsLocked()
             currentData = res.data
-            historyDirty = false
-            cancelHistoryFlushLocked()
+            pendingDirty = false
+            cancelDebouncedFlushLocked()
             emitStateLocked(
                 locked = res.locked,
                 hasPassword = res.hasPassword,
@@ -101,8 +101,8 @@ class VaultRepository(
             activePassword = password
             cachedPasswordKey = newKey
             oldKey?.clear()
-            historyDirty = false
-            cancelHistoryFlushLocked()
+            pendingDirty = false
+            cancelDebouncedFlushLocked()
             emitStateLocked(locked = false, hasPassword = true, startupError = null)
         }
     }
@@ -114,8 +114,8 @@ class VaultRepository(
             currentData = data
             cachedPasswordKey = newKey
             oldKey?.clear()
-            historyDirty = false
-            cancelHistoryFlushLocked()
+            pendingDirty = false
+            cancelDebouncedFlushLocked()
             emitStateLocked(locked = false, hasPassword = hasPw, startupError = null)
         }
     }
@@ -124,11 +124,11 @@ class VaultRepository(
         val didLock = synchronized(lock) {
             val cur = _state.value.lockState
             if (!cur.hasPassword && !cur.biometricEnabled) return@synchronized false
-            if (!cur.locked && historyDirty) {
+            if (!cur.locked && pendingDirty) {
                 runCatching { store.save(currentData, activePassword, cachedPasswordKey) }
             }
-            cancelHistoryFlushLocked()
-            historyDirty = false
+            cancelDebouncedFlushLocked()
+            pendingDirty = false
             clearSecretsLocked()
             currentData = VaultData()
             emitStateLocked(
@@ -162,8 +162,8 @@ class VaultRepository(
             cachedPasswordKey = nextKey
             activePassword = nextPassword
             oldKey?.clear()
-            cancelHistoryFlushLocked()
-            historyDirty = false
+            cancelDebouncedFlushLocked()
+            pendingDirty = false
             emitStateLocked(locked = false, hasPassword = !activePassword.isNullOrEmpty())
         }
     }
@@ -179,12 +179,14 @@ class VaultRepository(
     fun clearHistory() = mutateUnit { it.copy(history = emptyList()) }
     fun importSyncBundle(bundle: SyncBundle, mode: SyncImportMode): SyncImportSummary = mutate { VaultSyncOps.applyBundle(it, bundle, mode) }
 
-    fun markServerConnected(id: String) = mutateIfUnlocked { d ->
+    fun markServerConnected(id: String) = mutateDebouncedIfUnlocked { d ->
+        if (d.servers.none { it.id == id }) return@mutateDebouncedIfUnlocked d
         val now = Instant.now().toString()
         d.copy(servers = d.servers.map { if (it.id == id) it.copy(lastConnectedAt = now) else it })
     }
 
-    fun incrementShortcutUse(id: String) = mutateIfUnlocked { d ->
+    fun incrementShortcutUse(id: String) = mutateDebouncedIfUnlocked { d ->
+        if (d.shortcuts.none { it.id == id }) return@mutateDebouncedIfUnlocked d
         d.copy(shortcuts = d.shortcuts.map { if (it.id == id) it.copy(useCount = it.useCount + 1) else it })
     }
 
@@ -197,21 +199,24 @@ class VaultRepository(
         res
     }
 
-    fun recordCommand(command: String, serverId: String, serverName: String, sessionId: String) = synchronized(lock) {
-        if (_state.value.lockState.locked) return@synchronized
-        if (!currentData.settings.recordCommands || command.isBlank()) return@synchronized
-        val next = VaultCrudOps.appendHistory(currentData, command, serverId, serverName, sessionId)
-        currentData = next
-        historyDirty = true
-        emitStateLocked(locked = false, hasPassword = !activePassword.isNullOrEmpty())
-        scheduleHistoryFlushLocked()
-    }
+    fun recordCommand(command: String, serverId: String, serverName: String, sessionId: String) =
+        mutateDebouncedIfUnlocked { d ->
+            if (!d.settings.recordCommands || command.isBlank()) return@mutateDebouncedIfUnlocked d
+            VaultCrudOps.appendHistory(d, command, serverId, serverName, sessionId)
+        }
 
     fun flushPendingHistory() = synchronized(lock) {
-        if (!historyDirty || _state.value.lockState.locked) return@synchronized
-        cancelHistoryFlushLocked()
+        if (!pendingDirty || _state.value.lockState.locked) return@synchronized
+        cancelDebouncedFlushLocked()
         store.save(currentData, activePassword, cachedPasswordKey)
-        historyDirty = false
+        pendingDirty = false
+    }
+
+    fun flushPendingHistoryAsync() {
+        ioScope.launch {
+            runCatching { flushPendingHistory() }
+                .onFailure { e -> runCatching { Log.e(TAG, "Async pending vault flush failed", e) } }
+        }
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings): AppSettings = mutate { d ->
@@ -237,11 +242,14 @@ class VaultRepository(
         persistAndCommitLocked(next)
     }
 
-    private fun mutateIfUnlocked(op: (VaultData) -> VaultData) = synchronized(lock) {
+    private fun mutateDebouncedIfUnlocked(op: (VaultData) -> VaultData) = synchronized(lock) {
         if (_state.value.lockState.locked) return@synchronized
         val next = op(currentData)
         if (next !== currentData) {
-            persistAndCommitLocked(next)
+            currentData = next
+            pendingDirty = true
+            emitStateLocked(locked = false, hasPassword = !activePassword.isNullOrEmpty())
+            scheduleDebouncedFlushLocked()
         }
     }
 
@@ -253,30 +261,30 @@ class VaultRepository(
         // Persist BEFORE updating in-memory state so failures leave state untouched (rollback-safe)
         store.save(next, activePassword, cachedPasswordKey)
         currentData = next
-        cancelHistoryFlushLocked()
-        historyDirty = false
+        cancelDebouncedFlushLocked()
+        pendingDirty = false
         emitStateLocked(locked = false, hasPassword = !activePassword.isNullOrEmpty())
     }
 
-    private fun scheduleHistoryFlushLocked() {
-        historyFlushJob?.cancel()
-        historyFlushJob = ioScope.launch {
-            delay(HISTORY_FLUSH_DEBOUNCE_MS)
+    private fun scheduleDebouncedFlushLocked() {
+        debouncedFlushJob?.cancel()
+        debouncedFlushJob = ioScope.launch {
+            delay(DEBOUNCED_FLUSH_MS)
             synchronized(lock) {
-                if (!historyDirty || _state.value.lockState.locked) return@synchronized
+                if (!pendingDirty || _state.value.lockState.locked) return@synchronized
                 runCatching {
                     store.save(currentData, activePassword, cachedPasswordKey)
-                    historyDirty = false
+                    pendingDirty = false
                 }.onFailure { e ->
-                    runCatching { Log.e(TAG, "Debounced history flush failed", e) }
+                    runCatching { Log.e(TAG, "Debounced vault flush failed", e) }
                 }
             }
         }
     }
 
-    private fun cancelHistoryFlushLocked() {
-        historyFlushJob?.cancel()
-        historyFlushJob = null
+    private fun cancelDebouncedFlushLocked() {
+        debouncedFlushJob?.cancel()
+        debouncedFlushJob = null
     }
 
     private fun clearSecretsLocked() {
@@ -304,6 +312,6 @@ class VaultRepository(
 
     companion object {
         private const val TAG = "VaultRepository"
-        private const val HISTORY_FLUSH_DEBOUNCE_MS = 1500L
+        private const val DEBOUNCED_FLUSH_MS = 1500L
     }
 }

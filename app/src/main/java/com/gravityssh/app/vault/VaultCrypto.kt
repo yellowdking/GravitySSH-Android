@@ -136,35 +136,6 @@ class VaultCrypto(
         }
     }
 
-    internal fun sealV1(plaintext: ByteArray, password: String? = null, biometricLock: Boolean = false): ByteArray {
-        val (mode, innerPayload) = if (!password.isNullOrEmpty()) {
-            val salt = ByteArray(SALT_LEN).also { random.nextBytes(it) }
-            val iv = ByteArray(IV_LEN).also { random.nextBytes(it) }
-            val keyBytes = CryptoUtils.pbkdf2Sha256(password, salt, PBKDF2_ITERS, 256)
-            val enc = try {
-                CryptoUtils.aesGcmEncrypt(keyBytes, iv, plaintext, AAD_INNER)
-            } finally {
-                CryptoUtils.zero(keyBytes)
-            }
-            MODE_PASSWORD to packInnerPayload(salt, iv, enc)
-        } else {
-            val m = if (biometricLock) MODE_BIOMETRIC else MODE_KEYSTORE
-            m to plaintext
-        }
-        val masterKey = masterKeyProvider.getOrCreateKey()
-        val cipher = Cipher.getInstance(CryptoUtils.AES_GCM)
-        cipher.init(Cipher.ENCRYPT_MODE, masterKey)
-        cipher.updateAAD(AAD_OUTER_V1)
-        val outerIv = cipher.iv
-        val outerCt = cipher.doFinal(innerPayload)
-        val header = buildHeader(VERSION_V1, mode, outerIv.size)
-        val out = ByteArrayOutputStream(HEADER_SIZE + outerIv.size + outerCt.size)
-        out.write(header)
-        out.write(outerIv)
-        out.write(outerCt)
-        return out.toByteArray()
-    }
-
     private fun sealOuterV2(mode: Byte, innerPayload: ByteArray): ByteArray {
         val masterKey = masterKeyProvider.getOrCreateKey()
         val cipher = Cipher.getInstance(CryptoUtils.AES_GCM)

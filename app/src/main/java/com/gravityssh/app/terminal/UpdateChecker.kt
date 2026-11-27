@@ -1,12 +1,12 @@
 package com.gravityssh.app.terminal
 
 import com.gravityssh.app.model.UpdateCheckResult
+import com.gravityssh.app.sync.SyncHttpClients
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -31,7 +31,7 @@ class UpdateChecker(
     private val apiUrl: String = DEFAULT_RELEASE_API
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-    private val client = OkHttpClient.Builder()
+    private val client = SyncHttpClients.baseClient.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(12, TimeUnit.SECONDS)
         .build()

@@ -17,13 +17,11 @@ class TerminalBuffer(
     internal val scrollback = ArrayDeque<Array<TerminalCell>>()
 
     @Volatile var isAltScreen: Boolean = false; private set
-    val isAlternateScreen: Boolean get() = isAltScreen
     @Volatile var applicationCursorKeys: Boolean = false
     @Volatile private var mouseMask: Int = 0
     val mouseTrackingEnabled: Boolean get() = mouseMask != 0
     @Volatile var sgrMouseMode: Boolean = false
     @Volatile var bracketedPaste: Boolean = false
-    var bracketedPasteMode: Boolean get() = bracketedPaste; set(v) { bracketedPaste = v }
     @Volatile var cursorVisible: Boolean = true
 
     var cursorCol: Int = 0; private set

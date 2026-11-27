@@ -26,7 +26,7 @@ internal object TerminalModes {
             1049 -> if (enable) buffer.enterAlternateScreen(true) else buffer.exitAlternateScreen(true)
             1000, 1002, 1003 -> buffer.setMouseTrackingMode(code, enable)
             1006 -> buffer.sgrMouseMode = enable
-            2004 -> buffer.bracketedPasteMode = enable
+            2004 -> buffer.bracketedPaste = enable
         }
     }
 
