@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -15,13 +16,34 @@ import com.gravityssh.app.ui.components.AgFilterChip
 import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.theme.*
 import com.gravityssh.app.ui.updateSettings
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+private data class TouchCursorSettingsSlice(
+    val mode: String,
+    val sensitivity: String,
+    val fling: Boolean
+)
 
 @Composable
 internal fun SettingsTouchCursorCard(viewModel: AppViewModel) {
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-    val settings = vaultState.data.settings
-    val curMode = TouchCursorMode.fromId(settings.touchCursorMode)
-    val curSens = TouchSensitivity.fromId(settings.touchCursorSensitivity)
+    val slice by remember(viewModel) {
+        viewModel.vaultState
+            .map {
+                TouchCursorSettingsSlice(
+                    mode = it.data.settings.touchCursorMode,
+                    sensitivity = it.data.settings.touchCursorSensitivity,
+                    fling = it.data.settings.touchCursorFling
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(
+        initialValue = viewModel.vaultState.value.data.settings.let {
+            TouchCursorSettingsSlice(it.touchCursorMode, it.touchCursorSensitivity, it.touchCursorFling)
+        }
+    )
+    val curMode = TouchCursorMode.fromId(slice.mode)
+    val curSens = TouchSensitivity.fromId(slice.sensitivity)
 
     AgCard {
         Text("触控光标与 Nano 编辑器手势", style = MaterialTheme.typography.titleMedium, color = AgText)
@@ -59,7 +81,7 @@ internal fun SettingsTouchCursorCard(viewModel: AppViewModel) {
         }
 
         Spacer(Modifier.height(6.dp))
-        AgSwitchRow("快速滑动惯性滑行减速", settings.touchCursorFling) { v ->
+        AgSwitchRow("快速滑动惯性滑行减速", slice.fling) { v ->
             viewModel.updateSettings { it.copy(touchCursorFling = v) }
         }
     }

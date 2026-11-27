@@ -1,7 +1,6 @@
 package com.gravityssh.app.ui.sftp
 
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
@@ -143,9 +142,6 @@ fun SftpSheet(viewModel: AppViewModel, session: SessionTab, onDismiss: () -> Uni
         },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        BackHandler(enabled = (errorMsg != null && hasLoadedOnce) || canNavigateUp) {
-            handleBack()
-        }
         Surface(modifier = Modifier.fillMaxSize().imePadding(), color = AgBg) {
             SftpBrowserContent(
                 serverName = session.serverName,

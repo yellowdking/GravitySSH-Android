@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -19,12 +20,17 @@ import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.saveSyncRelayUrl
 import com.gravityssh.app.ui.testSyncRelay
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 @Composable
 fun SyncRelayCard(viewModel: AppViewModel) {
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-    val savedUrl = vaultState.data.settings.syncRelayUrl
-    var input by remember(savedUrl) { mutableStateOf(savedUrl) }
+    val savedUrl by remember(viewModel) {
+        viewModel.vaultState
+            .map { it.data.settings.syncRelayUrl }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = viewModel.vaultState.value.data.settings.syncRelayUrl)
+    var input by rememberSaveable(savedUrl) { mutableStateOf(savedUrl) }
     var testing by remember { mutableStateOf(false) }
     var pingStatus by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 

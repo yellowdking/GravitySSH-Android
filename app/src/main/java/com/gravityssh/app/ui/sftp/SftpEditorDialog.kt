@@ -1,6 +1,5 @@
 package com.gravityssh.app.ui.sftp
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -65,9 +64,6 @@ fun SftpEditorDialog(
         onDismissRequest = ::requestClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        BackHandler(enabled = !saving && hasChanges) {
-            confirmDiscard = true
-        }
         Surface(modifier = Modifier.fillMaxSize().imePadding(), color = AgBg) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(
