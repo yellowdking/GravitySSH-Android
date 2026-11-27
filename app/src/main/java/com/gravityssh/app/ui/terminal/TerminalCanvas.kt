@@ -17,7 +17,6 @@ import com.gravityssh.app.terminal.*
 import com.gravityssh.app.ui.theme.AgBg
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.withContext
 import kotlin.math.floor
 import kotlin.math.roundToInt
@@ -129,7 +128,7 @@ fun TerminalCanvas(
             searchMatchesState.value = emptyList()
             return@LaunchedEffect
         }
-        controller.frameVersion.conflate().collect {
+        controller.frameVersion.collect {
             val matches = withContext(Dispatchers.Default) {
                 val snap = controller.snapshot(scrollOffset)
                 computeSearchMatches(snap, qLower)
