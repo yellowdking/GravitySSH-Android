@@ -38,10 +38,12 @@ class AppContainer(context: Context) {
 
     init {
         initScope.launch {
-            runCatching { knownHostsManager.load() }
-                .onFailure { e -> runCatching { Log.e("AppContainer", "Unexpected known_hosts load failure", e) } }
             runCatching { vaultRepository.open() }
                 .onFailure { e -> runCatching { Log.e("AppContainer", "Unexpected vault open failure", e) } }
+        }
+        initScope.launch {
+            runCatching { knownHostsManager.load() }
+                .onFailure { e -> runCatching { Log.e("AppContainer", "Unexpected known_hosts load failure", e) } }
         }
     }
 }

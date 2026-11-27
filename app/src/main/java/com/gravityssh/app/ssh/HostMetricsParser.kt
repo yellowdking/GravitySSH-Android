@@ -38,7 +38,9 @@ internal object HostMetricsParser {
         nowMs: Long,
         fallbackCores: Int = 1
     ): ParsedHostMetrics {
-        if (raw.contains("UNSUPPORTED")) {
+        val lines = raw.replace("\r\n", "\n").split('\n')
+        val firstNonEmpty = lines.firstOrNull { it.trim().isNotEmpty() }?.trim()
+        if (firstNonEmpty == "UNSUPPORTED") {
             return ParsedHostMetrics(
                 HostMetrics(sessionId = sessionId, supported = false, latencyMs = latencyMs, updatedAt = Instant.ofEpochMilli(nowMs).toString()),
                 null, null, 0
@@ -58,7 +60,7 @@ internal object HostMetricsParser {
         var gpuUtil = 0.0
         var gpuName = ""
 
-        for (rawLine in raw.replace("\r\n", "\n").split('\n')) {
+        for (rawLine in lines) {
             val t = rawLine.trim()
             if (t.isEmpty()) continue
             if (t.startsWith("---") && t.endsWith("---")) { section = t.trim('-'); continue }

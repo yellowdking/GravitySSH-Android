@@ -91,7 +91,8 @@ data class VaultLockState(
     val locked: Boolean = false,
     val hasPassword: Boolean = false,
     val biometricEnabled: Boolean = false,
-    val startupError: String? = null
+    val startupError: String? = null,
+    val initialized: Boolean = true
 )
 
 data class VaultState(

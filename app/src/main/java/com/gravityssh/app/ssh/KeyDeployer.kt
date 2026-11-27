@@ -28,25 +28,12 @@ class KeyDeployer(
                 KeyDeployResult(it.id, it.name, false, "公钥内容为空")
             }
         }
-        if (pubLine.contains('\n') || pubLine.contains('\r')) {
+        if (pubLine.contains('\n') || pubLine.contains('\r') || pubLine.contains('\u0000')) {
             return@withContext targets.map {
-                KeyDeployResult(it.id, it.name, false, "公钥格式无效（包含换行符）")
+                KeyDeployResult(it.id, it.name, false, "公钥格式无效（包含换行符或空字符）")
             }
         }
-        val b64 = Base64.getEncoder().encodeToString(pubLine.toByteArray(Charsets.UTF_8))
-        val cmd = """
-            sh -c '
-              set -e
-              umask 077
-              mkdir -p ~/.ssh
-              chmod 700 ~/.ssh
-              PUB=$(printf "%s" "$b64" | base64 -d)
-              [ -n "${'$'}PUB" ] || { echo "base64 解码公钥失败" >&2; exit 1; }
-              touch ~/.ssh/authorized_keys
-              chmod 600 ~/.ssh/authorized_keys
-              grep -Fqx "${'$'}PUB" ~/.ssh/authorized_keys || printf "%s\n" "${'$'}PUB" >> ~/.ssh/authorized_keys
-            '
-        """.trimIndent()
+        val cmd = buildDeployScript(pubLine)
 
         val semaphore = Semaphore(MAX_CONCURRENT_DEPLOYS)
         coroutineScope {
@@ -75,5 +62,28 @@ class KeyDeployer(
 
     companion object {
         private const val MAX_CONCURRENT_DEPLOYS = 4
+
+        internal fun buildDeployScript(pubLine: String): String {
+            val b64 = Base64.getEncoder().encodeToString(pubLine.toByteArray(Charsets.UTF_8))
+            return """
+                sh -c '
+                  set -e
+                  umask 077
+                  mkdir -p ~/.ssh
+                  chmod 700 ~/.ssh
+                  PUB=$(printf "%s" "$b64" | (base64 -d 2>/dev/null || base64 -D))
+                  [ -n "${'$'}PUB" ] || { echo "base64 解码公钥失败" >&2; exit 1; }
+                  AK=~/.ssh/authorized_keys
+                  touch "${'$'}AK"
+                  chmod 600 "${'$'}AK"
+                  if ! grep -qxF -- "${'$'}PUB" "${'$'}AK"; then
+                    if [ -s "${'$'}AK" ] && [ -n "$(tail -c 1 "${'$'}AK" 2>/dev/null)" ]; then
+                      printf "\n" >> "${'$'}AK"
+                    fi
+                    printf "%s\n" "${'$'}PUB" >> "${'$'}AK"
+                  fi
+                '
+            """.trimIndent()
+        }
     }
 }
