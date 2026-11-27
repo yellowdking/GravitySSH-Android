@@ -20,14 +20,26 @@ import kotlin.coroutines.resumeWithException
 
 class RelayGoneException(message: String) : IOException(message)
 
+internal data class RelayHttpResponse(
+    val code: Int,
+    val body: String,
+    val protoMinHeader: String? = null,
+    val protoMaxHeader: String? = null
+)
+
 open class SyncRelayClient(
     private val appGateKey: String = SyncConfig.APP_GATE_KEY,
-    private val pinnedSpkiSha256: String = SyncConfig.PINNED_SPKI_SHA256
+    private val pinnedSpkiPins: List<String> = SyncConfig.DEFAULT_RELAY_SPKI_PINS
 ) {
+    constructor(appGateKey: String, pinnedSpkiSha256: String) : this(
+        appGateKey = appGateKey,
+        pinnedSpkiPins = SyncConfig.parseSpkiPinList(pinnedSpkiSha256)
+    )
+
     private val json = AppJson.json
     private val mediaType = "application/json; charset=utf-8".toMediaType()
 
-    private val pinnedClient: OkHttpClient by lazy { SyncHttpClients.buildPinnedClient(pinnedSpkiSha256) }
+    private val pinnedClient: OkHttpClient by lazy { SyncHttpClients.buildPinnedClient(pinnedSpkiPins) }
     private val standardClient: OkHttpClient get() = SyncHttpClients.baseClient
     private val clientCacheLock = Any()
     private val customClients = LinkedHashMap<String, OkHttpClient>(16, 0.75f, true)
@@ -156,22 +168,14 @@ open class SyncRelayClient(
             throw IOException("同步数据体积超过中继限制（2 MiB）")
         }
         val endpoint = SyncConfig.parseRelayEndpoint(relayUrl)
-        val url = "${endpoint.baseUrl}$path".toHttpUrl()
         val client = selectClient(endpoint)
-
         val ts = System.currentTimeMillis() / 1000L
-        val sig = SyncCryptoPrimitives.signAppGate(appGateKey, "POST", path, ts, rawBody)
+        val request = buildSignedRequest(endpoint, path, rawBody, ts)
 
-        val request = Request.Builder()
-            .url(url)
-            .post(rawBody.toRequestBody(mediaType))
-            .header("X-GSSH-Client", SyncConfig.CLIENT_HEADER)
-            .header("X-GSSH-TS", ts.toString())
-            .header("X-GSSH-Sig", sig)
-            .build()
+        val resp = executeHttp(client, request)
+        validateProtoResponse(resp.code, resp.protoMinHeader, resp.protoMaxHeader, resp.body)
 
-        val (code, text) = executeCallCancellable(client, request)
-        when (code) {
+        when (resp.code) {
             404 -> {
                 if (allow404) return null
                 throw RelayGoneException(
@@ -182,15 +186,91 @@ open class SyncRelayClient(
             409 -> throw IOException(conflictMessage)
             413 -> throw IOException("同步数据体积超过中继限制（2 MiB）")
         }
-        if (code !in 200..299) throw IOException("中继服务返回错误 ($code)")
-        return text
+        if (resp.code !in 200..299) throw IOException("中继服务返回错误 (${resp.code})")
+        return resp.body
     }
 
-    private fun selectClient(endpoint: ResolvedRelayEndpoint): OkHttpClient {
-        endpoint.explicitSpkiPin?.let { pin ->
-            val key = "pin:${endpoint.host.lowercase()}:$pin"
+    internal fun buildSignedRequest(
+        endpoint: ResolvedRelayEndpoint,
+        path: String,
+        rawBody: ByteArray,
+        timestampSec: Long
+    ): Request {
+        val url = "${endpoint.baseUrl}$path".toHttpUrl()
+        val effectiveGateKey = endpoint.customAppGateKey ?: appGateKey
+        val sig = SyncCryptoPrimitives.signAppGate(effectiveGateKey, "POST", path, timestampSec, rawBody)
+
+        return Request.Builder()
+            .url(url)
+            .post(rawBody.toRequestBody(mediaType))
+            .header("X-GSSH-Client", SyncConfig.CLIENT_HEADER)
+            .header(SyncConfig.WIRE_PROTO_HEADER, SyncConfig.WIRE_PROTO_VERSION.toString())
+            .header("X-GSSH-TS", timestampSec.toString())
+            .header("X-GSSH-Sig", sig)
+            .build()
+    }
+
+    internal fun validateProtoResponse(
+        statusCode: Int,
+        protoMinHeader: String?,
+        protoMaxHeader: String?,
+        body: String
+    ) {
+        val minH = protoMinHeader?.trim().orEmpty()
+        val maxH = protoMaxHeader?.trim().orEmpty()
+        if (statusCode == 426) {
+            val parsed = runCatching {
+                json.decodeFromString(RelayProtoErrorResponse.serializer(), body)
+            }.getOrNull()
+            var srvMin = parsed?.minVersion ?: 0
+            var srvMax = parsed?.maxVersion ?: 0
+            if (srvMin <= 0 && minH.isNotEmpty()) {
+                srvMin = minH.toIntOrNull() ?: 0
+            }
+            if (srvMax <= 0 && maxH.isNotEmpty()) {
+                srvMax = maxH.toIntOrNull() ?: 0
+            }
+            if (srvMin > 0 && srvMax >= srvMin) {
+                throw IOException(
+                    "同步协议版本不兼容（客户端支持 ${SyncConfig.WIRE_PROTO_MIN_VERSION}-${SyncConfig.WIRE_PROTO_MAX_VERSION}，" +
+                        "中继要求 $srvMin-$srvMax），请升级客户端或中继"
+                )
+            }
+            throw IOException("同步协议版本不兼容（HTTP 426），请升级 GravitySSH 客户端或同步中继")
+        }
+        if (statusCode in 200..299 && (minH.isNotEmpty() || maxH.isNotEmpty())) {
+            val srvMin = if (minH.isNotEmpty()) {
+                val v = minH.toIntOrNull()
+                if (v == null || v <= 0) {
+                    throw IOException("中继返回了无效的协议版本范围（${SyncConfig.WIRE_PROTO_MIN_HEADER}=$minH）")
+                }
+                v
+            } else {
+                SyncConfig.WIRE_PROTO_MIN_VERSION
+            }
+            val srvMax = if (maxH.isNotEmpty()) {
+                val v = maxH.toIntOrNull()
+                if (v == null || v <= 0) {
+                    throw IOException("中继返回了无效的协议版本范围（${SyncConfig.WIRE_PROTO_MAX_HEADER}=$maxH）")
+                }
+                v
+            } else {
+                SyncConfig.WIRE_PROTO_MAX_VERSION
+            }
+            if (srvMin > srvMax || srvMax < SyncConfig.WIRE_PROTO_MIN_VERSION || srvMin > SyncConfig.WIRE_PROTO_MAX_VERSION) {
+                throw IOException(
+                    "同步协议版本不兼容（客户端支持 ${SyncConfig.WIRE_PROTO_MIN_VERSION}-${SyncConfig.WIRE_PROTO_MAX_VERSION}，" +
+                        "中继支持 $srvMin-$srvMax），请升级客户端或中继"
+                )
+            }
+        }
+    }
+
+    internal fun selectClient(endpoint: ResolvedRelayEndpoint): OkHttpClient {
+        if (endpoint.explicitSpkiPins.isNotEmpty()) {
+            val key = "pin:${endpoint.host.lowercase()}:${endpoint.explicitSpkiPins.joinToString(",")}"
             return getOrCreateCustomClient(key) {
-                SyncHttpClients.buildPinnedClient(pin, endpoint.host)
+                SyncHttpClients.buildPinnedClient(endpoint.explicitSpkiPins, endpoint.host)
             }
         }
         if (endpoint.isDefaultRelay) return pinnedClient
@@ -216,7 +296,10 @@ open class SyncRelayClient(
         }
     }
 
-    private suspend fun executeCallCancellable(client: OkHttpClient, request: Request): Pair<Int, String> =
+    internal open suspend fun executeHttp(client: OkHttpClient, request: Request): RelayHttpResponse =
+        executeCallCancellable(client, request)
+
+    private suspend fun executeCallCancellable(client: OkHttpClient, request: Request): RelayHttpResponse =
         suspendCancellableCoroutine { cont ->
             val call = client.newCall(request)
             cont.invokeOnCancellation { call.cancel() }
@@ -229,7 +312,13 @@ open class SyncRelayClient(
                     response.use { resp ->
                         try {
                             val text = readBodyCapped(resp.body)
-                            if (cont.isActive) cont.resume(resp.code to text)
+                            val result = RelayHttpResponse(
+                                code = resp.code,
+                                body = text,
+                                protoMinHeader = resp.header(SyncConfig.WIRE_PROTO_MIN_HEADER),
+                                protoMaxHeader = resp.header(SyncConfig.WIRE_PROTO_MAX_HEADER)
+                            )
+                            if (cont.isActive) cont.resume(result)
                         } catch (t: Throwable) {
                             if (cont.isActive) cont.resumeWithException(t)
                         }

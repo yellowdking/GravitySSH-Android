@@ -76,3 +76,10 @@ data class PairStatusResponse(
     @SerialName("nonce") val nonce: String = "",
     @SerialName("ciphertext") val ciphertext: String = ""
 )
+
+@Serializable
+internal data class RelayProtoErrorResponse(
+    @SerialName("error") val error: String = "",
+    @SerialName("minVersion") val minVersion: Int = 0,
+    @SerialName("maxVersion") val maxVersion: Int = 0
+)
