@@ -207,7 +207,6 @@ internal class ManagedSession(
 }
 
 internal object ShellPathTracker {
-    private val CD_RE = Regex("^cd(?:\\s+(.+))?$")
     private val WS_RE = Regex("\\s+")
     private val READ_ONLY_CMDS = setOf(
         "ls", "ll", "la", "dir", "cd", "pwd", "cat", "head", "tail", "less", "more",
@@ -225,18 +224,225 @@ internal object ShellPathTracker {
         "systemctl" to setOf("status", "list-units", "list-unit-files", "is-active", "is-enabled")
     )
 
+    private data class ShellToken(
+        val value: String,
+        val quoted: Boolean
+    )
+
     fun resolveNextDir(command: String, currentDir: String, homeDir: String): String? {
-        val m = CD_RE.matchEntire(command.trim()) ?: return null
-        val rawArg = m.groupValues.getOrNull(1)?.trim()?.removeSurrounding("\"")?.removeSurrounding("'").orEmpty()
-        if (rawArg.isEmpty() || rawArg == "~") return homeDir.ifBlank { "/" }
-        if (rawArg == "-") return null
-        val target = when {
-            rawArg.startsWith("~/") -> "${homeDir.trimEnd('/')}/${rawArg.removePrefix("~/")}"
-            rawArg.startsWith("/") -> rawArg
-            else -> "${currentDir.trimEnd('/')}/$rawArg"
+        val segments = splitShellSegments(command)
+        if (segments.isEmpty()) return null
+        val fallbackHome = homeDir.ifBlank { "/" }
+        var tracked = currentDir.ifBlank { fallbackHome }
+        var changed = false
+
+        for (seg in segments) {
+            if (hasUnquotedPipe(seg)) continue
+            val tokens = tokenizeSegment(seg)
+            if (tokens.isEmpty() || tokens[0].value != "cd") continue
+
+            val rawArg = extractCdTarget(tokens) ?: return null
+            if (rawArg == "~") {
+                tracked = SshPathUtils.normalizePosixPath(fallbackHome)
+                changed = true
+                continue
+            }
+            if (rawArg.startsWith("~") && !rawArg.startsWith("~/")) {
+                return null
+            }
+            val target = when {
+                rawArg.startsWith("~/") -> "${fallbackHome.trimEnd('/')}/${rawArg.removePrefix("~/")}"
+                rawArg.startsWith("/") -> rawArg
+                else -> "${tracked.trimEnd('/')}/$rawArg"
+            }
+            tracked = SshPathUtils.normalizePosixPath(target)
+            changed = true
         }
-        return SshPathUtils.normalizePosixPath(target)
+        return if (changed) tracked else null
     }
+
+    private fun extractCdTarget(tokens: List<ShellToken>): String? {
+        var afterDashDash = false
+        val args = ArrayList<ShellToken>(2)
+        var i = 1
+        while (i < tokens.size) {
+            val tk = tokens[i]
+            if (!tk.quoted && isShellRedir(tk.value)) {
+                if (tk.value in STANDALONE_REDIRS) i++
+                i++
+                continue
+            }
+            if (!afterDashDash && !tk.quoted) {
+                when {
+                    tk.value == "--" -> {
+                        afterDashDash = true
+                        i++
+                        continue
+                    }
+                    tk.value == "-" -> return null
+                    tk.value.startsWith("-") && tk.value.length > 1 -> {
+                        if (isCdFlagCluster(tk.value)) {
+                            i++
+                            continue
+                        }
+                        return null
+                    }
+                }
+            }
+            args.add(tk)
+            i++
+        }
+        if (args.isEmpty()) return "~"
+        if (args.size > 1) return null
+        val arg = args[0].value
+        if (arg.isEmpty()) return null
+        if ('$' in arg || '`' in arg || '*' in arg || '?' in arg) return null
+        return arg
+    }
+
+    private fun splitShellSegments(cmd: String): List<String> {
+        val out = ArrayList<String>()
+        val cur = StringBuilder()
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        fun flush() {
+            val s = cur.toString().trim()
+            if (s.isNotEmpty()) out.add(s)
+            cur.setLength(0)
+        }
+        var i = 0
+        val n = cmd.length
+        while (i < n) {
+            val ch = cmd[i]
+            if (escaped) {
+                cur.append(ch)
+                escaped = false
+                i++
+                continue
+            }
+            if (inSingle) {
+                if (ch == '\'') inSingle = false
+                cur.append(ch)
+                i++
+                continue
+            }
+            if (ch == '\\') {
+                cur.append(ch)
+                escaped = true
+                i++
+                continue
+            }
+            if (inDouble) {
+                if (ch == '"') inDouble = false
+                cur.append(ch)
+                i++
+                continue
+            }
+            when (ch) {
+                '\'' -> { inSingle = true; cur.append(ch) }
+                '"' -> { inDouble = true; cur.append(ch) }
+                ';', '\n' -> flush()
+                '&' -> if (i + 1 < n && cmd[i + 1] == '&') { flush(); i++ } else cur.append(ch)
+                '|' -> if (i + 1 < n && cmd[i + 1] == '|') { flush(); i++ } else cur.append(ch)
+                else -> cur.append(ch)
+            }
+            i++
+        }
+        flush()
+        return out
+    }
+
+    private fun hasUnquotedPipe(seg: String): Boolean {
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        for (ch in seg) {
+            if (escaped) { escaped = false; continue }
+            if (inSingle) { if (ch == '\'') inSingle = false; continue }
+            if (ch == '\\') { escaped = true; continue }
+            if (inDouble) { if (ch == '"') inDouble = false; continue }
+            when (ch) {
+                '\'' -> inSingle = true
+                '"' -> inDouble = true
+                '|' -> return true
+            }
+        }
+        return false
+    }
+
+    private fun tokenizeSegment(seg: String): List<ShellToken> {
+        val out = ArrayList<ShellToken>()
+        val cur = StringBuilder()
+        var hasTok = false
+        var quoted = false
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        fun flush() {
+            if (hasTok) {
+                out.add(ShellToken(cur.toString(), quoted))
+                cur.setLength(0)
+                hasTok = false
+                quoted = false
+            }
+        }
+        var i = 0
+        val n = seg.length
+        while (i < n) {
+            val ch = seg[i]
+            if (escaped) {
+                cur.append(ch)
+                hasTok = true
+                escaped = false
+                i++
+                continue
+            }
+            if (inSingle) {
+                if (ch == '\'') inSingle = false else cur.append(ch)
+                i++
+                continue
+            }
+            if (inDouble) {
+                if (ch == '\\' && i + 1 < n && seg[i + 1] in "\"\\$`") {
+                    cur.append(seg[++i])
+                } else if (ch == '"') {
+                    inDouble = false
+                } else {
+                    cur.append(ch)
+                }
+                i++
+                continue
+            }
+            when (ch) {
+                ' ', '\t' -> flush()
+                '\\' -> { escaped = true; hasTok = true }
+                '\'' -> { inSingle = true; hasTok = true; quoted = true }
+                '"' -> { inDouble = true; hasTok = true; quoted = true }
+                else -> { cur.append(ch); hasTok = true }
+            }
+            i++
+        }
+        flush()
+        return out
+    }
+
+    private fun isCdFlagCluster(tok: String): Boolean {
+        if (tok.length < 2 || tok[0] != '-') return false
+        for (i in 1 until tok.length) {
+            val c = tok[i]
+            if (c != 'L' && c != 'P' && c != 'e' && c != '@') return false
+        }
+        return true
+    }
+
+    private fun isShellRedir(tok: String): Boolean {
+        if (tok.isEmpty()) return false
+        val rest = if (tok[0] in '0'..'9' || tok[0] == '&') tok.substring(1) else tok
+        return rest.startsWith(">") || rest.startsWith("<")
+    }
+
+    private val STANDALONE_REDIRS = setOf(">", ">>", "<", "1>", "1>>", "2>", "2>>", "&>", "&>>")
 
     fun isLikelyReadOnlyCommand(command: String): Boolean {
         val trimmed = command.trim()

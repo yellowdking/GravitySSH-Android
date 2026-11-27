@@ -252,7 +252,7 @@ class SshKeepAliveService : Service() {
             }
 
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setSmallIcon(R.drawable.ic_stat_ssh)
                 .setContentTitle("GravitySSH 运行中")
                 .setContentText(contentText)
                 .setOngoing(true)
