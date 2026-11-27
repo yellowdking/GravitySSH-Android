@@ -4,9 +4,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -15,6 +16,8 @@ import com.gravityssh.app.model.BuiltinTemplate
 import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.ui.*
 import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgEmptyState
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
 
@@ -74,10 +77,12 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit) {
                     when (tabIndex) {
                         0 -> IconButton(onClick = { editingShortcut = CommandShortcut() }) { Icon(Icons.Rounded.Add, "新建", tint = AgAccent) }
                         1 -> {
-                            IconButton(onClick = { viewModel.loadPresetTemplates() }) { Icon(Icons.Rounded.Download, "预置", tint = AgCyan) }
+                            IconButton(onClick = { viewModel.loadPresetTemplates() }) { Icon(AgIcons.Download, "预置", tint = AgCyan) }
                             IconButton(onClick = { editingTemplate = BuiltinTemplate() }) { Icon(Icons.Rounded.Add, "新建", tint = AgAccent) }
                         }
-                        2 -> IconButton(onClick = { confirmClearHistory = true }) { Icon(Icons.Rounded.DeleteSweep, "清空", tint = AgDanger) }
+                        2 -> IconButton(onClick = { confirmClearHistory = true }, enabled = history.isNotEmpty()) {
+                            Icon(AgIcons.DeleteSweep, "清空", tint = if (history.isNotEmpty()) AgDanger else AgMuted)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AgSurface)
@@ -93,18 +98,54 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
                 AgTextField(search, { search = it }, "筛选关键字", placeholder = "名称 / 命令 / 分类")
             }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (tabIndex) {
-                    0 -> items(filteredShortcuts, key = { it.id }) { sc ->
-                        ShortcutItemCard(sc, { viewModel.saveShortcut(sc.copy(pinned = !sc.pinned)) }, {
-                            if (viewModel.runShortcutInActive(sc)) onJumpToTerminal() else viewModel.showToast("请先连接 SSH 终端")
-                        }, { editingShortcut = sc }, { deletingShortcut = sc })
+
+            val isEmptyTab = when (tabIndex) {
+                0 -> filteredShortcuts.isEmpty()
+                1 -> filteredTemplates.isEmpty()
+                else -> filteredHistory.isEmpty()
+            }
+            if (isEmptyTab) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    when (tabIndex) {
+                        0 -> AgEmptyState(
+                            icon = AgIcons.Bolt,
+                            title = if (shortcuts.isEmpty()) "暂无快捷命令" else "没有匹配的快捷命令",
+                            subtitle = if (shortcuts.isEmpty()) "保存常用命令或脚本，在终端中一键触发执行" else "请尝试更改筛选关键字",
+                            actionLabel = if (shortcuts.isEmpty()) "新建快捷命令" else null,
+                            onAction = if (shortcuts.isEmpty()) { { editingShortcut = CommandShortcut() } } else null
+                        )
+                        1 -> AgEmptyState(
+                            icon = AgIcons.Terminal,
+                            title = if (templates.isEmpty()) "暂无运维模板" else "没有匹配的运维模板",
+                            subtitle = if (templates.isEmpty()) "可一键加载系统监控、容器、网络排查等预置运维模板" else "请尝试更改筛选关键字",
+                            actionLabel = if (templates.isEmpty()) "加载预置模板" else null,
+                            onAction = if (templates.isEmpty()) { { viewModel.loadPresetTemplates() } } else null
+                        )
+                        else -> AgEmptyState(
+                            icon = AgIcons.History,
+                            title = if (history.isEmpty()) "暂无命令执行历史" else "没有匹配的历史记录",
+                            subtitle = if (history.isEmpty()) "在 SSH 终端执行的命令会自动记录在此，支持搜索与收藏" else "请尝试更改筛选关键字"
+                        )
                     }
-                    1 -> items(filteredTemplates, key = { it.id }) { tpl ->
-                        TemplateItemCard(tpl, { execOrWarn(tpl.command) }, { editingTemplate = tpl }, { deletingTemplate = tpl })
-                    }
-                    else -> items(filteredHistory, key = { it.id }) { rec ->
-                        HistoryItemCard(rec, { editingShortcut = CommandShortcut(name = rec.command.take(24), command = rec.command, autoExecute = true) }, { execOrWarn(rec.command) })
+                }
+            } else {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    when (tabIndex) {
+                        0 -> items(filteredShortcuts, key = { it.id }) { sc ->
+                            ShortcutItemCard(sc, { viewModel.saveShortcut(sc.copy(pinned = !sc.pinned)) }, {
+                                if (viewModel.runShortcutInActive(sc)) onJumpToTerminal() else viewModel.showToast("请先连接 SSH 终端")
+                            }, { editingShortcut = sc }, { deletingShortcut = sc })
+                        }
+                        1 -> items(filteredTemplates, key = { it.id }) { tpl ->
+                            TemplateItemCard(tpl, { execOrWarn(tpl.command) }, { editingTemplate = tpl }, { deletingTemplate = tpl })
+                        }
+                        else -> items(filteredHistory, key = { it.id }) { rec ->
+                            HistoryItemCard(rec, { editingShortcut = CommandShortcut(name = rec.command.take(24), command = rec.command, autoExecute = true) }, { execOrWarn(rec.command) })
+                        }
                     }
                 }
             }

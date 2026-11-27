@@ -2,7 +2,10 @@ package com.gravityssh.app.ui.tools
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -15,6 +18,7 @@ import com.gravityssh.app.model.CommandRecord
 import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.ui.components.AgBadge
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
 
 @Composable
@@ -36,7 +40,7 @@ internal fun ShortcutItemCard(
                 Text(sc.command, fontFamily = MonoFontFamily, fontSize = 11.sp, color = AgMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             IconButton(onClick = onTogglePin, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Rounded.PushPin, "置顶", tint = if (sc.pinned) AgWarning else AgMuted, modifier = Modifier.size(17.dp))
+                Icon(AgIcons.PushPin, "置顶", tint = if (sc.pinned) AgWarning else AgMuted, modifier = Modifier.size(17.dp))
             }
             IconButton(onClick = onRun, modifier = Modifier.size(32.dp)) { Icon(Icons.Rounded.PlayArrow, "执行", tint = AgCyan, modifier = Modifier.size(20.dp)) }
             IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) { Icon(Icons.Rounded.Edit, "编辑", tint = AgMuted, modifier = Modifier.size(17.dp)) }

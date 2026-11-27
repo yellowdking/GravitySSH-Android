@@ -23,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val IME_SENTINEL = "\u200B"
+private val SENTINEL_VALUE = TextFieldValue(IME_SENTINEL, TextRange(IME_SENTINEL.length))
 
 internal class TerminalTouchState(
     private val scope: CoroutineScope,
@@ -49,9 +50,9 @@ internal class TerminalTouchState(
         col: Int,
         mode: TouchCursorMode,
         controller: TerminalSessionController
-    ) {
+    ): Boolean {
         val alt = controller.isAlternateScreen()
-        if (mode != TouchCursorMode.CURSOR && !(mode == TouchCursorMode.AUTO && alt)) return
+        if (mode != TouchCursorMode.CURSOR && !(mode == TouchCursorMode.AUTO && alt)) return false
         val (rows, cols) = controller.screenSize()
         val tRow = row.coerceIn(0, (rows - 1).coerceAtLeast(0))
         val tCol = col.coerceIn(0, (cols - 1).coerceAtLeast(0))
@@ -66,6 +67,7 @@ internal class TerminalTouchState(
         tapCell = tRow to tCol
         tapJob?.cancel()
         tapJob = scope.launch { delay(280L); tapCell = null }
+        return true
     }
 
     fun handleDragStart() {
@@ -116,10 +118,11 @@ internal class TerminalTouchState(
 
 @Composable
 internal fun TerminalImeSink(focusRequester: FocusRequester, onImeInput: (String) -> Unit) {
-    var imeValue by remember { mutableStateOf(TextFieldValue(IME_SENTINEL, TextRange(IME_SENTINEL.length))) }
+    var imeValue by remember { mutableStateOf(SENTINEL_VALUE) }
     BasicTextField(
         value = imeValue,
         onValueChange = { next ->
+            if (next == imeValue) return@BasicTextField
             val composing = next.composition != null && !next.composition!!.collapsed
             if (composing) {
                 imeValue = next
@@ -132,7 +135,7 @@ internal fun TerminalImeSink(focusRequester: FocusRequester, onImeInput: (String
                 raw.startsWith(IME_SENTINEL) -> raw.removePrefix(IME_SENTINEL).takeIf { it.isNotEmpty() }?.let { onImeInput(it.replace("\n", "\r")) }
                 else -> raw.replace(IME_SENTINEL, "").takeIf { it.isNotEmpty() }?.let { onImeInput(it.replace("\n", "\r")) }
             }
-            imeValue = TextFieldValue(IME_SENTINEL, TextRange(IME_SENTINEL.length))
+            imeValue = SENTINEL_VALUE
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, autoCorrectEnabled = false, imeAction = ImeAction.Send),
         keyboardActions = KeyboardActions(onSend = { onImeInput("\r") }),
