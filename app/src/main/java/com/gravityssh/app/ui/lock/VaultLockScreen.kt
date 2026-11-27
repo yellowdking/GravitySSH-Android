@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Fingerprint
@@ -16,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -38,9 +40,15 @@ fun VaultLockScreen(
     var errorMsg by remember { mutableStateOf<String?>(null) }
     val canBiometric = remember(context) { BiometricHelper.canAuthenticate(context) }
 
+    fun submitPassword() {
+        if (password.isBlank()) errorMsg = "请输入主密码"
+        else onUnlockPassword(password).onFailure { errorMsg = it.message ?: "主密码错误" }
+    }
+
     fun triggerBiometric() {
         BiometricHelper.authenticate(
             context = context,
+            negativeButtonText = if (lockState.hasPassword) "使用密码" else "取消",
             onSuccess = { onUnlockBiometric().onFailure { errorMsg = it.message ?: "生物识别解锁失败" } },
             onError = { errorMsg = it }
         )
@@ -83,7 +91,8 @@ fun VaultLockScreen(
                         onValueChange = { password = it; errorMsg = null },
                         label = "主密码",
                         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { submitPassword() }),
                         trailingIcon = {
                             IconButton(onClick = { showPassword = !showPassword }) {
                                 Icon(if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, null, tint = AgMuted)
@@ -91,10 +100,7 @@ fun VaultLockScreen(
                         }
                     )
                     Button(
-                        onClick = {
-                            if (password.isBlank()) errorMsg = "请输入主密码"
-                            else onUnlockPassword(password).onFailure { errorMsg = it.message ?: "主密码错误" }
-                        },
+                        onClick = ::submitPassword,
                         modifier = Modifier.fillMaxWidth().height(46.dp),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
@@ -114,8 +120,9 @@ fun VaultLockScreen(
                     }
                 }
 
-                if (!errorMsg.isNullOrBlank()) {
-                    Text(errorMsg!!, style = MaterialTheme.typography.bodySmall, color = AgDanger)
+                val displayedError = errorMsg ?: lockState.startupError
+                if (!displayedError.isNullOrBlank()) {
+                    Text(displayedError, style = MaterialTheme.typography.bodySmall, color = AgDanger)
                 }
             }
         }

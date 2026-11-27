@@ -8,22 +8,24 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 
 object BiometricHelper {
+    private const val ALLOWED_AUTHENTICATORS =
+        BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
+
     fun canAuthenticate(context: Context): Boolean {
         val bm = BiometricManager.from(context)
-        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
-            BiometricManager.Authenticators.BIOMETRIC_WEAK
-        return bm.canAuthenticate(authenticators) == BiometricManager.BIOMETRIC_SUCCESS
+        return bm.canAuthenticate(ALLOWED_AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
     }
 
     fun authenticate(
         context: Context,
         title: String = "解锁 GravitySSH 保险库",
         subtitle: String = "请验证指纹或人脸",
+        negativeButtonText: String = "使用密码",
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
         val activity = context.findFragmentActivity()
-        if (activity == null) {
+        if (activity == null || activity.isFinishing || activity.isDestroyed) {
             onError("当前界面不支持生物识别")
             return
         }
@@ -45,14 +47,16 @@ object BiometricHelper {
         val info = BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
             .setSubtitle(subtitle)
-            .setNegativeButtonText("使用密码")
+            .setAllowedAuthenticators(ALLOWED_AUTHENTICATORS)
+            .setNegativeButtonText(negativeButtonText)
             .build()
         prompt.authenticate(info)
     }
 
     private fun Context.findFragmentActivity(): FragmentActivity? {
+        val visited = HashSet<Context>()
         var cur: Context? = this
-        while (cur is ContextWrapper) {
+        while (cur is ContextWrapper && visited.add(cur)) {
             if (cur is FragmentActivity) return cur
             cur = cur.baseContext
         }

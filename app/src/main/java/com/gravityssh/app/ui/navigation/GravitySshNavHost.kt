@@ -13,6 +13,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -36,6 +37,8 @@ import com.gravityssh.app.ui.theme.AgBg
 import com.gravityssh.app.ui.theme.AgElevated
 import com.gravityssh.app.ui.theme.AgText
 import com.gravityssh.app.ui.tools.ToolsScreen
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 object Routes {
     const val SERVERS = "servers"
@@ -48,17 +51,25 @@ object Routes {
 
 @Composable
 fun GravitySshRoot(viewModel: AppViewModel) {
-    val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-    val tabs by viewModel.sessionTabs.collectAsStateWithLifecycle()
+    val lockState by remember(viewModel) {
+        viewModel.vaultState.map { it.lockState }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = viewModel.vaultState.value.lockState)
+    val activeCount by remember(viewModel) {
+        viewModel.sessionTabs
+            .map { tabs ->
+                tabs.count { it.status == SessionStatus.CONNECTED || it.status == SessionStatus.CONNECTING }
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = 0)
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
         viewModel.toastEvents.collect { msg -> snackbarHostState.showSnackbar(msg) }
     }
 
-    if (vaultState.lockState.locked) {
+    if (lockState.locked) {
         VaultLockScreen(
-            lockState = vaultState.lockState,
+            lockState = lockState,
             onUnlockPassword = { viewModel.container.vaultRepository.unlock(it) },
             onUnlockBiometric = { viewModel.container.vaultRepository.unlockWithBiometric() }
         )
@@ -69,11 +80,11 @@ fun GravitySshRoot(viewModel: AppViewModel) {
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Routes.SERVERS
     val density = LocalDensity.current
-    val imeVisible = WindowInsets.ime.getBottom(density) > 0
-    val hideBottomBar = currentRoute == Routes.SYNC || (currentRoute == Routes.TERMINAL && imeVisible)
-    val activeCount = tabs.count {
-        it.status == SessionStatus.CONNECTED || it.status == SessionStatus.CONNECTING
+    val imeInsets = WindowInsets.ime
+    val imeVisible by remember(density, imeInsets) {
+        derivedStateOf { imeInsets.getBottom(density) > 0 }
     }
+    val hideBottomBar = currentRoute == Routes.SYNC || (currentRoute == Routes.TERMINAL && imeVisible)
 
     fun navigateTab(route: String) {
         navController.navigate(route) {
