@@ -48,9 +48,8 @@ class SftpService(
             .take(MAX_SYMLINK_STATS)
             .toList()
         if (symlinks.isEmpty()) return emptyMap()
-        if (symlinks.size == 1) {
-            val target = symlinks[0]
-            return mapOf(target.path to runCatching { primarySftp.stat(target.path).type == FileMode.Type.DIRECTORY }.getOrDefault(false))
+        if (!shouldParallelizeSymlinkStats(symlinks.size)) {
+            return statChunk(primarySftp, symlinks)
         }
 
         val workerCount = minOf(MAX_SYMLINK_STAT_WORKERS, symlinks.size)
@@ -170,8 +169,12 @@ class SftpService(
 
     companion object {
         const val MAX_EDITOR_BYTES = 1024 * 1024
+        internal const val PARALLEL_SYMLINK_STAT_THRESHOLD = 8
         private const val MAX_SYMLINK_STATS = 32
         private const val MAX_SYMLINK_STAT_WORKERS = 4
         private const val LARGE_DIR_SKIP_SYMLINK_THRESHOLD = 256
+
+        internal fun shouldParallelizeSymlinkStats(symlinkCount: Int): Boolean =
+            symlinkCount >= PARALLEL_SYMLINK_STAT_THRESHOLD
     }
 }

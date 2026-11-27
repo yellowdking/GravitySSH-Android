@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.File
 import java.security.Security
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
@@ -52,21 +53,33 @@ class GravitySshApp : Application() {
     lateinit var container: AppContainer
         private set
 
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     override fun onCreate() {
         super.onCreate()
-        registerFullBouncyCastle()
+        appScope.launch { ensureBouncyCastleRegistered() }
         container = AppContainer(this)
     }
 
-    private fun registerFullBouncyCastle() {
-        runCatching {
-            val provider = BouncyCastleProvider()
-            Security.removeProvider("BC")
-            Security.addProvider(provider)
-        }
-    }
-
     companion object {
+        private val bcRegistered = AtomicBoolean(false)
+        private val bcLock = Any()
+
+        fun ensureBouncyCastleRegistered() {
+            if (bcRegistered.get()) return
+            synchronized(bcLock) {
+                if (bcRegistered.get()) return
+                runCatching {
+                    val provider = BouncyCastleProvider()
+                    Security.removeProvider("BC")
+                    Security.addProvider(provider)
+                    bcRegistered.set(true)
+                }.onFailure { e ->
+                    runCatching { Log.e("GravitySshApp", "Failed to register BouncyCastle provider", e) }
+                }
+            }
+        }
+
         fun from(context: Context): AppContainer =
             (context.applicationContext as GravitySshApp).container
     }

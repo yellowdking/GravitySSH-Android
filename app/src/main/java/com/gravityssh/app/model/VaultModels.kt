@@ -73,7 +73,8 @@ data class AppSettings(
     @SerialName("syncRelayUrl") val syncRelayUrl: String = "",
     @SerialName("touchCursorMode") val touchCursorMode: String = "auto",
     @SerialName("touchCursorSensitivity") val touchCursorSensitivity: String = "balanced",
-    @SerialName("touchCursorFling") val touchCursorFling: Boolean = true
+    @SerialName("touchCursorFling") val touchCursorFling: Boolean = true,
+    @SerialName("autoLockMinutes") val autoLockMinutes: Int = 0
 )
 
 @Serializable

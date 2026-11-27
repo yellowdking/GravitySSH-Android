@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -11,14 +12,18 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.AppViewModelFactory
 import com.gravityssh.app.ui.navigation.GravitySshRoot
 import com.gravityssh.app.ui.theme.GravitySshTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
 
     private var appContainer: AppContainer? = null
+    private var backgroundedAtElapsedMs: Long = 0L
 
     private val notificationPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -26,6 +31,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        backgroundedAtElapsedMs = savedInstanceState?.getLong(KEY_BACKGROUNDED_AT_ELAPSED_MS, 0L) ?: 0L
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(0xFF0B0D12.toInt()),
             navigationBarStyle = SystemBarStyle.dark(0xFF10131A.toInt())
@@ -46,9 +52,37 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        val container = appContainer
+        container?.sshSessionManager?.setAppForeground(true)
+        val bgAt = backgroundedAtElapsedMs
+        backgroundedAtElapsedMs = 0L
+        if (container != null && bgAt > 0L) {
+            val now = SystemClock.elapsedRealtime()
+            if (container.vaultRepository.shouldAutoLock(bgAt, now)) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    container.vaultRepository.lockNow()
+                }
+            }
+        }
+    }
+
     override fun onStop() {
-        appContainer?.vaultRepository?.flushPendingHistoryAsync()
+        val container = appContainer
+        container?.sshSessionManager?.setAppForeground(false)
+        if (!isChangingConfigurations) {
+            backgroundedAtElapsedMs = SystemClock.elapsedRealtime()
+        }
+        container?.vaultRepository?.flushPendingHistoryAsync()
         super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (!isChangingConfigurations && backgroundedAtElapsedMs > 0L) {
+            outState.putLong(KEY_BACKGROUNDED_AT_ELAPSED_MS, backgroundedAtElapsedMs)
+        }
     }
 
     private fun requestNotificationPermissionOnceIfNeeded() {
@@ -69,5 +103,6 @@ class MainActivity : FragmentActivity() {
     companion object {
         private const val PREFS_NAME = "gravityssh_prefs"
         private const val KEY_NOTIF_PERM_ASKED = "post_notifications_requested"
+        private const val KEY_BACKGROUNDED_AT_ELAPSED_MS = "backgrounded_at_elapsed_ms"
     }
 }
