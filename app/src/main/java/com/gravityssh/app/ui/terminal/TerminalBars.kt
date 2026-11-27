@@ -13,6 +13,9 @@ import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import com.gravityssh.app.model.*
@@ -56,6 +59,7 @@ internal fun SessionTabsStrip(tabs: List<SessionTabHeader>, activeId: String, on
 @Composable
 internal fun TerminalToolbarRow(
     viaSummary: String, showSearch: Boolean, touchMode: TouchCursorMode, touchSensitivity: TouchSensitivity, isAltScreen: Boolean,
+    imeVisible: Boolean, onToggleKeyboard: () -> Unit,
     onCycleTouchMode: () -> Unit, onCycleTouchSensitivity: () -> Unit, onOpenSftp: () -> Unit, onOpenShortcuts: () -> Unit,
     onOpenHistory: () -> Unit, onPaste: () -> Unit, onToggleSearch: () -> Unit, onReconnect: () -> Unit,
     showMoreKeys: Boolean, ctrlActive: Boolean, altActive: Boolean,
@@ -82,6 +86,7 @@ internal fun TerminalToolbarRow(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 3.dp),
             Arrangement.spacedBy(6.dp), Alignment.CenterVertically
         ) {
+            KeyboardTogglePill(imeVisible = imeVisible, onToggle = onToggleKeyboard)
             TouchModeControlStrip(touchMode, touchSensitivity, isAltScreen, onCycleTouchMode, onCycleTouchSensitivity)
             FnKeysTogglePill(showMoreKeys, ctrlActive, altActive, onToggleMoreKeys)
         }
@@ -92,6 +97,42 @@ internal fun TerminalToolbarRow(
 @Composable
 private fun BarIcon(icon: ImageVector, desc: String, tint: Color, onClick: () -> Unit, sz: Int = 19) {
     IconButton(onClick = onClick, modifier = Modifier.size(34.dp)) { Icon(icon, desc, tint = tint, modifier = Modifier.size(sz.dp)) }
+}
+
+@Composable
+private fun KeyboardTogglePill(imeVisible: Boolean, onToggle: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            onToggle()
+        },
+        modifier = Modifier.height(28.dp),
+        shape = RoundedCornerShape(7.dp),
+        color = if (imeVisible) AgCyan.copy(0.20f) else AgElevated,
+        border = BorderStroke(1.dp, if (imeVisible) AgCyan.copy(0.75f) else AgBorder)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                AgIcons.Keyboard,
+                contentDescription = if (imeVisible) "隐藏键盘" else "显示键盘",
+                tint = if (imeVisible) AgCyan else AgText,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = "键盘",
+                color = if (imeVisible) AgCyan else AgText,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
 }
 
 @Composable

@@ -80,7 +80,11 @@ fun SyncSendCard(viewModel: AppViewModel) {
                 val mm = state.remainingSec / 60
                 val ss = state.remainingSec % 60
                 Text(
-                    "剩余有效期 ${String.format(Locale.US, "%02d:%02d", mm, ss)} · 双向确认后阅后即焚",
+                    if (state.remainingSec > 0L) {
+                        "剩余有效期 ${String.format(Locale.US, "%02d:%02d", mm, ss)} · 双向确认后阅后即焚"
+                    } else {
+                        "等待中继确认状态 · 双向确认后阅后即焚"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = AgSuccess
                 )

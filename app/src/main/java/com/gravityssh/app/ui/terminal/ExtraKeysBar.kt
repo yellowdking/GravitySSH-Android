@@ -128,23 +128,51 @@ private fun FnKeysRow(
   }
 }
 
+fun applyArrowModifiers(dir: CursorDir, ctrl: Boolean, alt: Boolean): String {
+  val code = when (dir) {
+    CursorDir.UP -> 'A'
+    CursorDir.DOWN -> 'B'
+    CursorDir.RIGHT -> 'C'
+    CursorDir.LEFT -> 'D'
+  }
+  if (!ctrl && !alt) return "\u001B[$code"
+  val mod = 1 + (if (alt) 2 else 0) + (if (ctrl) 4 else 0)
+  return "\u001B[1;$mod$code"
+}
+
 fun applyTerminalModifiers(input: String, ctrl: Boolean, alt: Boolean): String {
   if ((!ctrl && !alt) || input.isEmpty()) return input
-  if (input.length == 1) {
-    val ch = input[0]
-    var out = input
-    if (ctrl) {
-      val upper = ch.uppercaseChar()
-      out = when {
-        upper in 'A'..'Z' -> (upper.code - 64).toChar().toString()
-        ch == '[' -> "\u001B"
-        ch == '\\' -> "\u001C"
-        ch == ']' -> "\u001D"
-        ch == ' ' -> "\u0000"
-        else -> input
-      }
-    }
-    return if (alt) "\u001B$out" else out
+  val mod = 1 + (if (alt) 2 else 0) + (if (ctrl) 4 else 0)
+  when (input) {
+    "\u001B[A", "\u001BOA" -> return "\u001B[1;${mod}A"
+    "\u001B[B", "\u001BOB" -> return "\u001B[1;${mod}B"
+    "\u001B[C", "\u001BOC" -> return "\u001B[1;${mod}C"
+    "\u001B[D", "\u001BOD" -> return "\u001B[1;${mod}D"
+    "\u001B[H", "\u001BOH" -> return "\u001B[1;${mod}H"
+    "\u001B[F", "\u001BOF" -> return "\u001B[1;${mod}F"
+    "\u001B[5~" -> return "\u001B[5;${mod}~"
+    "\u001B[6~" -> return "\u001B[6;${mod}~"
   }
-  return input
+  if (input.length > 1 && input[0] == '\u001B') return input
+  val first = applySingleCharModifier(input[0], ctrl, alt)
+  return if (input.length == 1) first else first + input.substring(1)
+}
+
+private fun applySingleCharModifier(ch: Char, ctrl: Boolean, alt: Boolean): String {
+  var out = ch.toString()
+  if (ctrl) {
+    val upper = ch.uppercaseChar()
+    out = when {
+      upper in 'A'..'Z' -> (upper.code - 64).toChar().toString()
+      ch == '[' -> "\u001B"
+      ch == '\\' -> "\u001C"
+      ch == ']' -> "\u001D"
+      ch == '^' || ch == '~' -> "\u001E"
+      ch == '/' || ch == '_' || ch == '-' -> "\u001F"
+      ch == ' ' || ch == '@' -> "\u0000"
+      ch == '?' -> "\u007F"
+      else -> out
+    }
+  }
+  return if (alt) "\u001B$out" else out
 }

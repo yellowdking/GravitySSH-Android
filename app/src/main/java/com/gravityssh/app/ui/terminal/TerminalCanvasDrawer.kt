@@ -14,6 +14,7 @@ internal data class SearchMatch(val row: Int, val col: Int, val len: Int)
 
 internal class TerminalCanvasDrawState {
     var runBuf: CharArray = CharArray(256)
+    var glyphBuf: CharArray = CharArray(32)
     val measureBuf: CharArray = CharArray(1)
     val teardropPath: Path = Path()
     val searchSb: StringBuilder = StringBuilder(256)
@@ -33,9 +34,16 @@ internal class TerminalCanvasDrawState {
         return runBuf
     }
 
+    fun ensureGlyphBuf(minLen: Int): CharArray {
+        if (glyphBuf.size < minLen) {
+            glyphBuf = CharArray(maxOf(minLen, glyphBuf.size * 2))
+        }
+        return glyphBuf
+    }
+
     fun ensureSearchColMap(minLen: Int): IntArray {
         if (searchColMap.size < minLen) {
-            searchColMap = IntArray(maxOf(minLen, searchColMap.size * 2))
+            searchColMap = searchColMap.copyOf(maxOf(minLen, searchColMap.size * 2))
         }
         return searchColMap
     }
@@ -97,13 +105,25 @@ internal fun computeSearchMatches(
         val row = snapshot.lines[r]
         if (row.isEmpty()) continue
         sb.setLength(0)
-        val colMap = drawState.ensureSearchColMap(row.size)
+        var colMap = drawState.ensureSearchColMap(row.size)
         var mappedLen = 0
         for (c in row.indices) {
             val cell = row[c]
             if (cell.isContinuation) continue
-            sb.append(cell.ch.lowercaseChar())
-            colMap[mappedLen++] = c
+            val beforeLen = sb.length
+            val cp = if (cell.codePoint == 0) ' '.code else cell.codePoint
+            sb.appendCodePoint(Character.toLowerCase(cp))
+            val comb = cell.combining
+            if (!comb.isNullOrEmpty()) {
+                sb.append(comb.lowercase())
+            }
+            val added = sb.length - beforeLen
+            if (mappedLen + added > colMap.size) {
+                colMap = drawState.ensureSearchColMap(mappedLen + added)
+            }
+            for (k in 0 until added) {
+                colMap[mappedLen++] = c
+            }
         }
         if (mappedLen < qLen) continue
         val rowLow = sb.toString()
@@ -211,35 +231,49 @@ internal fun DrawScope.drawTerminalSnapshot(
                 if (left >= size.width) break
                 val cell = row[c]
                 if (cell.isContinuation) continue
-                val ch = cell.ch
-                if (ch == ' ' || ch == '\u0000') {
+                if (cell.isBlank) {
                     flushTextRun()
                     continue
                 }
                 val fg = if (cell.inverse) cell.bg else cell.fg
                 val targetPaint = if (cell.bold) boldPaint else paint
-                val batchSafe = !cell.isWide && (ch.code <= 0x7E || drawState.isBatchSafeSingleWidth(ch, cell.bold, targetPaint, cellW))
-                if (!batchSafe) {
+                val cp = cell.codePoint
+                val comb = cell.combining
+                val canBatch = !cell.isWide &&
+                    comb.isNullOrEmpty() &&
+                    cp in 0..0xFFFF &&
+                    (cp <= 0x7E || drawState.isBatchSafeSingleWidth(cp.toChar(), cell.bold, targetPaint, cellW))
+                if (!canBatch) {
                     flushTextRun()
                     val p = drawState.applyTextColor(paint, boldPaint, cell.bold, fg, cell.dim)
-                    buf[0] = ch
-                    nc.drawText(buf, 0, 1, left, base, p)
-                } else if (
-                    runLen > 0 &&
-                    c == runStartCol + runLen &&
-                    fg == runFg &&
-                    cell.bold == runBold &&
-                    cell.dim == runDim
-                ) {
-                    buf[runLen++] = ch
+                    val combLen = comb?.length ?: 0
+                    val gBuf = drawState.ensureGlyphBuf(2 + combLen)
+                    var gLen = Character.toChars(cp, gBuf, 0)
+                    if (!comb.isNullOrEmpty()) {
+                        for (k in 0 until combLen) {
+                            gBuf[gLen++] = comb[k]
+                        }
+                    }
+                    nc.drawText(gBuf, 0, gLen, left, base, p)
                 } else {
-                    flushTextRun()
-                    runStartCol = c
-                    runFg = fg
-                    runBold = cell.bold
-                    runDim = cell.dim
-                    buf[0] = ch
-                    runLen = 1
+                    val ch = cp.toChar()
+                    if (
+                        runLen > 0 &&
+                        c == runStartCol + runLen &&
+                        fg == runFg &&
+                        cell.bold == runBold &&
+                        cell.dim == runDim
+                    ) {
+                        buf[runLen++] = ch
+                    } else {
+                        flushTextRun()
+                        runStartCol = c
+                        runFg = fg
+                        runBold = cell.bold
+                        runDim = cell.dim
+                        buf[0] = ch
+                        runLen = 1
+                    }
                 }
             }
             flushTextRun()
@@ -324,7 +358,7 @@ private fun DrawScope.drawSelectionOverlay(
         val endC = if (s.row == e.row || r == e.row) range.last else {
             var last = -1
             for (c in minOf(range.last, row.lastIndex) downTo range.first) {
-                if (row[c].isContinuation || (row[c].ch != ' ' && row[c].ch != '\u0000')) { last = c; break }
+                if (row[c].isContinuation || !row[c].isBlank) { last = c; break }
             }
             if (last >= range.first) last else range.first
         }

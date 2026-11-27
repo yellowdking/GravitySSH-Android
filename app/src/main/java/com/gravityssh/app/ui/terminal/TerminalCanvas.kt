@@ -35,6 +35,10 @@ fun TerminalCanvas(
     onFontSizeCommit: (Int) -> Unit = {},
     onResize: (cols: Int, rows: Int) -> Unit,
     onImeInput: (String) -> Unit,
+    onHardwareArrow: (CursorDir, Boolean, Boolean) -> Unit = { dir, ctrl, alt ->
+        if (ctrl || alt) onImeInput(applyArrowModifiers(dir, ctrl, alt)) else controller.sendArrow(dir, 1)
+    },
+    imeFocusRequester: FocusRequester = remember { FocusRequester() },
     onSelectionChange: (TextSelection?) -> Unit,
     onCopySelection: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -48,7 +52,7 @@ fun TerminalCanvas(
     val haptic = LocalHapticFeedback.current
     val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
-    val focusReq = remember { FocusRequester() }
+    val focusReq = imeFocusRequester
     val ts = remember { TerminalTouchState(scope, haptic, TouchCursorEngine(touchSensitivity)) }
     val drawState = remember { TerminalCanvasDrawState() }
 
@@ -96,7 +100,7 @@ fun TerminalCanvas(
     val searchMatches = remember(snapshot, qLower) { computeSearchMatches(snapshot, qLower, drawState) }
 
     Box(modifier.fillMaxSize().background(AgBg).onSizeChanged { canvasSize = it }) {
-        TerminalImeSink(focusReq, onImeInput)
+        TerminalImeSink(focusReq, onImeInput, onHardwareArrow)
         Canvas(
             Modifier.fillMaxSize().pointerInput(Unit) {
                 detectTerminalTouchGestures(
