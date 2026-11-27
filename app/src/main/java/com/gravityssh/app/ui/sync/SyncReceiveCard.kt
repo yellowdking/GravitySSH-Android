@@ -4,7 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,6 +23,8 @@ import com.gravityssh.app.sync.SyncCrypto
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgIcons
+import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
 import kotlinx.coroutines.CancellationException
@@ -41,6 +42,8 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var waitSession by remember { mutableStateOf<SyncReceiveWaitSession?>(null) }
     var waitRemainingSec by remember { mutableLongStateOf(0L) }
+    var consecutivePollErrors by remember { mutableIntStateOf(0) }
+    var lastPollError by remember { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<SyncReceivePreview?>(null) }
     var summary by remember { mutableStateOf<SyncImportSummary?>(null) }
     var showScanner by remember { mutableStateOf(false) }
@@ -73,6 +76,8 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
             if (left <= 0L) {
                 viewModel.container.syncService.cancelReceiveWait(wait.waitId)
                 waitSession = null
+                consecutivePollErrors = 0
+                lastPollError = null
                 errorMsg = "等待发送端确认已超时，请重试"
                 break
             }
@@ -82,9 +87,13 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
 
     LaunchedEffect(waitSession?.waitId) {
         val wait = waitSession ?: return@LaunchedEffect
+        consecutivePollErrors = 0
+        lastPollError = null
         while (true) {
             try {
                 val res = viewModel.container.syncService.pollReceiveStatus(wait.waitId)
+                consecutivePollErrors = 0
+                lastPollError = null
                 when (res.state) {
                     SyncReceivePollState.PENDING -> Unit
                     SyncReceivePollState.APPROVED -> {
@@ -113,8 +122,9 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
                 waitSession = null
                 errorMsg = e.message ?: "中继状态异常"
                 break
-            } catch (_: Exception) {
-                // Transient network error: retry on next poll tick
+            } catch (e: Exception) {
+                consecutivePollErrors++
+                lastPollError = e.message ?: "网络异常"
             }
             delay(SyncConfig.PAIR_POLL_INTERVAL_MS)
         }
@@ -125,6 +135,8 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
         busy = true
         errorMsg = null
         summary = null
+        consecutivePollErrors = 0
+        lastPollError = null
         scope.launch {
             runCatching {
                 viewModel.container.syncService.startReceiveRequest(codeOrUri, recvCode)
@@ -211,7 +223,7 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Rounded.QrCodeScanner, null, tint = AgCyan, modifier = Modifier.size(18.dp))
+                    Icon(AgIcons.QrCodeScanner, null, tint = AgCyan, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("扫码填入", color = AgCyan)
                 }
@@ -229,7 +241,10 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
                     Text(if (busy) "提交验证中..." else "发起验证并接收", color = Color.White)
                 }
             }
-            errorMsg?.let { Spacer(Modifier.height(8.dp)); Text(it, style = MaterialTheme.typography.bodySmall, color = AgDanger) }
+            errorMsg?.let {
+                Spacer(Modifier.height(8.dp))
+                AgStatusBanner(message = it, color = AgDanger)
+            }
         }
     } else {
         AgCard(borderColor = AgCyan) {
@@ -262,6 +277,12 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
                     CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = AgCyan)
                     Text("请在发送端确认此码一致并点击同意...", style = MaterialTheme.typography.bodySmall, color = AgText)
                 }
+                if (consecutivePollErrors >= 3) {
+                    AgStatusBanner(
+                        message = "网络连接异常（已连续重试 $consecutivePollErrors 次）：${lastPollError ?: "请检查网络或中继服务器"}",
+                        color = AgWarning
+                    )
+                }
                 val mm = waitRemainingSec / 60
                 val ss = waitRemainingSec % 60
                 Text(
@@ -273,6 +294,8 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
                     onClick = {
                         val wid = currentWait.waitId
                         waitSession = null
+                        consecutivePollErrors = 0
+                        lastPollError = null
                         viewModel.container.syncService.cancelReceiveWait(wid)
                     },
                     border = BorderStroke(1.dp, AgDanger),

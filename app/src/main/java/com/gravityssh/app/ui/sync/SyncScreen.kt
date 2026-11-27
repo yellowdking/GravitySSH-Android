@@ -5,20 +5,25 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.ui.AppViewModel
+import com.gravityssh.app.ui.cleanupAbandonedSyncOnLeave
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
     var tabIndex by remember { mutableIntStateOf(0) }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.cleanupAbandonedSyncOnLeave() }
+    }
 
     Scaffold(
         containerColor = AgBg,
@@ -52,7 +57,7 @@ fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
 
                 AgCard(borderColor = AgCyan.copy(alpha = 0.35f)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Rounded.Shield, contentDescription = null, tint = AgCyan, modifier = Modifier.size(18.dp))
+                        Icon(AgIcons.Shield, contentDescription = null, tint = AgCyan, modifier = Modifier.size(18.dp))
                         Text("端到端零知识加密 · 阅后即焚", style = MaterialTheme.typography.titleSmall, color = AgCyan)
                     }
                     Spacer(Modifier.height(4.dp))

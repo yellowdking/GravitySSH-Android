@@ -5,8 +5,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,127 +15,33 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.gravityssh.app.model.SyncSendPollResult
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.model.SyncSendPollState
-import com.gravityssh.app.model.SyncSendSession
-import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.ui.AppViewModel
+import com.gravityssh.app.ui.approveSyncSend
 import com.gravityssh.app.ui.cancelSyncSend
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgIcons
+import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.rejectSyncSend
+import com.gravityssh.app.ui.startSyncSend
 import com.gravityssh.app.ui.theme.*
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.util.Locale
 
 @Composable
 fun SyncSendCard(viewModel: AppViewModel) {
-    var sendSession by remember { mutableStateOf<SyncSendSession?>(null) }
-    var pollResult by remember { mutableStateOf<SyncSendPollResult?>(null) }
-    var sendBusy by remember { mutableStateOf(false) }
-    var sendError by remember { mutableStateOf<String?>(null) }
-    var sendConsumedSuccess by remember { mutableStateOf(false) }
-    var remainingSec by remember { mutableLongStateOf(0L) }
+    val state by viewModel.syncSendState.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
-
-    LaunchedEffect(sendSession) {
-        val sess = sendSession ?: return@LaunchedEffect
-        while (true) {
-            val left = ((sess.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
-            remainingSec = left
-            if (left <= 0L) {
-                sendSession = null
-                pollResult = null
-                sendError = "同步码已过期，请重新生成"
-                break
-            }
-            delay(1000L)
-        }
-    }
-
-    val awaitingApproval = pollResult?.state == SyncSendPollState.REQUESTED
-    LaunchedEffect(sendSession?.sessionId, awaitingApproval) {
-        val sess = sendSession ?: return@LaunchedEffect
-        if (sess.sessionId.isBlank() || awaitingApproval) return@LaunchedEffect
-        while (true) {
-            try {
-                val res = viewModel.container.syncService.pollSend(sess.sessionId)
-                when (res.state) {
-                    SyncSendPollState.WAITING -> {
-                        pollResult = res
-                    }
-                    SyncSendPollState.REQUESTED -> {
-                        pollResult = res
-                        break
-                    }
-                    SyncSendPollState.APPROVED -> {
-                        pollResult = res
-                    }
-                    SyncSendPollState.CONSUMED -> {
-                        sendConsumedSuccess = true
-                        sendSession = null
-                        pollResult = null
-                        viewModel.showToast("对方已成功接收配置")
-                        break
-                    }
-                    SyncSendPollState.REJECTED -> {
-                        sendError = "已拒绝配对请求"
-                        sendSession = null
-                        pollResult = null
-                        break
-                    }
-                    SyncSendPollState.EXPIRED -> {
-                        sendError = "同步码已过期或已失效，请重新生成"
-                        sendSession = null
-                        pollResult = null
-                        break
-                    }
-                    SyncSendPollState.ERROR -> {
-                        sendError = res.errorMessage ?: "验证请求异常，已终止同步"
-                        sendSession = null
-                        pollResult = null
-                        break
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: SecurityException) {
-                sendError = e.message ?: "保险库已锁定"
-                sendSession = null
-                pollResult = null
-                break
-            } catch (_: Exception) {
-                // Transient network error: retry on next poll tick
-            }
-            delay(SyncConfig.PAIR_POLL_INTERVAL_MS)
-        }
-    }
 
     AgCard {
-        val sess = sendSession
+        val sess = state.session
         if (sess == null) {
-            if (sendConsumedSuccess) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = AgSuccess.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, AgSuccess),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(Icons.Rounded.CheckCircle, null, tint = AgSuccess, modifier = Modifier.size(18.dp))
-                        Text(
-                            "对方已成功接收配置，中继密文已焚毁",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = AgSuccess
-                        )
-                    }
-                }
+            if (state.consumedSuccess) {
+                AgStatusBanner(
+                    message = "对方已成功接收配置，中继密文已焚毁",
+                    color = AgSuccess,
+                    icon = Icons.Rounded.CheckCircle
+                )
                 Spacer(Modifier.height(12.dp))
             }
 
@@ -148,30 +52,22 @@ fun SyncSendCard(viewModel: AppViewModel) {
             )
             Spacer(Modifier.height(14.dp))
             Button(
-                onClick = {
-                    sendBusy = true
-                    sendError = null
-                    sendConsumedSuccess = false
-                    pollResult = null
-                    scope.launch {
-                        runCatching { viewModel.container.syncService.startSend() }
-                            .onSuccess { sendSession = it }
-                            .onFailure { sendError = it.message ?: "初始化同步通道失败" }
-                        sendBusy = false
-                    }
-                },
-                enabled = !sendBusy,
+                onClick = { viewModel.startSyncSend() },
+                enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth().height(46.dp),
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
             ) {
-                if (sendBusy) {
+                if (state.busy) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(if (sendBusy) "初始化同步通道..." else "生成同步码", color = Color.White)
+                Text(if (state.busy) "初始化同步通道..." else "生成同步码", color = Color.White)
             }
-            sendError?.let { Spacer(Modifier.height(8.dp)); Text(it, style = MaterialTheme.typography.bodySmall, color = AgDanger) }
+            state.error?.let {
+                Spacer(Modifier.height(8.dp))
+                AgStatusBanner(message = it, color = AgDanger)
+            }
         } else {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -181,8 +77,8 @@ fun SyncSendCard(viewModel: AppViewModel) {
                 Text("一次性同步码", style = MaterialTheme.typography.labelMedium, color = AgMuted)
                 Text(sess.code, fontFamily = MonoFontFamily, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = AgCyan, letterSpacing = 3.sp)
                 QrCodeCanvas(content = sess.qrText, size = 196.dp)
-                val mm = remainingSec / 60
-                val ss = remainingSec % 60
+                val mm = state.remainingSec / 60
+                val ss = state.remainingSec % 60
                 Text(
                     "剩余有效期 ${String.format(Locale.US, "%02d:%02d", mm, ss)} · 双向确认后阅后即焚",
                     style = MaterialTheme.typography.labelMedium,
@@ -194,7 +90,14 @@ fun SyncSendCard(viewModel: AppViewModel) {
                     color = AgMuted
                 )
 
-                val currentPoll = pollResult
+                if (state.consecutivePollErrors >= 3) {
+                    AgStatusBanner(
+                        message = "网络连接异常（已连续重试 ${state.consecutivePollErrors} 次）：${state.lastPollError ?: "请检查网络或中继服务器"}",
+                        color = AgWarning
+                    )
+                }
+
+                val currentPoll = state.pollResult
                 when (currentPoll?.state) {
                     SyncSendPollState.REQUESTED -> {
                         Surface(
@@ -212,7 +115,7 @@ fun SyncSendCard(viewModel: AppViewModel) {
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(Icons.Rounded.VerifiedUser, null, tint = AgWarning, modifier = Modifier.size(18.dp))
+                                    Icon(AgIcons.VerifiedUser, null, tint = AgWarning, modifier = Modifier.size(18.dp))
                                     Text("收到接收端配对请求，请核对确认码", style = MaterialTheme.typography.titleSmall, color = AgWarning)
                                 }
                                 Text(
@@ -244,44 +147,26 @@ fun SyncSendCard(viewModel: AppViewModel) {
                                 Spacer(Modifier.height(2.dp))
                                 Button(
                                     onClick = {
-                                        if (sendBusy) return@Button
-                                        sendBusy = true
-                                        sendError = null
-                                        scope.launch {
-                                            runCatching {
-                                                viewModel.container.syncService.approveSend(
-                                                    sessionId = sess.sessionId,
-                                                    requestId = currentPoll.requestId,
-                                                    receiverCode = currentPoll.receiverCode
-                                                )
-                                            }.onSuccess {
-                                                pollResult = currentPoll.copy(state = SyncSendPollState.APPROVED)
-                                            }.onFailure {
-                                                sendError = it.message ?: "同意发送失败"
-                                            }
-                                            sendBusy = false
-                                        }
+                                        viewModel.approveSyncSend(
+                                            sessionId = sess.sessionId,
+                                            requestId = currentPoll.requestId,
+                                            receiverCode = currentPoll.receiverCode
+                                        )
                                     },
-                                    enabled = !sendBusy,
+                                    enabled = !state.busy,
                                     modifier = Modifier.fillMaxWidth().height(44.dp),
                                     shape = RoundedCornerShape(10.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = AgSuccess)
                                 ) {
-                                    if (sendBusy) {
+                                    if (state.busy) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
                                         Spacer(Modifier.width(8.dp))
                                     }
-                                    Text(if (sendBusy) "双密钥加密上传中..." else "核对一致，同意发送", color = Color.White, fontWeight = FontWeight.SemiBold)
+                                    Text(if (state.busy) "双密钥加密上传中..." else "核对一致，同意发送", color = Color.White, fontWeight = FontWeight.SemiBold)
                                 }
                                 OutlinedButton(
-                                    onClick = {
-                                        val sid = sess.sessionId
-                                        val rid = currentPoll.requestId
-                                        sendSession = null
-                                        pollResult = null
-                                        viewModel.rejectSyncSend(sid, rid)
-                                    },
-                                    enabled = !sendBusy,
+                                    onClick = { viewModel.rejectSyncSend(sess.sessionId, currentPoll.requestId) },
+                                    enabled = !state.busy,
                                     border = BorderStroke(1.dp, AgDanger),
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier.fillMaxWidth()
@@ -321,7 +206,7 @@ fun SyncSendCard(viewModel: AppViewModel) {
                     }
                 }
 
-                sendError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = AgDanger) }
+                state.error?.let { AgStatusBanner(message = it, color = AgDanger) }
 
                 if (currentPoll?.state != SyncSendPollState.REQUESTED) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -333,17 +218,12 @@ fun SyncSendCard(viewModel: AppViewModel) {
                             border = BorderStroke(1.dp, AgCyan),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Rounded.ContentCopy, null, tint = AgCyan, modifier = Modifier.size(16.dp))
+                            Icon(AgIcons.ContentCopy, null, tint = AgCyan, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
                             Text("复制同步码", color = AgCyan)
                         }
                         OutlinedButton(
-                            onClick = {
-                                val sid = sess.sessionId.ifBlank { sess.code }
-                                sendSession = null
-                                pollResult = null
-                                viewModel.cancelSyncSend(sid)
-                            },
+                            onClick = { viewModel.cancelSyncSend(sess.sessionId.ifBlank { sess.code }) },
                             border = BorderStroke(1.dp, AgDanger),
                             modifier = Modifier.weight(1f)
                         ) { Text("撤销", color = AgDanger) }

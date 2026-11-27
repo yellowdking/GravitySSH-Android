@@ -3,8 +3,6 @@ package com.gravityssh.app.ui.sync
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,6 +14,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.saveSyncRelayUrl
 import com.gravityssh.app.ui.testSyncRelay
@@ -36,7 +35,7 @@ fun SyncRelayCard(viewModel: AppViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Rounded.Dns, contentDescription = null, tint = AgAccentLight, modifier = Modifier.size(18.dp))
+                Icon(AgIcons.Dns, contentDescription = null, tint = AgAccentLight, modifier = Modifier.size(18.dp))
                 Text("同步中继服务器 (IP:端口)", style = MaterialTheme.typography.titleSmall, color = AgText)
             }
             if (savedUrl.isNotBlank()) {
