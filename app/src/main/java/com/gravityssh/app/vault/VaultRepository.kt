@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.SerializationException
 import java.io.File
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
@@ -107,6 +108,17 @@ class VaultRepository(
             pendingDirty = false
             cancelDebouncedFlushLocked()
             emitStateLocked(locked = false, hasPassword = true, startupError = null)
+        }.onFailure { e ->
+            if (e is VaultKeystoreException || e is IllegalArgumentException || e is SerializationException) {
+                runCatching { Log.e(TAG, "Vault unlock failed due to keystore/corruption", e) }
+                val cur = _state.value.lockState
+                emitStateLocked(
+                    locked = true,
+                    hasPassword = cur.hasPassword,
+                    biometric = cur.biometricEnabled,
+                    startupError = e.message ?: "系统密钥已失效或保险库文件损坏，请备份并重置保险库"
+                )
+            }
         }
     }
 
@@ -120,15 +132,28 @@ class VaultRepository(
             pendingDirty = false
             cancelDebouncedFlushLocked()
             emitStateLocked(locked = false, hasPassword = hasPw, startupError = null)
+        }.onFailure { e ->
+            if (e is VaultKeystoreException || e is IllegalArgumentException || e is SerializationException) {
+                runCatching { Log.e(TAG, "Biometric unlock failed due to keystore/corruption", e) }
+                val cur = _state.value.lockState
+                emitStateLocked(
+                    locked = true,
+                    hasPassword = cur.hasPassword,
+                    biometric = cur.biometricEnabled,
+                    startupError = e.message ?: "系统密钥已失效或保险库文件损坏，请备份并重置保险库"
+                )
+            }
         }
     }
 
     fun lockNow() {
         val didLock = synchronized(lock) {
             val cur = _state.value.lockState
+            if (cur.locked) return@synchronized false
             if (!cur.hasPassword && !cur.biometricEnabled) return@synchronized false
-            if (!cur.locked && pendingDirty) {
+            if (pendingDirty) {
                 runCatching { store.save(currentData, activePassword, cachedPasswordKey) }
+                    .onFailure { e -> runCatching { Log.e(TAG, "Failed to save pending vault changes before lock", e) } }
             }
             cancelDebouncedFlushLocked()
             pendingDirty = false
@@ -152,6 +177,12 @@ class VaultRepository(
             requireUnlocked()
             if (!activePassword.isNullOrEmpty() && currentPassword != activePassword) {
                 throw SecurityException("当前主密码不正确")
+            }
+            if (newPassword.isNotEmpty() && newPassword.isBlank()) {
+                throw IllegalArgumentException("主密码不能仅包含空白字符")
+            }
+            if (activePassword.isNullOrEmpty() && newPassword.isEmpty()) {
+                throw IllegalArgumentException("请输入新主密码")
             }
             val nextPassword = newPassword.ifEmpty { null }
             val nextData = if (nextPassword != null && currentData.settings.biometricLockEnabled) {

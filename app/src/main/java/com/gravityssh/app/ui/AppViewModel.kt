@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 data class SyncSendUiState(
     val session: SyncSendSession? = null,
@@ -64,8 +65,11 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     internal val _syncSendState = MutableStateFlow(SyncSendUiState())
     val syncSendState: StateFlow<SyncSendUiState> = _syncSendState.asStateFlow()
 
+    internal var syncStartJob: Job? = null
+    internal var syncApproveJob: Job? = null
     internal var syncCountdownJob: Job? = null
     internal var syncPollJob: Job? = null
+    internal val syncSendGeneration = AtomicLong(0L)
 
     private var startupUpdateChecked = false
 
@@ -87,10 +91,19 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
         _toastEvents.tryEmit(message)
     }
 
-    fun clearHostKnownKey(host: String, port: Int): Boolean {
-        val removed = container.knownHostsManager.clearHost(host, port)
-        showToast(if (removed) "已清除 $host:$port 主机指纹缓存" else "未找到 $host:$port 缓存")
-        return removed
+    fun lockVault() {
+        viewModelScope.launch(Dispatchers.IO) {
+            container.vaultRepository.lockNow()
+        }
+    }
+
+    fun clearHostKnownKey(host: String, port: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val removed = runCatching { container.knownHostsManager.clearHost(host, port) }
+                .onFailure { showToast("清除主机指纹失败: ${it.message}") }
+                .getOrNull() ?: return@launch
+            showToast(if (removed) "已清除 $host:$port 主机指纹缓存" else "未找到 $host:$port 缓存")
+        }
     }
 
     fun clearKnownHostByKey(hostPort: String) {
@@ -128,6 +141,9 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
 
     override fun onCleared() {
         sftpTransferJob?.cancel()
+        syncSendGeneration.incrementAndGet()
+        syncStartJob?.cancel()
+        syncApproveJob?.cancel()
         syncCountdownJob?.cancel()
         syncPollJob?.cancel()
         val pendingId = _syncSendState.value.session?.sessionId

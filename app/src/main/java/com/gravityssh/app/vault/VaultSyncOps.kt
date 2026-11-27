@@ -1,6 +1,7 @@
 package com.gravityssh.app.vault
 
 import com.gravityssh.app.model.AuthType
+import com.gravityssh.app.model.BuiltinOpsPresets
 import com.gravityssh.app.model.BuiltinTemplate
 import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.model.JumpHostConfig
@@ -22,6 +23,9 @@ object VaultSyncOps {
     private val VALID_AUTH_TYPES = setOf(AuthType.PASSWORD, AuthType.KEY, AuthType.BOTH)
     private val VALID_PROXY_TYPES = setOf(ProxyType.NONE, ProxyType.SOCKS5, ProxyType.HTTP)
     private val VALID_JUMP_MODES = setOf(JumpMode.NONE, JumpMode.SERVER, JumpMode.CUSTOM)
+    private val validPresetIds: Set<String> by lazy {
+        BuiltinOpsPresets.all().mapNotNull { it.presetId.trim().takeIf { id -> id.isNotEmpty() } }.toSet()
+    }
 
     fun exportBundle(data: VaultData, sourceDevice: String): SyncBundle {
         val now = Instant.now().toString()
@@ -63,7 +67,7 @@ object VaultSyncOps {
         val cleanKeys = bundle.sshKeys.map { sanitizeKey(it, now) }
         val cleanServers = bundle.servers.mapNotNull { sanitizeServer(it, now) }
         val cleanShortcuts = bundle.shortcuts.mapNotNull { sanitizeShortcut(it, now) }
-        val cleanTemplates = bundle.templates.mapNotNull { sanitizeTemplate(it) }
+        val cleanTemplates = sanitizeTemplates(bundle.templates)
 
         if (mode == SyncImportMode.OVERWRITE) {
             val next = current.copy(
@@ -138,16 +142,36 @@ object VaultSyncOps {
                 val finalId = cur.id.ifBlank { inc.id }
                 if (origId.isNotBlank() && origId != finalId) serverIdMap[origId] = finalId
                 if (inc.id != finalId) serverIdMap[inc.id] = finalId
+                val sameProxy = inc.proxy.type != ProxyType.NONE &&
+                    cur.proxy.type.equals(inc.proxy.type, ignoreCase = true) &&
+                    cur.proxy.host.trim().equals(inc.proxy.host.trim(), ignoreCase = true) &&
+                    cur.proxy.port == inc.proxy.port &&
+                    cur.proxy.username.trim() == inc.proxy.username.trim()
+                val sameCustomJump = inc.jumpHost.mode == JumpMode.CUSTOM &&
+                    cur.jumpHost.mode.equals(JumpMode.CUSTOM, ignoreCase = true) &&
+                    cur.jumpHost.host.trim().equals(inc.jumpHost.host.trim(), ignoreCase = true) &&
+                    cur.jumpHost.port == inc.jumpHost.port &&
+                    cur.jumpHost.username.trim() == inc.jumpHost.username.trim()
+                val mergedSshKeyId = if (inc.authType == AuthType.PASSWORD) {
+                    inc.sshKeyId
+                } else {
+                    inc.sshKeyId.ifBlank { cur.sshKeyId }
+                }
+                val mergedJumpKeyId = if (sameCustomJump && inc.jumpHost.authType != AuthType.PASSWORD) {
+                    inc.jumpHost.sshKeyId.ifBlank { cur.jumpHost.sshKeyId }
+                } else {
+                    inc.jumpHost.sshKeyId
+                }
                 outServers[idx] = inc.copy(
                     id = finalId,
                     password = inc.password.ifEmpty { cur.password },
-                    sshKeyId = inc.sshKeyId.ifBlank { cur.sshKeyId },
+                    sshKeyId = mergedSshKeyId,
                     proxy = inc.proxy.copy(
-                        password = inc.proxy.password.ifEmpty { cur.proxy.password }
+                        password = if (sameProxy) inc.proxy.password.ifEmpty { cur.proxy.password } else inc.proxy.password
                     ),
                     jumpHost = inc.jumpHost.copy(
-                        password = inc.jumpHost.password.ifEmpty { cur.jumpHost.password },
-                        sshKeyId = inc.jumpHost.sshKeyId.ifBlank { cur.jumpHost.sshKeyId }
+                        password = if (sameCustomJump) inc.jumpHost.password.ifEmpty { cur.jumpHost.password } else inc.jumpHost.password,
+                        sshKeyId = mergedJumpKeyId
                     ),
                     createdAt = cur.createdAt.ifBlank { inc.createdAt },
                     lastConnectedAt = cur.lastConnectedAt ?: inc.lastConnectedAt
@@ -196,15 +220,26 @@ object VaultSyncOps {
             }
         }
 
-        // 4. Merge templates (preserve local non-empty presetId)
+        // 4. Merge templates (custom templates can never match or overwrite built-in presets)
         val outTemplates = current.templates.toMutableList()
         var templatesAdded = 0
         var templatesUpdated = 0
         for (inc in cleanTemplates) {
-            val idx = outTemplates.indexOfFirst { cur ->
-                cur.id == inc.id ||
-                    (inc.presetId.isNotBlank() && cur.presetId == inc.presetId) ||
-                    cur.name == inc.name
+            var idx = -1
+            if (inc.presetId.isNotBlank()) {
+                idx = outTemplates.indexOfFirst { cur ->
+                    cur.presetId == inc.presetId || cur.id == inc.presetId
+                }
+            } else {
+                idx = outTemplates.indexOfFirst { cur ->
+                    cur.presetId.isBlank() && cur.id == inc.id
+                }
+                if (idx < 0) {
+                    val incName = inc.name.trim()
+                    idx = outTemplates.indexOfFirst { cur ->
+                        cur.presetId.isBlank() && cur.name.trim() == incName
+                    }
+                }
             }
             if (idx >= 0) {
                 val cur = outTemplates[idx]
@@ -214,7 +249,12 @@ object VaultSyncOps {
                 )
                 templatesUpdated++
             } else {
-                outTemplates.add(inc)
+                val safeInc = if (outTemplates.any { it.id == inc.id }) {
+                    inc.copy(id = UUID.randomUUID().toString())
+                } else {
+                    inc
+                }
+                outTemplates.add(safeInc)
                 templatesAdded++
             }
         }
@@ -324,6 +364,32 @@ object VaultSyncOps {
             createdAt = raw.createdAt.trim().ifBlank { now },
             updatedAt = raw.updatedAt.trim().ifBlank { now }
         )
+    }
+
+    private fun sanitizeTemplates(rawList: List<BuiltinTemplate>): List<BuiltinTemplate> {
+        val validPresets = validPresetIds
+        val seenPresets = HashSet<String>()
+        val out = ArrayList<BuiltinTemplate>(rawList.size)
+        for (raw in rawList) {
+            val clean = sanitizeTemplate(raw) ?: continue
+            val effectivePresetId = if (clean.presetId.isNotEmpty() &&
+                clean.presetId in validPresets &&
+                seenPresets.add(clean.presetId)
+            ) {
+                clean.presetId
+            } else {
+                ""
+            }
+            val effectiveId = if (effectivePresetId.isEmpty() && clean.id in validPresets) {
+                UUID.randomUUID().toString()
+            } else if (effectivePresetId.isNotEmpty()) {
+                effectivePresetId
+            } else {
+                clean.id
+            }
+            out.add(clean.copy(id = effectiveId, presetId = effectivePresetId))
+        }
+        return out
     }
 
     private fun sanitizeTemplate(raw: BuiltinTemplate): BuiltinTemplate? {
