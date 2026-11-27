@@ -406,4 +406,58 @@ class TerminalAndGuardTest {
         assertFalse(UpdateChecker.isTrustedApiRedirectUrl("https://user@api.github.com/repositories/12345/releases/latest"))
         assertFalse(UpdateChecker.isTrustedApiRedirectUrl("https://api.github.com:8443/repositories/12345/releases/latest"))
     }
+
+    @Test
+    fun mainScreenResetModesResetsMarginsAndCsiIntermediatesDoNotMisfire() {
+        val replies = mutableListOf<String>()
+        val buf = TerminalBuffer(40, 10)
+        val parser = AnsiParser(buf, onReply = { replies.add(it) })
+
+        // Main screen resetModes must reset scroll margins even when !isAltScreen
+        parser.feed("\u001B[2;6r")
+        assertFalse(buf.isAltScreen)
+        assertEquals(1, buf.topMargin)
+        assertEquals(5, buf.bottomMargin)
+        buf.resetModes()
+        assertEquals(0, buf.topMargin)
+        assertEquals(9, buf.bottomMargin)
+
+        // CSI intermediate bytes (SP q, SP @, SP A, SP m) & malformed CSI must not misfire
+        parser.feed("\u001B[1;1HABC\u001B[1;2H")
+        parser.feed("\u001B[2 q\u001B[5 @\u001B[5 A\u001B[31 m\u001B[1 2H\u001B[>0c")
+        parser.feed("X")
+        val snap = buf.snapshot()
+        assertEquals("AXC", buf.extractPlainText())
+        assertEquals(TerminalColors.DEFAULT_FG, snap.lines[0][1].fg)
+        assertTrue(replies.isEmpty())
+    }
+
+    @Test
+    fun localInputPreservesCommandsBeforeCrAndAutocompleteResetsOnMultiArrows() {
+        val recorded = mutableListOf<String>()
+        val ctrl = TerminalSessionController(
+            sessionId = "inp1",
+            initialCols = 40,
+            initialRows = 8,
+            keywordHighlightEnabled = { false },
+            onCommandCommitted = { recorded.add(it) }
+        )
+
+        ctrl.onLocalInput("ls")
+        ctrl.onLocalInput(" -la\r")
+        ctrl.onLocalInput("echo 1\r\necho 2\r secret")
+        ctrl.onLocalInput("\r")
+        ctrl.onLocalInput("\u001B[200~pwd\u001B[201~")
+        assertEquals("pwd", ctrl.currentInputLine.value)
+        ctrl.onLocalInput("\r")
+        assertEquals(listOf("ls -la", "echo 1", "echo 2", "pwd"), recorded)
+
+        // Multi-arrow, SS3, modified arrow, embedded ESC, and multi-line bracketed paste reset cleanly
+        assertEquals("", AutocompleteEngine.applyTerminalInputToLine("docker ps", "\u001B[D\u001B[D\u001B[D"))
+        assertEquals("", AutocompleteEngine.applyTerminalInputToLine("docker ps", "\u001BOA\u001BOA"))
+        assertEquals("", AutocompleteEngine.applyTerminalInputToLine("docker ps", "\u001B[1;5D"))
+        assertEquals("", AutocompleteEngine.applyTerminalInputToLine("abc", "def\u001B[D"))
+        assertEquals("cd /opt/app", AutocompleteEngine.applyTerminalInputToLine("cd ", "\u001B[200~/opt/app\u001B[201~"))
+        assertEquals("", AutocompleteEngine.applyTerminalInputToLine("cd ", "\u001B[200~a\nb\u001B[201~"))
+    }
 }
