@@ -177,6 +177,7 @@ class SshConnector(
         guard: ConnectCancellationGuard
     ): SSHClient {
         val targetHost = server.host.trim()
+        val cleanTargetHost = targetHost.removeSurrounding("[", "]")
         val proxy = server.proxy.takeIf { it.type != ProxyType.NONE && it.host.isNotBlank() && it.port > 0 }
         val client = buildClient(targetHost, server.port, timeoutMs, proxy, guard)
         guard.registerClient(client)
@@ -184,9 +185,9 @@ class SshConnector(
             if (guard.isCancelled()) throw CancellationException("连接已取消")
             if (proxy != null) {
                 // Skip local DNS resolution; ProxySocketFactory passes raw targetHost to the proxy
-                client.connect(InetAddress.getByAddress(targetHost, byteArrayOf(0, 0, 0, 0)), server.port)
+                client.connect(InetAddress.getByAddress(cleanTargetHost, byteArrayOf(0, 0, 0, 0)), server.port)
             } else {
-                client.connect(targetHost, server.port)
+                client.connect(cleanTargetHost, server.port)
             }
             if (guard.isCancelled()) throw CancellationException("连接已取消")
             SshAuthHelper.authenticate(client, server, allKeys)

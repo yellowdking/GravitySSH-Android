@@ -2,11 +2,15 @@ package com.gravityssh.app.ssh
 
 import com.gravityssh.app.model.RemoteFileContent
 import com.gravityssh.app.model.TransferProgress
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import net.schmizz.sshj.sftp.FileMode
 import net.schmizz.sshj.sftp.OpenMode
+import net.schmizz.sshj.sftp.RenameFlags
+import net.schmizz.sshj.sftp.SFTPClient
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -44,19 +48,77 @@ internal class SftpTransferOps(
         if (bytes.size > SftpService.MAX_EDITOR_BYTES) throw IOException("内容超过 1 MB 限制")
         sessionManager.withSftp(sessionId) { sftp ->
             val clean = SshPathUtils.normalizePosixPath(path)
-            sftp.open(clean, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
-                rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
-                    var off = 0
-                    while (off < bytes.size) {
-                        currentCoroutineContext().ensureActive()
-                        val chunk = minOf(IO_BUFFER_SIZE, bytes.size - off)
-                        out.write(bytes, off, chunk)
-                        off += chunk
+            val targetPath = resolveWriteTarget(sftp, clean)
+            val existingAttrs = runCatching { sftp.stat(targetPath) }.getOrNull()
+            val existingMode = existingAttrs?.mode?.mask?.and(0x1FF)?.takeIf { it != 0 }
+            val tmpPath = buildAtomicTempPath(targetPath, UUID.randomUUID().toString().replace("-", "").take(12))
+
+            var tempCreated = false
+            val tempWriteDone = try {
+                sftp.open(tmpPath, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.EXCL)).use { rf ->
+                    tempCreated = true
+                    rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
+                        writeAllBytes(out, bytes)
                     }
-                    out.flush()
                 }
+                true
+            } catch (e: CancellationException) {
+                if (tempCreated) runCatching { sftp.rm(tmpPath) }
+                throw e
+            } catch (e: Exception) {
+                if (tempCreated) {
+                    runCatching { sftp.rm(tmpPath) }
+                    throw e
+                }
+                // Parent directory might be non-writable even though target file is writable; allow direct fallback.
+                false
+            }
+
+            if (!tempWriteDone) {
+                writeBytesDirect(sftp, targetPath, bytes)
+                return@withSftp
+            }
+
+            if (existingMode != null) {
+                runCatching { sftp.chmod(tmpPath, existingMode) }
+            }
+
+            val renamed = runCatching {
+                sftp.rename(tmpPath, targetPath, EnumSet.of(RenameFlags.OVERWRITE))
+            }.isSuccess || (existingAttrs == null && runCatching {
+                sftp.rename(tmpPath, targetPath)
+            }.isSuccess)
+
+            if (!renamed) {
+                runCatching { sftp.rm(tmpPath) }
+                writeBytesDirect(sftp, targetPath, bytes)
             }
         }
+    }
+
+    private fun resolveWriteTarget(sftp: SFTPClient, cleanPath: String): String {
+        val isSymlink = runCatching { sftp.lstat(cleanPath).type == FileMode.Type.SYMLINK }.getOrDefault(false)
+        if (!isSymlink) return cleanPath
+        return runCatching { SshPathUtils.normalizePosixPath(sftp.canonicalize(cleanPath)) }.getOrDefault(cleanPath)
+    }
+
+    private suspend fun writeBytesDirect(sftp: SFTPClient, targetPath: String, bytes: ByteArray) {
+        sftp.open(targetPath, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
+            rf.RemoteFileOutputStream(0L, MAX_UNCONFIRMED).use { out ->
+                writeAllBytes(out, bytes)
+            }
+        }
+    }
+
+    private suspend fun writeAllBytes(out: OutputStream, bytes: ByteArray) {
+        var off = 0
+        while (off < bytes.size) {
+            currentCoroutineContext().ensureActive()
+            val chunk = minOf(IO_BUFFER_SIZE, bytes.size - off)
+            out.write(bytes, off, chunk)
+            off += chunk
+        }
+        out.flush()
     }
 
     suspend fun uploadStream(
@@ -96,7 +158,7 @@ internal class SftpTransferOps(
                 }
             }
             output.flush()
-            emitter.emitDone(readTotal, totalOverride = if (total >= 0L) total else readTotal)
+            emitter.emitDone(readTotal, totalOverride = resolveEffectiveTotal(total, readTotal))
         }
     }
 
@@ -139,13 +201,14 @@ internal class SftpTransferOps(
 
         fun maybeEmit(transferred: Long) {
             val pct = if (totalBytes > 0) ((transferred * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
+            val reportedTotal = if (totalBytes >= 0L) totalBytes else transferred
             val now = System.currentTimeMillis()
             if (now - lastEmitMs >= PROGRESS_MIN_INTERVAL_MS ||
                 (totalBytes > 0 && pct - lastEmitPct >= PROGRESS_MIN_PCT_DELTA)
             ) {
                 lastEmitMs = now
                 lastEmitPct = pct
-                onProgress(TransferProgress(tid, sessionId, direction, fileName, remotePath, transferred, totalBytes, pct, "running"))
+                onProgress(TransferProgress(tid, sessionId, direction, fileName, remotePath, transferred, reportedTotal, pct, "running"))
             }
         }
 
@@ -159,5 +222,14 @@ internal class SftpTransferOps(
         private const val IO_BUFFER_SIZE = 64 * 1024
         private const val PROGRESS_MIN_INTERVAL_MS = 100L
         private const val PROGRESS_MIN_PCT_DELTA = 2
+
+        internal fun buildAtomicTempPath(targetPath: String, suffix: String): String {
+            val parent = SshPathUtils.parentDir(targetPath)
+            val tmpName = ".gssh-tmp-$suffix"
+            return if (parent == "/") "/$tmpName" else "$parent/$tmpName"
+        }
+
+        internal fun resolveEffectiveTotal(statTotal: Long, readTotal: Long): Long =
+            if (statTotal > 0L) maxOf(statTotal, readTotal) else readTotal
     }
 }
