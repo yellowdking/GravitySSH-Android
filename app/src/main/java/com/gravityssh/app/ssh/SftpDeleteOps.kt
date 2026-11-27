@@ -1,30 +1,36 @@
 package com.gravityssh.app.ssh
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import net.schmizz.sshj.sftp.FileMode
 import net.schmizz.sshj.sftp.SFTPClient
-import java.util.concurrent.TimeUnit
 
 internal object SftpDeleteOps {
 
-    fun deleteFastOrRecursive(sessionManager: SshSessionManager, sessionId: String, target: String) {
+    suspend fun deleteFastOrRecursive(sessionManager: SshSessionManager, sessionId: String, target: String) {
+        val fastOk = try {
+            deleteViaSshFastPath(sessionManager, sessionId, target)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+        if (fastOk) return
         val sftp = sessionManager.requireSftp(sessionId)
-        val fastOk = runCatching { deleteViaSshFastPath(sessionManager, sessionId, target) }.getOrDefault(false)
-        if (fastOk && runCatching { sftp.lstat(target); true }.getOrDefault(false).not()) return
         deleteRecursiveSftp(sftp, target)
     }
 
-    private fun deleteViaSshFastPath(sessionManager: SshSessionManager, sessionId: String, target: String): Boolean {
+    private suspend fun deleteViaSshFastPath(sessionManager: SshSessionManager, sessionId: String, target: String): Boolean {
         val client = sessionManager.requireClient(sessionId)
-        val q = SftpService.shellQuote(target)
+        val q = SshPathUtils.shellQuote(target)
         val cmd = "sh -c 'if [ -e \"${'$'}1\" ] || [ -L \"${'$'}1\" ]; then rm -rf -- \"${'$'}1\" && [ ! -e \"${'$'}1\" ] && [ ! -L \"${'$'}1\" ]; else exit 44; fi' _ $q"
-        client.startSession().use { sess ->
-            val exec = sess.exec(cmd)
-            exec.join(20, TimeUnit.SECONDS)
-            return exec.exitStatus == 0
-        }
+        val res = SshExecHelper.execCommand(client, cmd, timeoutSec = 20L)
+        return res.exitCode == 0
     }
 
-    private fun deleteRecursiveSftp(sftp: SFTPClient, target: String) {
+    private suspend fun deleteRecursiveSftp(sftp: SFTPClient, target: String) {
+        currentCoroutineContext().ensureActive()
         val attrs = runCatching { sftp.lstat(target) }.getOrNull() ?: return
         if (attrs.type == FileMode.Type.DIRECTORY) {
             runCatching { sftp.chmod(target, 0x1ED) }
@@ -37,21 +43,7 @@ internal object SftpDeleteOps {
         }
     }
 
-    fun resolvePath(sftp: SFTPClient, raw: String): String {
-        val t = raw.trim()
-        if (t.isEmpty() || t == "~") return runCatching { sftp.canonicalize(".") }.getOrDefault("/")
-        if (t.startsWith("~/")) {
-            val home = runCatching { sftp.canonicalize(".") }.getOrDefault("/")
-            return SftpService.cleanPath("${home.trimEnd('/')}/${t.removePrefix("~/")}")
-        }
-        return SftpService.cleanPath(t)
-    }
+    fun resolvePath(sftp: SFTPClient, raw: String): String = SshPathUtils.resolvePath(sftp, raw)
 
-    fun formatPermissions(mask: Int): String {
-        val perm = mask and 0x1FF
-        val chars = charArrayOf('r', 'w', 'x')
-        val sb = StringBuilder(9)
-        for (i in 8 downTo 0) sb.append(if ((perm and (1 shl i)) != 0) chars[(8 - i) % 3] else '-')
-        return sb.toString()
-    }
+    fun formatPermissions(mask: Int): String = SshPathUtils.formatPermissions(mask)
 }

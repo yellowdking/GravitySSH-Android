@@ -41,13 +41,18 @@ private class ProxyTunnelSocket(
     override fun connect(endpoint: SocketAddress, timeout: Int) {
         val target = endpoint as? InetSocketAddress ?: throw IOException("Unsupported endpoint address")
         val effTimeout = if (timeout > 0) timeout else defaultTimeoutMs
-        super.connect(InetSocketAddress(proxy.host.trim(), proxy.port), effTimeout)
-        soTimeout = effTimeout
-        when (proxy.type.lowercase()) {
-            ProxyType.SOCKS5 -> ProxyHandshakes.socks5(getInputStream(), getOutputStream(), proxy, target.hostString, target.port)
-            ProxyType.HTTP -> ProxyHandshakes.httpConnect(getInputStream(), getOutputStream(), proxy, target.hostString, target.port)
-            else -> throw IOException("不支持的代理类型: ${proxy.type}")
+        try {
+            super.connect(InetSocketAddress(proxy.host.trim(), proxy.port), effTimeout)
+            soTimeout = effTimeout
+            when (proxy.type.lowercase()) {
+                ProxyType.SOCKS5 -> ProxyHandshakes.socks5(getInputStream(), getOutputStream(), proxy, target.hostString, target.port)
+                ProxyType.HTTP -> ProxyHandshakes.httpConnect(getInputStream(), getOutputStream(), proxy, target.hostString, target.port)
+                else -> throw IOException("不支持的代理类型: ${proxy.type}")
+            }
+            soTimeout = 0
+        } catch (e: Exception) {
+            runCatching { close() }
+            throw e
         }
-        soTimeout = 0
     }
 }

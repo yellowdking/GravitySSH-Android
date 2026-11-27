@@ -78,18 +78,22 @@ object SshKeyGenerator {
         val trimmedPem = privateKeyPem.trim()
         require(trimmedPem.isNotEmpty()) { "私钥内容不能为空" }
         val finder = if (passphrase.isNotEmpty()) PasswordUtils.createOneOff(passphrase.toCharArray()) else null
-        val ssh = SSHClient()
-        val provider = ssh.loadKeys(trimmedPem, null, finder)
-        val pubKey: PublicKey = provider.public
+        val pubKey: PublicKey = SSHClient().use { ssh ->
+            val provider = ssh.loadKeys(trimmedPem, null, finder)
+            provider.public
+        }
         val pubBlob = Buffer.PlainBuffer().putPublicKey(pubKey).compactData
-        val algoName = sshAlgoName(pubKey.algorithm)
+        val algoName = runCatching { Buffer.PlainBuffer(pubBlob).readString() }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: sshAlgoName(pubKey.algorithm)
         val pubB64 = Base64.getEncoder().encodeToString(pubBlob)
         val suffix = if (comment.isNotBlank()) " ${comment.trim()}" else ""
 
         return SSHKeyRecord(
             id = UUID.randomUUID().toString(),
             name = name.trim().ifBlank { "Imported Key" },
-            keyType = normalizeKeyType(pubKey.algorithm),
+            keyType = normalizeKeyType(algoName),
             fingerprint = sha256Fingerprint(pubBlob),
             publicKey = "$algoName $pubB64$suffix",
             privateKeyPem = trimmedPem,

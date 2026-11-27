@@ -6,6 +6,7 @@ import com.gravityssh.app.terminal.TerminalSessionController
 import com.gravityssh.app.vault.VaultRepository
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.withLock
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.sftp.SFTPClient
 import java.io.IOException
@@ -35,12 +36,13 @@ class SshSessionManager(
         val sid = UUID.randomUUID().toString()
         val ctrl = ManagedSession.createController(sid, server, cols, rows, vaultRepository, { id -> _tabs.value.find { it.sessionId == id } }, ::updateTab)
         val m = ManagedSession(sid, server, ctrl, cols, rows)
+        val gen = m.generation.incrementAndGet()
         sessions[sid] = m
         val tab = SessionTab(sid, server.id, server.name.ifBlank { server.host }, server.host, server.port, server.username, SessionStatus.CONNECTING)
         _tabs.update { it + tab }
         _activeSessionId.value = sid
         syncKeepAlive()
-        worker.startConnect(m)
+        worker.startConnect(m, gen, closePreviousFirst = false)
         return sid
     }
 
@@ -48,25 +50,46 @@ class SshSessionManager(
         val m = sessions[sessionId] ?: return
         invalidateDirCache(sessionId)
         vaultRepository.state.value.data.servers.find { it.id == m.server.id }?.let { m.server = it }
-        m.closeResources(); m.closed = false
+        val gen = m.generation.incrementAndGet()
+        m.cancelJobs(includeConnect = true)
         m.terminal.onRemoteOutput("\r\n\u001B[36m[GravitySSH] 正在重新连接...\u001B[0m\r\n")
         updateTab(sessionId) { it.copy(status = SessionStatus.CONNECTING, sftpReady = false, error = null) }
-        worker.startConnect(m)
+        syncKeepAlive()
+        worker.startConnect(m, gen, closePreviousFirst = true)
     }
 
     fun closeSession(sessionId: String) {
-        invalidateDirCache(sessionId)
-        sessions.remove(sessionId)?.let { m -> m.closed = true; scope.launch { m.closeResources() } }
-        _tabs.update { it.filterNot { t -> t.sessionId == sessionId } }
-        if (_activeSessionId.value == sessionId) _activeSessionId.value = _tabs.value.lastOrNull()?.sessionId
+        closeSessionInternal(sessionId, updateKeepAlive = true)
+    }
+
+    fun closeAllSessions() {
+        val ids = sessions.keys.toList()
+        for (id in ids) {
+            closeSessionInternal(id, updateKeepAlive = false)
+        }
         syncKeepAlive()
     }
 
-    fun closeAllSessions() = sessions.keys.toList().forEach { closeSession(it) }
+    private fun closeSessionInternal(sessionId: String, updateKeepAlive: Boolean) {
+        invalidateDirCache(sessionId)
+        sessions.remove(sessionId)?.let { m ->
+            m.closed = true
+            m.generation.incrementAndGet()
+            m.cancelJobs(includeConnect = true)
+            scope.launch {
+                m.lifecycleMutex.withLock {
+                    m.closeResources()
+                }
+            }
+        }
+        _tabs.update { it.filterNot { t -> t.sessionId == sessionId } }
+        if (_activeSessionId.value == sessionId) _activeSessionId.value = _tabs.value.lastOrNull()?.sessionId
+        if (updateKeepAlive) syncKeepAlive()
+    }
 
     fun sendInput(sessionId: String, text: String) {
         if (text.contains('\r') || text.contains('\n')) invalidateDirCache(sessionId)
-        sessions[sessionId]?.sendRaw(scope, text)
+        sessions[sessionId]?.sendRaw(text)
     }
 
     fun runScript(sessionId: String, script: String, autoExecute: Boolean = true) {
@@ -76,12 +99,15 @@ class SshSessionManager(
 
     fun invalidateDirCache(sessionId: String) = dirCache.invalidateSession(sessionId)
 
+    internal fun invalidateDirCache(sessionId: String, dirPath: String) = dirCache.invalidateDir(sessionId, dirPath)
+
     fun peekCachedDirEntries(sessionId: String, dirPath: String, showHidden: Boolean = true): List<SFTPFileEntry> =
         dirCache.peekCached(sessionId, dirPath, homeOf(sessionId), showHidden).orEmpty()
 
     suspend fun listDirForAutocomplete(sessionId: String, dirPath: String, showHidden: Boolean = true): List<SFTPFileEntry> =
         dirCache.listDir(sessionId, dirPath, homeOf(sessionId), showHidden) {
-            if (sessions[sessionId]?.conn?.client == null) null else requireSftp(sessionId)
+            val client = sessions[sessionId]?.conn?.client
+            if (client == null || !client.isConnected) null else requireSftp(sessionId)
         }
 
     fun resizeSession(sessionId: String, cols: Int, rows: Int) {
@@ -96,13 +122,30 @@ class SshSessionManager(
     suspend fun testConnection(server: ServerConfig): Result<String> =
         vaultRepository.state.value.data.let { connector.testConnection(server, it.servers, it.sshKeys) }
 
-    internal fun requireClient(sessionId: String): SSHClient =
-        sessions[sessionId]?.conn?.client ?: throw IOException("SSH 会话未连接")
+    internal fun requireClient(sessionId: String): SSHClient {
+        val client = sessions[sessionId]?.conn?.client
+        if (client == null || !client.isConnected) throw IOException("SSH 会话未连接")
+        return client
+    }
 
     internal fun requireSftp(sessionId: String): SFTPClient {
         val m = sessions[sessionId] ?: throw IOException("会话不存在")
-        return m.sftpClient ?: requireClient(sessionId).newSFTPClient().also {
-            m.sftpClient = it; updateTab(sessionId) { t -> t.copy(sftpReady = true) }
+        return synchronized(m.sftpLock) {
+            val client = m.conn?.client
+            if (client == null || !client.isConnected) {
+                runCatching { m.sftpClient?.close() }
+                m.sftpClient = null
+                throw IOException("SSH 会话未连接")
+            }
+            val existing = m.sftpClient
+            if (existing != null) {
+                existing
+            } else {
+                client.newSFTPClient().also {
+                    m.sftpClient = it
+                    updateTab(sessionId) { t -> t.copy(sftpReady = true) }
+                }
+            }
         }
     }
 

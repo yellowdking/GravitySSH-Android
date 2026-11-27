@@ -8,7 +8,10 @@ import java.util.Base64
 
 internal object ProxyHandshakes {
 
+    private val HTTP_OK_RE = Regex("^HTTP/1\\.[01]\\s+200(?:\\s.*)?$")
+
     fun socks5(input: InputStream, out: OutputStream, proxy: ProxyConfig, targetHost: String, targetPort: Int) {
+        val cleanHost = sanitizeTargetHost(targetHost).removeSurrounding("[", "]")
         val hasAuth = proxy.username.isNotEmpty() || proxy.password.isNotEmpty()
         out.write(if (hasAuth) byteArrayOf(0x05, 0x02, 0x00, 0x02) else byteArrayOf(0x05, 0x01, 0x00))
         out.flush()
@@ -34,7 +37,7 @@ internal object ProxyHandshakes {
             else -> throw IOException("SOCKS5 代理拒绝认证方式")
         }
 
-        val hostBytes = targetHost.toByteArray(Charsets.UTF_8)
+        val hostBytes = cleanHost.toByteArray(Charsets.UTF_8)
         if (hostBytes.size > 255) throw IOException("目标主机名过长")
         val req = ByteArray(7 + hostBytes.size)
         req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x03; req[4] = hostBytes.size.toByte()
@@ -56,7 +59,12 @@ internal object ProxyHandshakes {
     }
 
     fun httpConnect(input: InputStream, out: OutputStream, proxy: ProxyConfig, targetHost: String, targetPort: Int) {
-        val hostHeader = if (targetHost.contains(':')) "[$targetHost]:$targetPort" else "$targetHost:$targetPort"
+        val cleanHost = sanitizeTargetHost(targetHost)
+        val hostHeader = if (cleanHost.contains(':') && !(cleanHost.startsWith('[') && cleanHost.endsWith(']'))) {
+            "[$cleanHost]:$targetPort"
+        } else {
+            "$cleanHost:$targetPort"
+        }
         val sb = StringBuilder()
             .append("CONNECT $hostHeader HTTP/1.1\r\n")
             .append("Host: $hostHeader\r\n")
@@ -70,10 +78,18 @@ internal object ProxyHandshakes {
         out.flush()
 
         val statusLine = readAsciiLine(input)
-        if (!statusLine.startsWith("HTTP/") || !statusLine.contains(" 200")) {
+        if (!HTTP_OK_RE.matches(statusLine)) {
             throw IOException("HTTP 代理连接失败: $statusLine")
         }
         while (readAsciiLine(input).isNotEmpty()) { /* consume headers */ }
+    }
+
+    private fun sanitizeTargetHost(targetHost: String): String {
+        val trimmed = targetHost.trim()
+        if (trimmed.isEmpty() || trimmed.any { it == '\r' || it == '\n' || it.isWhitespace() || it.code < 0x20 }) {
+            throw IOException("无效的目标主机名")
+        }
+        return trimmed
     }
 
     private fun readExact(input: InputStream, len: Int): ByteArray {
