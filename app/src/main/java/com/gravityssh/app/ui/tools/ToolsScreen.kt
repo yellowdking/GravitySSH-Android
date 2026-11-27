@@ -15,12 +15,21 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.model.BuiltinTemplate
 import com.gravityssh.app.model.CommandShortcut
+import com.gravityssh.app.model.isSshPortTemplate
 import com.gravityssh.app.ui.*
+import com.gravityssh.app.ui.components.AgCommandConfirmDialog
 import com.gravityssh.app.ui.components.AgConfirmDialog
 import com.gravityssh.app.ui.components.AgEmptyState
 import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
+
+private data class PendingToolCommand(
+    val title: String,
+    val command: String,
+    val safetyNote: String = "",
+    val requiresSshPort: Boolean = false
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +46,7 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
     var deletingShortcut by remember { mutableStateOf<CommandShortcut?>(null) }
     var deletingTemplate by remember { mutableStateOf<BuiltinTemplate?>(null) }
     var confirmClearHistory by remember { mutableStateOf(false) }
+    var pendingCommand by remember { mutableStateOf<PendingToolCommand?>(null) }
 
     val q = remember(search) { search.trim().lowercase() }
     val filteredShortcuts = remember(shortcuts, q) {
@@ -69,6 +79,14 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
         else viewModel.showToast("请先连接一台 SSH 主机再执行命令")
     }
 
+    fun requestConfirmRun(pending: PendingToolCommand) {
+        if (viewModel.activeSessionId.value == null) {
+            viewModel.showToast("请先连接一台 SSH 主机再执行命令")
+            return
+        }
+        pendingCommand = pending
+    }
+
     Scaffold(
         containerColor = AgBg,
         topBar = {
@@ -95,7 +113,7 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
             )
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
             TabRow(selectedTabIndex = tabIndex, containerColor = AgSurface, contentColor = AgAccent) {
                 listOf("快捷命令(${shortcuts.size})", "运维模板(${templates.size})", "历史(${history.size})").forEachIndexed { idx, t ->
                     Tab(selected = tabIndex == idx, onClick = { tabIndex = idx }, text = { Text(t, color = if (tabIndex == idx) AgText else AgMuted, fontSize = 12.sp) })
@@ -147,15 +165,54 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: (
                             }, { editingShortcut = sc }, { deletingShortcut = sc })
                         }
                         1 -> items(filteredTemplates, key = { it.id }) { tpl ->
-                            TemplateItemCard(tpl, { execOrWarn(tpl.command) }, { editingTemplate = tpl }, { deletingTemplate = tpl })
+                            TemplateItemCard(
+                                tpl = tpl,
+                                onRun = {
+                                    requestConfirmRun(
+                                        PendingToolCommand(
+                                            title = "确认执行模板：${tpl.name}",
+                                            command = tpl.command,
+                                            safetyNote = tpl.safetyNote,
+                                            requiresSshPort = isSshPortTemplate(tpl)
+                                        )
+                                    )
+                                },
+                                onEdit = { editingTemplate = tpl },
+                                onDelete = { deletingTemplate = tpl }
+                            )
                         }
                         else -> items(filteredHistory, key = { it.id }) { rec ->
-                            HistoryItemCard(rec, { editingShortcut = CommandShortcut(name = rec.command.take(24), command = rec.command, autoExecute = true) }, { execOrWarn(rec.command) })
+                            HistoryItemCard(
+                                rec = rec,
+                                onStar = { editingShortcut = CommandShortcut(name = rec.command.take(24), command = rec.command, autoExecute = true) },
+                                onRun = {
+                                    requestConfirmRun(
+                                        PendingToolCommand(
+                                            title = "确认执行历史命令",
+                                            command = rec.command
+                                        )
+                                    )
+                                }
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    pendingCommand?.let { pending ->
+        AgCommandConfirmDialog(
+            title = pending.title,
+            command = pending.command,
+            safetyNote = pending.safetyNote,
+            requiresSshPort = pending.requiresSshPort,
+            onConfirm = { resolved ->
+                pendingCommand = null
+                execOrWarn(resolved, true)
+            },
+            onDismiss = { pendingCommand = null }
+        )
     }
 
     editingShortcut?.let { ShortcutEditorDialog(it, { s -> viewModel.saveShortcut(s); editingShortcut = null }, { editingShortcut = null }) }

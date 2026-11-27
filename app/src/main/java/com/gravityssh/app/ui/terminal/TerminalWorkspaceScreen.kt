@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.compose.collectAsStateWithLifecycle as collectState
 import com.gravityssh.app.model.*
@@ -55,18 +58,25 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     }.collectState(initialValue = null)
 
     val clip = LocalClipboardManager.current
+    val density = LocalDensity.current
+    val imeInsets = WindowInsets.ime
+    val imeVisible by remember(density, imeInsets) {
+        derivedStateOf { imeInsets.getBottom(density) > 0 }
+    }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val imeFocusRequester = remember { FocusRequester() }
     val mgr = vm.container.sshSessionManager
 
+    val sid = tab?.sessionId
     var fSp by remember(cfg.terminalFontSize) { mutableFloatStateOf(cfg.terminalFontSize.toFloat()) }
-    var cOn by remember { mutableStateOf(false) }
-    var aOn by remember { mutableStateOf(false) }
+    var cOn by remember(sid) { mutableStateOf(false) }
+    var aOn by remember(sid) { mutableStateOf(false) }
     var mk by remember { mutableStateOf(false) }
     var sr by remember { mutableStateOf(false) }
     var sq by remember { mutableStateOf("") }
     var sf by remember { mutableStateOf(false) }
     var dt by remember { mutableStateOf<Int?>(null) }
     var ps by remember { mutableStateOf<Pair<String, PasteInspection>?>(null) }
-    val sid = tab?.sessionId
     var sel by remember(sid) { mutableStateOf<TextSelection?>(null) }
     var off by remember(sid) { mutableIntStateOf(0) }
     var dis by remember(sid) { mutableStateOf<String?>(null) }
@@ -111,6 +121,37 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
         mgr.sendInput(activeSid, t)
     }
 
+    fun sendWithModifiers(raw: String) {
+        val out = applyTerminalModifiers(raw, cOn, aOn)
+        cOn = false
+        aOn = false
+        off = 0
+        send(out)
+    }
+
+    fun sendArrowWithModifiers(dir: CursorDir, hwCtrl: Boolean = false, hwAlt: Boolean = false) {
+        val useCtrl = hwCtrl || cOn
+        val useAlt = hwAlt || aOn
+        cOn = false
+        aOn = false
+        off = 0
+        sel = null
+        if (useCtrl || useAlt) {
+            send(applyArrowModifiers(dir, useCtrl, useAlt))
+        } else {
+            ctrl.sendArrow(dir, 1)
+        }
+    }
+
+    fun toggleKeyboard() {
+        if (imeVisible) {
+            keyboard?.hide()
+        } else {
+            runCatching { imeFocusRequester.requestFocus() }
+            keyboard?.show()
+        }
+    }
+
     fun deliverPaste(t: String) = send(formatPastePayload(t, bk))
     val onPickSuggestion = remember(activeSid, ln, mgr) {
         { item: CompletionItem ->
@@ -139,11 +180,28 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     Column(Modifier.fillMaxSize().background(AgBg).imePadding()) {
         SessionTabsStripObserver(vm, activeSid, mgr::selectSession, mgr::closeSession)
         TerminalToolbarRow(
-            activeTab.viaSummary, sr, tm, ts, alt, vm::cycleTouchCursorMode, vm::cycleTouchCursorSensitivity,
-            { sf = true }, { dt = 0 }, { dt = 2 },
-            { requestClipboardPaste(clip.getText()?.text.orEmpty(), cfg.pasteGuardEnabled, bk, vm::showToast, ::deliverPaste) { r, i -> ps = r to i } },
-            { sr = !sr; if (!sr) sq = "" }, { mgr.reconnectSession(activeSid) },
-            mk, cOn, aOn, { mk = !mk }, { cOn = !cOn }, { aOn = !aOn }, { off = 0; send(it) }
+            viaSummary = activeTab.viaSummary,
+            showSearch = sr,
+            touchMode = tm,
+            touchSensitivity = ts,
+            isAltScreen = alt,
+            imeVisible = imeVisible,
+            onToggleKeyboard = ::toggleKeyboard,
+            onCycleTouchMode = vm::cycleTouchCursorMode,
+            onCycleTouchSensitivity = vm::cycleTouchCursorSensitivity,
+            onOpenSftp = { sf = true },
+            onOpenShortcuts = { dt = 0 },
+            onOpenHistory = { dt = 2 },
+            onPaste = { requestClipboardPaste(clip.getText()?.text.orEmpty(), cfg.pasteGuardEnabled, bk, vm::showToast, ::deliverPaste) { r, i -> ps = r to i } },
+            onToggleSearch = { sr = !sr; if (!sr) sq = "" },
+            onReconnect = { mgr.reconnectSession(activeSid) },
+            showMoreKeys = mk,
+            ctrlActive = cOn,
+            altActive = aOn,
+            onToggleMoreKeys = { mk = !mk },
+            onToggleCtrl = { cOn = !cOn },
+            onToggleAlt = { aOn = !aOn },
+            onSendSequence = { sendWithModifiers(it) }
         )
         if (sr) TerminalSearchStrip(sq) { sq = it }
         MonitorBarObserver(vm, activeSid, cfg.monitorBarEnabled)
@@ -164,20 +222,26 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
                 if (sz != cfg.terminalFontSize) vm.updateSettings { it.copy(terminalFontSize = sz) }
             },
             onResize = { c, r -> mgr.resizeSession(activeSid, c, r) },
-            onImeInput = { raw -> val o = applyTerminalModifiers(raw, cOn, aOn); cOn = false; aOn = false; off = 0; send(o) },
+            onImeInput = { raw -> sendWithModifiers(raw) },
+            onHardwareArrow = { d, hwCtrl, hwAlt -> sendArrowWithModifiers(d, hwCtrl, hwAlt) },
+            imeFocusRequester = imeFocusRequester,
             onSelectionChange = { sel = it },
             onCopySelection = { t -> if (t.isNotEmpty()) { clip.setText(AnnotatedString(t)); vm.showToast("已复制") } else vm.showToast("选中内容为空") },
             modifier = Modifier.weight(1f)
         )
         TerminalBottomAccessory(
-            alt, nn, { d -> off = 0; sel = null; ctrl.sendArrow(d, 1) },
-            { ch -> off = 0; send((ch.uppercaseChar().code - 64).toChar().toString()) }, { off = 0; send(it) }
+            isAltScreen = alt,
+            isNano = nn,
+            onSendArrow = { d -> sendArrowWithModifiers(d) },
+            onSendControl = { ch -> cOn = false; aOn = false; off = 0; send((ch.uppercaseChar().code - 64).toChar().toString()) },
+            onSendSequence = { sendWithModifiers(it) }
         )
     }
 
     TerminalOverlays(
         viewModel = vm,
         activeSessionId = activeSid,
+        bracketedPaste = bk,
         showSftp = sf,
         quickDrawerTab = dt,
         pendingPaste = ps,

@@ -17,8 +17,14 @@ import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.sftp.SftpSheet
 import com.gravityssh.app.ui.theme.*
 
+private val BRACKETED_PASTE_SEQ_RE = Regex("(?:\\u001B\\[|\\u009B)20[01]~")
+
 internal fun formatPastePayload(text: String, bracketedPaste: Boolean): String {
-    val clean = PasteGuard.sanitizePasteText(text)
+    var clean = PasteGuard.sanitizePasteText(text)
+    // Defense-in-depth loop-strip against nested ESC/C1 bracketed-paste breakout payloads
+    while (BRACKETED_PASTE_SEQ_RE.containsMatchIn(clean)) {
+        clean = clean.replace(BRACKETED_PASTE_SEQ_RE, "")
+    }
     return if (bracketedPaste) "\u001B[200~$clean\u001B[201~" else clean.replace("\n", "\r")
 }
 
@@ -71,6 +77,7 @@ internal fun TerminalBottomAccessory(
 internal fun TerminalOverlays(
     viewModel: AppViewModel,
     activeSessionId: String,
+    bracketedPaste: Boolean,
     showSftp: Boolean,
     quickDrawerTab: Int?,
     pendingPaste: Pair<String, PasteInspection>?,
@@ -92,5 +99,13 @@ internal fun TerminalOverlays(
         val vaultData = vaultState.data
         TerminalQuickDrawer(startTab, vaultData.shortcuts, vaultData.templates, vaultData.history, onRunScript, onDismissDrawer)
     }
-    pendingPaste?.let { (raw, insp) -> PasteGuardDialog(raw, insp, onConfirmPaste, onDismissPaste) }
+    pendingPaste?.let { (raw, insp) ->
+        PasteGuardDialog(
+            rawText = raw,
+            inspection = insp,
+            bracketedPaste = bracketedPaste,
+            onConfirmPaste = onConfirmPaste,
+            onDismiss = onDismissPaste
+        )
+    }
 }

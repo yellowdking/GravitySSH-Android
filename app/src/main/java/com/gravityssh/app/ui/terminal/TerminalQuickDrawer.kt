@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -31,6 +32,8 @@ import androidx.compose.ui.unit.sp
 import com.gravityssh.app.model.BuiltinTemplate
 import com.gravityssh.app.model.CommandRecord
 import com.gravityssh.app.model.CommandShortcut
+import com.gravityssh.app.model.isSshPortTemplate
+import com.gravityssh.app.ui.components.AgCommandConfirmDialog
 import com.gravityssh.app.ui.theme.AgAccent
 import com.gravityssh.app.ui.theme.AgBorder
 import com.gravityssh.app.ui.theme.AgCyan
@@ -39,6 +42,13 @@ import com.gravityssh.app.ui.theme.AgMuted
 import com.gravityssh.app.ui.theme.AgPanel
 import com.gravityssh.app.ui.theme.AgText
 import com.gravityssh.app.ui.theme.MonoFontFamily
+
+private data class PendingDrawerCommand(
+    val title: String,
+    val command: String,
+    val safetyNote: String = "",
+    val requiresSshPort: Boolean = false
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,6 +61,7 @@ fun TerminalQuickDrawer(
     onDismiss: () -> Unit
 ) {
     var tabIndex by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 2)) }
+    var pendingCommand by remember { mutableStateOf<PendingDrawerCommand?>(null) }
     val titles = listOf("快捷命令", "运维模板", "命令历史")
 
     ModalBottomSheet(
@@ -85,21 +96,47 @@ fun TerminalQuickDrawer(
                             title = tpl.name,
                             subtitle = tpl.description.ifBlank { tpl.command },
                             badge = tpl.category,
-                            onClick = { onRunCommand(tpl.command, true) }
+                            onClick = {
+                                pendingCommand = PendingDrawerCommand(
+                                    title = "确认执行模板：${tpl.name}",
+                                    command = tpl.command,
+                                    safetyNote = tpl.safetyNote,
+                                    requiresSshPort = isSshPortTemplate(tpl)
+                                )
+                            }
                         )
                     }
                     else -> items(history.take(80), key = { it.id }) { rec ->
                         QuickCmdRow(
                             title = rec.command,
                             subtitle = rec.serverName,
-                            badge = "执行",
+                            badge = "预览执行",
                             monoTitle = true,
-                            onClick = { onRunCommand(rec.command, true) }
+                            onClick = {
+                                pendingCommand = PendingDrawerCommand(
+                                    title = "确认执行历史命令",
+                                    command = rec.command
+                                )
+                            }
                         )
                     }
                 }
             }
         }
+    }
+
+    pendingCommand?.let { pending ->
+        AgCommandConfirmDialog(
+            title = pending.title,
+            command = pending.command,
+            safetyNote = pending.safetyNote,
+            requiresSshPort = pending.requiresSshPort,
+            onConfirm = { resolved ->
+                pendingCommand = null
+                onRunCommand(resolved, true)
+            },
+            onDismiss = { pendingCommand = null }
+        )
     }
 }
 

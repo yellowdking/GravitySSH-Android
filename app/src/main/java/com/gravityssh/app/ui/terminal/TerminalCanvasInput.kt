@@ -1,5 +1,6 @@
 package com.gravityssh.app.ui.terminal
 
+import android.view.KeyEvent as NativeKeyEvent
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -11,6 +12,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -117,14 +125,27 @@ internal class TerminalTouchState(
 }
 
 @Composable
-internal fun TerminalImeSink(focusRequester: FocusRequester, onImeInput: (String) -> Unit) {
+internal fun TerminalImeSink(
+    focusRequester: FocusRequester,
+    onImeInput: (String) -> Unit,
+    onHardwareArrow: (CursorDir, Boolean, Boolean) -> Unit
+) {
     var imeValue by remember { mutableStateOf(SENTINEL_VALUE) }
+
+    fun flushPendingComposition() {
+        val pending = imeValue.text.replace(IME_SENTINEL, "")
+        if (pending.isNotEmpty()) {
+            onImeInput(pending.replace("\n", "\r"))
+        }
+        imeValue = SENTINEL_VALUE
+    }
+
     BasicTextField(
         value = imeValue,
         onValueChange = { next ->
             if (next == imeValue) return@BasicTextField
             val composing = next.composition != null && !next.composition!!.collapsed
-            if (composing) {
+            if (composing && !next.text.contains('\n')) {
                 imeValue = next
                 return@BasicTextField
             }
@@ -138,7 +159,104 @@ internal fun TerminalImeSink(focusRequester: FocusRequester, onImeInput: (String
             imeValue = SENTINEL_VALUE
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, autoCorrectEnabled = false, imeAction = ImeAction.Send),
-        keyboardActions = KeyboardActions(onSend = { onImeInput("\r") }),
-        modifier = Modifier.size(1.dp).alpha(0f).focusRequester(focusRequester)
+        keyboardActions = KeyboardActions(
+            onSend = {
+                flushPendingComposition()
+                onImeInput("\r")
+            }
+        ),
+        modifier = Modifier
+            .size(1.dp)
+            .alpha(0f)
+            .focusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val ctrl = event.isCtrlPressed
+                val alt = event.isAltPressed
+                when (event.key) {
+                    Key.DirectionUp -> {
+                        flushPendingComposition()
+                        onHardwareArrow(CursorDir.UP, ctrl, alt)
+                        true
+                    }
+                    Key.DirectionDown -> {
+                        flushPendingComposition()
+                        onHardwareArrow(CursorDir.DOWN, ctrl, alt)
+                        true
+                    }
+                    Key.DirectionLeft -> {
+                        flushPendingComposition()
+                        onHardwareArrow(CursorDir.LEFT, ctrl, alt)
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        flushPendingComposition()
+                        onHardwareArrow(CursorDir.RIGHT, ctrl, alt)
+                        true
+                    }
+                    Key.Tab -> {
+                        flushPendingComposition()
+                        onImeInput(if (ctrl || alt) applyTerminalModifiers("\t", ctrl, alt) else "\t")
+                        true
+                    }
+                    Key.Escape -> {
+                        imeValue = SENTINEL_VALUE
+                        onImeInput("\u001B")
+                        true
+                    }
+                    Key.MoveHome -> {
+                        flushPendingComposition()
+                        onImeInput(if (ctrl || alt) applyTerminalModifiers("\u001B[H", ctrl, alt) else "\u001B[H")
+                        true
+                    }
+                    Key.MoveEnd -> {
+                        flushPendingComposition()
+                        onImeInput(if (ctrl || alt) applyTerminalModifiers("\u001B[F", ctrl, alt) else "\u001B[F")
+                        true
+                    }
+                    Key.PageUp -> {
+                        flushPendingComposition()
+                        onImeInput(if (ctrl || alt) applyTerminalModifiers("\u001B[5~", ctrl, alt) else "\u001B[5~")
+                        true
+                    }
+                    Key.PageDown -> {
+                        flushPendingComposition()
+                        onImeInput(if (ctrl || alt) applyTerminalModifiers("\u001B[6~", ctrl, alt) else "\u001B[6~")
+                        true
+                    }
+                    Key.Delete -> {
+                        flushPendingComposition()
+                        onImeInput("\u001B[3~")
+                        true
+                    }
+                    Key.Backspace -> {
+                        val hasPending = imeValue.text.length > IME_SENTINEL.length ||
+                            (imeValue.composition != null && !imeValue.composition!!.collapsed)
+                        if (hasPending) {
+                            false
+                        } else {
+                            onImeInput(if (alt) "\u001B\u007F" else "\u007F")
+                            true
+                        }
+                    }
+                    Key.Enter, Key.NumPadEnter -> {
+                        flushPendingComposition()
+                        onImeInput("\r")
+                        true
+                    }
+                    else -> {
+                        if (ctrl || alt) {
+                            val shiftOnly = event.nativeKeyEvent.metaState and NativeKeyEvent.META_SHIFT_MASK
+                            val chCode = event.nativeKeyEvent.getUnicodeChar(shiftOnly)
+                            if (chCode in 0x20..0x7E) {
+                                flushPendingComposition()
+                                onImeInput(applyTerminalModifiers(chCode.toChar().toString(), ctrl, alt))
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                        false
+                    }
+                }
+            }
     )
 }
