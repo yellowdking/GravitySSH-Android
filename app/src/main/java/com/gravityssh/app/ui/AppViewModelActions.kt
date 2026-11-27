@@ -10,6 +10,7 @@ import com.gravityssh.app.model.KeyDeployResult
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncSendPollState
+import com.gravityssh.app.model.SyncSendSession
 import com.gravityssh.app.ssh.SshKeyGenerator
 import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.terminal.TouchCursorMode

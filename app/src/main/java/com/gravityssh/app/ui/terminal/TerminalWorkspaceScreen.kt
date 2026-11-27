@@ -34,10 +34,10 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
     val vm = viewModel
     val cfg by remember(vm) {
         vm.vaultState.map { it.data.settings }.distinctUntilChanged()
-    }.collectState(initial = vm.vaultState.value.data.settings)
+    }.collectState(initialValue = vm.vaultState.value.data.settings)
     val hist by remember(vm) {
         vm.vaultState.map { it.data.history }.distinctUntilChanged()
-    }.collectState(initial = vm.vaultState.value.data.history)
+    }.collectState(initialValue = vm.vaultState.value.data.history)
     val tab by remember(vm) {
         combine(vm.sessionTabs, vm.activeSessionId) { tabs, aid ->
             (tabs.find { it.sessionId == aid } ?: tabs.firstOrNull())?.let {
@@ -52,7 +52,7 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
                 )
             }
         }.distinctUntilChanged()
-    }.collectState(initial = null)
+    }.collectState(initialValue = null)
 
     val clip = LocalClipboardManager.current
     val mgr = vm.container.sshSessionManager
@@ -200,7 +200,7 @@ private fun SessionTabsStripObserver(
         viewModel.sessionTabs.map { list ->
             list.map { SessionTabHeader(it.sessionId, it.serverName, it.status) }
         }.distinctUntilChanged()
-    }.collectState(initial = emptyList())
+    }.collectState(initialValue = emptyList())
     SessionTabsStrip(tabs, activeId, onSelect, onClose)
 }
 
@@ -215,6 +215,6 @@ private fun MonitorBarObserver(
         viewModel.sessionTabs.map { tabs ->
             tabs.find { it.sessionId == sessionId }?.metrics
         }.distinctUntilChanged()
-    }.collectState(initial = null)
+    }.collectState(initialValue = null)
     metrics?.let { MonitorBar(it) }
 }
