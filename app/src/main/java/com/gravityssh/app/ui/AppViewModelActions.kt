@@ -2,6 +2,8 @@ package com.gravityssh.app.ui
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.lifecycle.viewModelScope
 import com.gravityssh.app.model.AppSettings
 import com.gravityssh.app.model.BuiltinTemplate
@@ -9,6 +11,9 @@ import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.model.KeyDeployResult
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
+import com.gravityssh.app.model.SyncImportMode
+import com.gravityssh.app.model.SyncReceivePollState
+import com.gravityssh.app.model.SyncReceiveWaitSession
 import com.gravityssh.app.model.SyncSendPollState
 import com.gravityssh.app.model.SyncSendSession
 import com.gravityssh.app.ssh.SshKeyGenerator
@@ -193,6 +198,25 @@ fun AppViewModel.updateSettings(
     }
 }
 
+fun AppViewModel.setBiometricLockEnabled(
+    enabled: Boolean,
+    onResult: (Result<Unit>) -> Unit = {}
+) {
+    viewModelScope.launch {
+        val res = withContext(Dispatchers.IO) {
+            runCatching {
+                val saved = container.vaultRepository.updateSettings {
+                    it.copy(biometricLockEnabled = enabled)
+                }
+                if (enabled && !saved.biometricLockEnabled) {
+                    throw IllegalStateException("已设置主密码，无法同时启用生物识别锁")
+                }
+            }
+        }
+        onResult(res)
+    }
+}
+
 fun AppViewModel.cycleTouchCursorMode() {
     val current = TouchCursorMode.fromId(vaultState.value.data.settings.touchCursorMode)
     val next = TouchCursorMode.next(current)
@@ -220,27 +244,74 @@ fun AppViewModel.testSyncRelay(rawUrl: String, onResult: (Result<Long>) -> Unit)
     }
 }
 
-fun AppViewModel.startSftpUpload(
+internal fun sanitizeUploadDisplayName(raw: String?): String {
+    if (raw.isNullOrBlank() || '\u0000' in raw) return "upload.bin"
+    val leaf = raw.replace('\\', '/').substringAfterLast('/').trim()
+    val clean = leaf.filter { ch -> ch >= ' ' && ch != '\u007F' && ch != '/' && ch != '\\' && ch != '\u0000' }
+    return if (clean.isEmpty() || clean == "." || clean == "..") "upload.bin" else clean
+}
+
+private fun queryDocumentMetaBlocking(context: Context, uri: Uri): Pair<String, Long> {
+    var rawName: String? = null
+    var total = -1L
+    runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val si = c.getColumnIndex(OpenableColumns.SIZE)
+                if (ni >= 0 && !c.isNull(ni)) {
+                    rawName = c.getString(ni)
+                }
+                if (si >= 0 && !c.isNull(si)) {
+                    total = c.getLong(si)
+                }
+            }
+        }
+    }
+    return sanitizeUploadDisplayName(rawName) to total
+}
+
+private fun deleteSafDocumentQuietly(context: Context, uri: Uri) {
+    runCatching {
+        val deleted = runCatching {
+            DocumentsContract.deleteDocument(context.contentResolver, uri)
+        }.getOrDefault(false)
+        if (!deleted) {
+            context.contentResolver.delete(uri, null, null)
+        }
+    }
+}
+
+fun AppViewModel.deletePartialSafUri(context: Context, uri: Uri) {
+    val appCtx = context.applicationContext
+    viewModelScope.launch(Dispatchers.IO + NonCancellable) {
+        deleteSafDocumentQuietly(appCtx, uri)
+    }
+}
+
+fun AppViewModel.startSftpUploadFromUri(
     context: Context,
     sessionId: String,
-    remotePath: String,
-    fileName: String,
-    uri: Uri,
-    totalBytes: Long
+    remoteDir: String,
+    uri: Uri
 ) {
     val appCtx = context.applicationContext
-    sftpTransferJob?.cancel()
-    _sftpTransfer.value = null
+    sftpTransferJobs[sessionId]?.cancel()
+    _sftpTransfers.update { it - sessionId }
     val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
         val thisJob = coroutineContext[Job]
+        var fileName = "upload.bin"
         try {
             withContext(Dispatchers.IO) {
+                val (safeName, totalBytes) = queryDocumentMetaBlocking(appCtx, uri)
+                fileName = safeName
+                val remotePath = "${remoteDir.trimEnd('/')}/$safeName"
                 val stream = appCtx.contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("无法打开所选文件")
                 stream.use { input ->
                     container.sftpService.uploadStream(sessionId, remotePath, input, totalBytes) { p ->
-                        if (sftpTransferJob === thisJob) {
-                            _sftpTransfer.value = p
+                        if (sftpTransferJobs[sessionId] === thisJob) {
+                            _sftpTransfers.update { it + (sessionId to p) }
                         }
                     }
                 }
@@ -252,13 +323,55 @@ fun AppViewModel.startSftpUpload(
         } catch (e: Throwable) {
             showToast("上传失败: ${e.message}")
         } finally {
-            if (sftpTransferJob === thisJob) {
-                _sftpTransfer.value = null
-                sftpTransferJob = null
+            if (thisJob != null && sftpTransferJobs.remove(sessionId, thisJob)) {
+                _sftpTransfers.update { it - sessionId }
             }
         }
     }
-    sftpTransferJob = job
+    sftpTransferJobs[sessionId] = job
+    job.start()
+}
+
+fun AppViewModel.startSftpUpload(
+    context: Context,
+    sessionId: String,
+    remotePath: String,
+    fileName: String,
+    uri: Uri,
+    totalBytes: Long
+) {
+    val appCtx = context.applicationContext
+    val safeName = sanitizeUploadDisplayName(fileName)
+    val safeRemotePath = "${remotePath.substringBeforeLast('/', "").trimEnd('/')}/$safeName"
+    sftpTransferJobs[sessionId]?.cancel()
+    _sftpTransfers.update { it - sessionId }
+    val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+        val thisJob = coroutineContext[Job]
+        try {
+            withContext(Dispatchers.IO) {
+                val stream = appCtx.contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("无法打开所选文件")
+                stream.use { input ->
+                    container.sftpService.uploadStream(sessionId, safeRemotePath, input, totalBytes) { p ->
+                        if (sftpTransferJobs[sessionId] === thisJob) {
+                            _sftpTransfers.update { it + (sessionId to p) }
+                        }
+                    }
+                }
+            }
+            _sftpMutatedTick.update { it + 1 }
+            showToast("上传完成: $safeName")
+        } catch (_: CancellationException) {
+            showToast("已取消上传: $safeName")
+        } catch (e: Throwable) {
+            showToast("上传失败: ${e.message}")
+        } finally {
+            if (thisJob != null && sftpTransferJobs.remove(sessionId, thisJob)) {
+                _sftpTransfers.update { it - sessionId }
+            }
+        }
+    }
+    sftpTransferJobs[sessionId] = job
     job.start()
 }
 
@@ -270,8 +383,8 @@ fun AppViewModel.startSftpDownload(
     uri: Uri
 ) {
     val appCtx = context.applicationContext
-    sftpTransferJob?.cancel()
-    _sftpTransfer.value = null
+    sftpTransferJobs[sessionId]?.cancel()
+    _sftpTransfers.update { it - sessionId }
     val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
         val thisJob = coroutineContext[Job]
         try {
@@ -280,30 +393,35 @@ fun AppViewModel.startSftpDownload(
                     ?: throw IllegalStateException("无法写入目标文件")
                 stream.use { output ->
                     container.sftpService.downloadStream(sessionId, remotePath, output) { p ->
-                        if (sftpTransferJob === thisJob) {
-                            _sftpTransfer.value = p
+                        if (sftpTransferJobs[sessionId] === thisJob) {
+                            _sftpTransfers.update { it + (sessionId to p) }
                         }
                     }
                 }
             }
             showToast("下载完成: $fileName")
         } catch (_: CancellationException) {
+            withContext(Dispatchers.IO + NonCancellable) {
+                deleteSafDocumentQuietly(appCtx, uri)
+            }
             showToast("已取消下载: $fileName")
         } catch (e: Throwable) {
+            withContext(Dispatchers.IO + NonCancellable) {
+                deleteSafDocumentQuietly(appCtx, uri)
+            }
             showToast("下载失败: ${e.message}")
         } finally {
-            if (sftpTransferJob === thisJob) {
-                _sftpTransfer.value = null
-                sftpTransferJob = null
+            if (thisJob != null && sftpTransferJobs.remove(sessionId, thisJob)) {
+                _sftpTransfers.update { it - sessionId }
             }
         }
     }
-    sftpTransferJob = job
+    sftpTransferJobs[sessionId] = job
     job.start()
 }
 
-fun AppViewModel.cancelSftpTransfer() {
-    sftpTransferJob?.cancel()
+fun AppViewModel.cancelSftpTransfer(sessionId: String) {
+    sftpTransferJobs[sessionId]?.cancel()
 }
 
 fun AppViewModel.runSftpOp(
@@ -571,6 +689,307 @@ fun AppViewModel.rejectSyncSend(sessionId: String, requestId: String) {
     }
 }
 
+fun AppViewModel.updateSyncReceiveInputCode(code: String) {
+    _syncReceiveState.update { it.copy(inputCode = code, error = null) }
+}
+
+fun AppViewModel.refreshSyncReceiverCode() {
+    val cur = _syncReceiveState.value
+    if (cur.busy || cur.waitSession != null) return
+    _syncReceiveState.update {
+        it.copy(receiverCode = container.syncService.generateReceiverCode())
+    }
+}
+
+fun AppViewModel.startSyncReceive(codeOrUri: String) {
+    val cur = _syncReceiveState.value
+    if (codeOrUri.isBlank() || cur.busy || cur.waitSession != null) return
+    val receiverCode = cur.receiverCode.ifBlank { container.syncService.generateReceiverCode() }
+    val gen = syncReceiveGeneration.incrementAndGet()
+    syncReceiveStartJob?.cancel()
+    syncReceiveCountdownJob?.cancel()
+    syncReceivePollJob?.cancel()
+    _syncReceiveState.update {
+        it.copy(
+            receiverCode = receiverCode,
+            busy = true,
+            error = null,
+            summary = null,
+            consecutivePollErrors = 0,
+            lastPollError = null
+        )
+    }
+    syncReceiveStartJob = viewModelScope.launch {
+        var createdWait: SyncReceiveWaitSession? = null
+        try {
+            val wait = container.syncService.startReceiveRequest(codeOrUri, receiverCode)
+            createdWait = wait
+            if (syncReceiveGeneration.get() != gen) {
+                container.syncService.cancelReceiveWait(wait.waitId)
+                return@launch
+            }
+            val oldPreviewId = _syncReceiveState.value.preview?.previewId
+            if (oldPreviewId != null) {
+                runCatching { container.syncService.discardPreview(oldPreviewId) }
+            }
+            _syncReceiveState.update {
+                it.copy(
+                    busy = false,
+                    error = null,
+                    preview = null,
+                    waitSession = wait,
+                    waitRemainingSec = ((wait.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L),
+                    consecutivePollErrors = 0,
+                    lastPollError = null
+                )
+            }
+            launchSyncReceiveLoops(wait)
+        } catch (e: CancellationException) {
+            createdWait?.let { runCatching { container.syncService.cancelReceiveWait(it.waitId) } }
+            throw e
+        } catch (err: Throwable) {
+            if (syncReceiveGeneration.get() == gen) {
+                _syncReceiveState.update {
+                    it.copy(
+                        busy = false,
+                        error = err.message ?: "发起验证失败，请确认同步码有效"
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun AppViewModel.launchSyncReceiveLoops(wait: SyncReceiveWaitSession) {
+    syncReceiveCountdownJob?.cancel()
+    syncReceiveCountdownJob = viewModelScope.launch {
+        while (true) {
+            val left = ((wait.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
+            _syncReceiveState.update { state ->
+                if (state.waitSession?.waitId == wait.waitId) state.copy(waitRemainingSec = left) else state
+            }
+            // Do not halt polling on local clock reaching 0 (tolerates ±120s client/relay clock skew).
+            if (left <= 0L) break
+            delay(1000L)
+        }
+    }
+    syncReceivePollJob?.cancel()
+    syncReceivePollJob = viewModelScope.launch {
+        while (true) {
+            if (_syncReceiveState.value.waitSession?.waitId != wait.waitId) break
+            try {
+                val res = container.syncService.pollReceiveStatus(wait.waitId)
+                when (res.state) {
+                    SyncReceivePollState.PENDING -> {
+                        _syncReceiveState.update { state ->
+                            if (state.waitSession?.waitId == wait.waitId) {
+                                state.copy(consecutivePollErrors = 0, lastPollError = null)
+                            } else state
+                        }
+                    }
+                    SyncReceivePollState.APPROVED -> {
+                        var matched = false
+                        _syncReceiveState.update { state ->
+                            if (state.waitSession?.waitId == wait.waitId) {
+                                matched = true
+                                state.copy(
+                                    waitSession = null,
+                                    waitRemainingSec = 0L,
+                                    preview = res.preview,
+                                    consecutivePollErrors = 0,
+                                    lastPollError = null,
+                                    error = null
+                                )
+                            } else state
+                        }
+                        if (matched) {
+                            syncReceiveCountdownJob?.cancel()
+                        } else {
+                            res.preview?.previewId?.let { pid ->
+                                runCatching { container.syncService.discardPreview(pid) }
+                            }
+                        }
+                        break
+                    }
+                    SyncReceivePollState.REJECTED -> {
+                        var matched = false
+                        _syncReceiveState.update { state ->
+                            if (state.waitSession?.waitId == wait.waitId) {
+                                matched = true
+                                state.copy(
+                                    waitSession = null,
+                                    waitRemainingSec = 0L,
+                                    consecutivePollErrors = 0,
+                                    lastPollError = null,
+                                    receiverCode = container.syncService.generateReceiverCode(),
+                                    error = "发送端已拒绝此次同步请求"
+                                )
+                            } else state
+                        }
+                        if (matched) syncReceiveCountdownJob?.cancel()
+                        break
+                    }
+                    SyncReceivePollState.EXPIRED -> {
+                        var matched = false
+                        _syncReceiveState.update { state ->
+                            if (state.waitSession?.waitId == wait.waitId) {
+                                matched = true
+                                state.copy(
+                                    waitSession = null,
+                                    waitRemainingSec = 0L,
+                                    consecutivePollErrors = 0,
+                                    lastPollError = null,
+                                    receiverCode = container.syncService.generateReceiverCode(),
+                                    error = "同步请求已过期或被发送端撤销"
+                                )
+                            } else state
+                        }
+                        if (matched) syncReceiveCountdownJob?.cancel()
+                        break
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: SecurityException) {
+                var matched = false
+                _syncReceiveState.update { state ->
+                    if (state.waitSession?.waitId == wait.waitId) {
+                        matched = true
+                        state.copy(
+                            waitSession = null,
+                            waitRemainingSec = 0L,
+                            error = e.message ?: "解密或校验失败"
+                        )
+                    } else state
+                }
+                if (matched) syncReceiveCountdownJob?.cancel()
+                break
+            } catch (e: IllegalStateException) {
+                var matched = false
+                _syncReceiveState.update { state ->
+                    if (state.waitSession?.waitId == wait.waitId) {
+                        matched = true
+                        state.copy(
+                            waitSession = null,
+                            waitRemainingSec = 0L,
+                            error = e.message ?: "中继状态异常"
+                        )
+                    } else state
+                }
+                if (matched) syncReceiveCountdownJob?.cancel()
+                break
+            } catch (e: Exception) {
+                var nextErrors = 0
+                _syncReceiveState.update { state ->
+                    if (state.waitSession?.waitId == wait.waitId) {
+                        nextErrors = state.consecutivePollErrors + 1
+                        state.copy(
+                            consecutivePollErrors = nextErrors,
+                            lastPollError = e.message ?: "网络异常"
+                        )
+                    } else state
+                }
+                if (nextErrors >= 5 && System.currentTimeMillis() > wait.expiresAtEpochMs + SYNC_OFFLINE_EXPIRE_GRACE_MS) {
+                    container.syncService.cancelReceiveWait(wait.waitId)
+                    var matched = false
+                    _syncReceiveState.update { state ->
+                        if (state.waitSession?.waitId == wait.waitId) {
+                            matched = true
+                            state.copy(
+                                waitSession = null,
+                                waitRemainingSec = 0L,
+                                consecutivePollErrors = 0,
+                                lastPollError = null,
+                                receiverCode = container.syncService.generateReceiverCode(),
+                                error = "等待发送端确认已超时且网络不可达，请重试"
+                            )
+                        } else state
+                    }
+                    if (matched) syncReceiveCountdownJob?.cancel()
+                    break
+                }
+            }
+            delay(SyncConfig.PAIR_POLL_INTERVAL_MS)
+        }
+    }
+}
+
+fun AppViewModel.cancelSyncReceiveWait() {
+    val waitId = _syncReceiveState.value.waitSession?.waitId
+    syncReceiveGeneration.incrementAndGet()
+    syncReceiveStartJob?.cancel()
+    syncReceiveStartJob = null
+    syncReceiveCountdownJob?.cancel()
+    syncReceiveCountdownJob = null
+    syncReceivePollJob?.cancel()
+    syncReceivePollJob = null
+    _syncReceiveState.update {
+        it.copy(
+            busy = false,
+            waitSession = null,
+            waitRemainingSec = 0L,
+            consecutivePollErrors = 0,
+            lastPollError = null,
+            receiverCode = container.syncService.generateReceiverCode()
+        )
+    }
+    if (waitId != null) {
+        runCatching { container.syncService.cancelReceiveWait(waitId) }
+    }
+}
+
+fun AppViewModel.applySyncReceive(mode: SyncImportMode) {
+    val cur = _syncReceiveState.value
+    val p = cur.preview ?: return
+    if (cur.busy) return
+    _syncReceiveState.update {
+        if (it.preview?.previewId == p.previewId) it.copy(busy = true, error = null) else it
+    }
+    syncReceiveApplyJob?.cancel()
+    syncReceiveApplyJob = viewModelScope.launch {
+        try {
+            val summary = withContext(Dispatchers.IO) {
+                container.syncService.applyReceive(p.previewId, mode)
+            }
+            _syncReceiveState.update { state ->
+                if (state.preview?.previewId == p.previewId) {
+                    state.copy(
+                        busy = false,
+                        summary = summary,
+                        preview = null,
+                        inputCode = "",
+                        receiverCode = container.syncService.generateReceiverCode(),
+                        error = null
+                    )
+                } else state
+            }
+            showToast("同步导入完成")
+        } catch (e: CancellationException) {
+            _syncReceiveState.update { state ->
+                if (state.preview?.previewId == p.previewId) state.copy(busy = false) else state
+            }
+            throw e
+        } catch (err: Throwable) {
+            _syncReceiveState.update { state ->
+                if (state.preview?.previewId == p.previewId) {
+                    state.copy(busy = false, error = err.message ?: "导入失败")
+                } else state
+            }
+        }
+    }
+}
+
+fun AppViewModel.discardSyncReceivePreview() {
+    val previewId = _syncReceiveState.value.preview?.previewId ?: return
+    if (_syncReceiveState.value.busy) return
+    runCatching { container.syncService.discardPreview(previewId) }
+    _syncReceiveState.update {
+        if (it.preview?.previewId == previewId) {
+            it.copy(preview = null, error = null)
+        } else it
+    }
+}
+
 fun AppViewModel.cleanupAbandonedSyncOnLeave() {
     val cur = _syncSendState.value
     val sess = cur.session
@@ -596,5 +1015,12 @@ fun AppViewModel.cleanupAbandonedSyncOnLeave() {
         }
     } else if (sess == null && cur.consumedSuccess) {
         _syncSendState.value = SyncSendUiState()
+    }
+
+    val recv = _syncReceiveState.value
+    if (recv.waitSession != null || (recv.busy && recv.preview == null)) {
+        cancelSyncReceiveWait()
+    } else if (recv.preview == null && recv.summary != null) {
+        _syncReceiveState.update { it.copy(summary = null) }
     }
 }
