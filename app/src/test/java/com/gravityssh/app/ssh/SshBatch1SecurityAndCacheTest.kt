@@ -121,7 +121,7 @@ class SshBatch1SecurityAndCacheTest {
             cache.listDirWithFetcher("s1", "/opt", "/", true) {
                 fetchStarted.complete(Unit)
                 allowFinish.await()
-                listOf(SFTPFileEntry("stale.txt", "/opt/stale.txt"))
+                listOf(SFTPFileEntry("stale.txt", "/opt/stale.txt", isDir = false))
             }
         }
         fetchStarted.await()
@@ -143,7 +143,7 @@ class SshBatch1SecurityAndCacheTest {
                     leaderEntered.complete(Unit)
                     leaderHold.await()
                 }
-                listOf(SFTPFileEntry("fresh.log", "/var/fresh.log"))
+                listOf(SFTPFileEntry("fresh.log", "/var/fresh.log", isDir = false))
             }
         }
         leaderEntered.await()
@@ -151,7 +151,7 @@ class SshBatch1SecurityAndCacheTest {
         val waiter = async {
             cache.listDirWithFetcher("s2", "/var", "/", true) {
                 attempts.incrementAndGet()
-                listOf(SFTPFileEntry("fresh.log", "/var/fresh.log"))
+                listOf(SFTPFileEntry("fresh.log", "/var/fresh.log", isDir = false))
             }
         }
         waiterJoined.await()
