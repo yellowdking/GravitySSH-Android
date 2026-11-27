@@ -1,5 +1,6 @@
 package com.gravityssh.app.ssh
 
+import com.gravityssh.app.GravitySshApp
 import com.gravityssh.app.model.JumpMode
 import com.gravityssh.app.model.ProxyConfig
 import com.gravityssh.app.model.ProxyType
@@ -89,6 +90,7 @@ class SshConnector(
         }
         try {
             coroutineContext.ensureActive()
+            GravitySshApp.ensureBouncyCastleRegistered()
             val timeoutMs = (server.timeoutSeconds.coerceIn(5, 120)) * 1000
             val targetHost = server.host.trim()
             val viaParts = mutableListOf<String>()

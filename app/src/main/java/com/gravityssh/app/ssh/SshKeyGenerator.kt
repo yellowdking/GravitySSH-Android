@@ -1,5 +1,6 @@
 package com.gravityssh.app.ssh
 
+import com.gravityssh.app.GravitySshApp
 import com.gravityssh.app.model.SSHKeyRecord
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.Buffer
@@ -24,6 +25,7 @@ import java.util.UUID
 object SshKeyGenerator {
 
     fun generateEd25519(name: String, comment: String = "gravityssh-android"): SSHKeyRecord {
+        GravitySshApp.ensureBouncyCastleRegistered()
         val gen = Ed25519KeyPairGenerator()
         gen.init(Ed25519KeyGenerationParameters(SecureRandom()))
         val pair = gen.generateKeyPair()
@@ -47,6 +49,7 @@ object SshKeyGenerator {
     }
 
     fun generateRsa4096(name: String, comment: String = "gravityssh-android"): SSHKeyRecord {
+        GravitySshApp.ensureBouncyCastleRegistered()
         val gen = RSAKeyPairGenerator()
         gen.init(RSAKeyGenerationParameters(BigInteger.valueOf(0x10001), SecureRandom(), 4096, 80))
         val pair = gen.generateKeyPair()
@@ -75,6 +78,7 @@ object SshKeyGenerator {
         passphrase: String = "",
         comment: String = ""
     ): SSHKeyRecord {
+        GravitySshApp.ensureBouncyCastleRegistered()
         val trimmedPem = privateKeyPem.trim()
         require(trimmedPem.isNotEmpty()) { "私钥内容不能为空" }
         val finder = if (passphrase.isNotEmpty()) PasswordUtils.createOneOff(passphrase.toCharArray()) else null
