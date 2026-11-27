@@ -44,7 +44,13 @@ fun SettingsScreen(
         }
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(14.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             SettingsNavCard(

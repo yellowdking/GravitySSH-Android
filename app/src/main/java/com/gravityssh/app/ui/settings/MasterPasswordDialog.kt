@@ -34,6 +34,14 @@ internal fun MasterPasswordDialog(
 
     fun submit() {
         if (busy) return
+        if (!hasExisting && next.isBlank()) {
+            err = if (next.isEmpty()) "请输入新主密码" else "主密码不能仅包含空白字符"
+            return
+        }
+        if (hasExisting && next.isNotEmpty() && next.isBlank()) {
+            err = "主密码不能仅包含空白字符"
+            return
+        }
         if (next != confirm) {
             err = "两次输入的新密码不一致"
             return

@@ -73,14 +73,9 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
         while (true) {
             val left = ((wait.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
             waitRemainingSec = left
-            if (left <= 0L) {
-                viewModel.container.syncService.cancelReceiveWait(wait.waitId)
-                waitSession = null
-                consecutivePollErrors = 0
-                lastPollError = null
-                errorMsg = "等待发送端确认已超时，请重试"
-                break
-            }
+            // Do not halt polling on local clock reaching 0 (tolerates ±120s client/relay clock skew).
+            // Authoritative relay status (approved/rejected/expired) terminates polling below.
+            if (left <= 0L) break
             delay(1000L)
         }
     }
@@ -125,6 +120,12 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
             } catch (e: Exception) {
                 consecutivePollErrors++
                 lastPollError = e.message ?: "网络异常"
+                if (consecutivePollErrors >= 5 && System.currentTimeMillis() > wait.expiresAtEpochMs + 150_000L) {
+                    viewModel.container.syncService.cancelReceiveWait(wait.waitId)
+                    waitSession = null
+                    errorMsg = "等待发送端确认已超时且网络不可达，请重试"
+                    break
+                }
             }
             delay(SyncConfig.PAIR_POLL_INTERVAL_MS)
         }
@@ -286,7 +287,11 @@ fun SyncReceiveCard(viewModel: AppViewModel) {
                 val mm = waitRemainingSec / 60
                 val ss = waitRemainingSec % 60
                 Text(
-                    "发送端同步码 ${currentWait.sendCode} · 剩余 ${String.format(Locale.US, "%02d:%02d", mm, ss)}",
+                    if (waitRemainingSec > 0L) {
+                        "发送端同步码 ${currentWait.sendCode} · 剩余 ${String.format(Locale.US, "%02d:%02d", mm, ss)}"
+                    } else {
+                        "发送端同步码 ${currentWait.sendCode} · 正在等待中继确认..."
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = AgMuted
                 )

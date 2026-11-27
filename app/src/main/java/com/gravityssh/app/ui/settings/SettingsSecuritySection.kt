@@ -12,6 +12,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgCard
@@ -25,11 +28,22 @@ import com.gravityssh.app.ui.updateSettings
 @Composable
 fun SettingsSecuritySection(viewModel: AppViewModel) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
     val knownHosts by viewModel.knownHosts.collectAsStateWithLifecycle()
     val lockState = vaultState.lockState
     val settings = vaultState.data.settings
-    val canBiometric = remember(context) { BiometricHelper.canAuthenticate(context) }
+    var canBiometric by remember(context) { mutableStateOf(BiometricHelper.canAuthenticate(context)) }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                canBiometric = BiometricHelper.canAuthenticate(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var showPwDialog by remember { mutableStateOf(false) }
     var confirmClearKnown by remember { mutableStateOf(false) }
@@ -46,10 +60,30 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
         AgSwitchRow(
             label = "生物识别指纹解锁",
             checked = !lockState.hasPassword && settings.biometricLockEnabled,
-            enabled = canBiometric && !lockState.hasPassword
+            enabled = !lockState.hasPassword && (canBiometric || settings.biometricLockEnabled)
         ) { enabled ->
-            viewModel.updateSettings { it.copy(biometricLockEnabled = enabled) }
-            viewModel.showToast(if (enabled) "已开启生物识别锁" else "已关闭生物识别锁")
+            if (enabled) {
+                if (!canBiometric) {
+                    viewModel.showToast("设备未开启生物识别或锁屏密码")
+                    return@AgSwitchRow
+                }
+                BiometricHelper.authenticate(
+                    context = context,
+                    title = "验证身份以开启解锁保护",
+                    subtitle = "请验证指纹、人脸或设备锁屏凭据",
+                    negativeButtonText = "取消",
+                    onSuccess = {
+                        viewModel.updateSettings(onSuccess = { viewModel.showToast("已开启生物识别锁") }) {
+                            it.copy(biometricLockEnabled = true)
+                        }
+                    },
+                    onError = { err -> viewModel.showToast("身份验证失败: $err") }
+                )
+            } else {
+                viewModel.updateSettings(onSuccess = { viewModel.showToast("已关闭生物识别锁") }) {
+                    it.copy(biometricLockEnabled = false)
+                }
+            }
         }
         if (lockState.hasPassword) {
             Text(
@@ -68,7 +102,7 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
             ) { Text(if (lockState.hasPassword) "修改/移除主密码" else "设置主密码", color = AgCyan) }
             if (lockState.hasPassword || lockState.biometricEnabled) {
                 OutlinedButton(
-                    onClick = { viewModel.container.vaultRepository.lockNow() },
+                    onClick = { viewModel.lockVault() },
                     border = BorderStroke(1.dp, AgAccent),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(0.7f)

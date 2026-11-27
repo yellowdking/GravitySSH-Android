@@ -56,7 +56,7 @@ fun ServersScreen(
                 },
                 actions = {
                     if (lockState.hasPassword || lockState.biometricEnabled) {
-                        IconButton(onClick = { viewModel.container.vaultRepository.lockNow() }) { Icon(Icons.Rounded.Lock, "锁定", tint = AgMuted) }
+                        IconButton(onClick = { viewModel.lockVault() }) { Icon(Icons.Rounded.Lock, "锁定", tint = AgMuted) }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = AgSurface)
@@ -71,7 +71,7 @@ fun ServersScreen(
             ) { Icon(Icons.Rounded.Add, "新建主机") }
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 14.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding().padding(horizontal = 14.dp)) {
             Spacer(Modifier.height(10.dp))
             AgTextField(query, { query = it }, "搜索主机", placeholder = "名称 / IP / 分组 / 用户名", trailingIcon = { Icon(Icons.Rounded.Search, null, tint = AgMuted) })
             Spacer(Modifier.height(10.dp))

@@ -39,7 +39,7 @@ fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Column(modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
             TabRow(selectedTabIndex = tabIndex, containerColor = AgSurface, contentColor = AgAccent) {
                 Tab(selected = tabIndex == 0, onClick = { tabIndex = 0 }, text = {
                     Text("发送到其他设备", color = if (tabIndex == 0) AgText else AgMuted)

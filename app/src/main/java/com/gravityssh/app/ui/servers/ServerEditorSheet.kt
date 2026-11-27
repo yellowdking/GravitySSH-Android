@@ -32,7 +32,7 @@ fun ServerEditorSheet(
     allKeys: List<SSHKeyRecord>,
     onSave: (ServerConfig) -> Unit,
     onTest: suspend (ServerConfig) -> Result<String>,
-    onClearHostCache: (String, Int) -> Boolean,
+    onClearHostCache: (String, Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     var draft by remember(initial) { mutableStateOf(initial) }
