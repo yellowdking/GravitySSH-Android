@@ -89,12 +89,14 @@ fun FloatingAutocompletePopup(
                     item.source == "dir" || item.source == "file" -> pathTokenPrefix
                     else -> curTokenUnquoted
                 }
-                val cmd = buildAnnotatedString {
-                    if (pfx.isNotEmpty() && item.command.startsWith(pfx, true)) {
-                        val n = pfx.length.coerceAtMost(item.command.length)
-                        withStyle(SpanStyle(color = AgCyan, fontWeight = FontWeight.Bold)) { append(item.command.take(n)) }
-                        withStyle(SpanStyle(color = AgText)) { append(item.command.drop(n)) }
-                    } else withStyle(SpanStyle(color = AgText)) { append(item.command) }
+                val cmd = remember(item.command, pfx) {
+                    buildAnnotatedString {
+                        if (pfx.isNotEmpty() && item.command.startsWith(pfx, true)) {
+                            val n = pfx.length.coerceAtMost(item.command.length)
+                            withStyle(SpanStyle(color = AgCyan, fontWeight = FontWeight.Bold)) { append(item.command.take(n)) }
+                            withStyle(SpanStyle(color = AgText)) { append(item.command.drop(n)) }
+                        } else withStyle(SpanStyle(color = AgText)) { append(item.command) }
+                    }
                 }
                 Surface(
                     onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); state.onPick(item) },

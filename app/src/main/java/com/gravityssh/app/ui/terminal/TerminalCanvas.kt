@@ -15,9 +15,35 @@ import androidx.compose.ui.unit.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.terminal.*
 import com.gravityssh.app.ui.theme.AgBg
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.withContext
 import kotlin.math.floor
 import kotlin.math.roundToInt
+
+private class TerminalFrameSnapshotCache {
+    private var cachedSessionId: String? = null
+    private var cachedVersion: Long = Long.MIN_VALUE
+    private var cachedScrollOffset: Int = Int.MIN_VALUE
+    private var cachedSnapshot: TerminalSnapshot? = null
+
+    fun getOrUpdate(controller: TerminalSessionController, version: Long, scrollOffset: Int): TerminalSnapshot {
+        val cur = cachedSnapshot
+        if (cur != null && cachedSessionId == controller.sessionId && cachedVersion == version && cachedScrollOffset == scrollOffset) {
+            return cur
+        }
+        val next = controller.snapshot(scrollOffset)
+        cachedSessionId = controller.sessionId
+        cachedVersion = version
+        cachedScrollOffset = scrollOffset
+        cachedSnapshot = next
+        return next
+    }
+
+    fun currentOrFetch(controller: TerminalSessionController, scrollOffset: Int): TerminalSnapshot =
+        getOrUpdate(controller, controller.frameVersion.value, scrollOffset)
+}
 
 @Composable
 fun TerminalCanvas(
@@ -43,10 +69,9 @@ fun TerminalCanvas(
     onCopySelection: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val frameVersion by controller.frameVersion.collectAsStateWithLifecycle()
-    val snapshot = remember(frameVersion, scrollOffset, controller.sessionId) {
-        controller.snapshot(scrollOffset)
-    }
+    // Hold State<Long> without reading .value in composition so 60fps frames only invalidate the Canvas draw phase.
+    val frameVersionState = controller.frameVersion.collectAsStateWithLifecycle()
+    val snapshotCache = remember(controller.sessionId) { TerminalFrameSnapshotCache() }
     val density = LocalDensity.current
     val d = density.density
     val haptic = LocalHapticFeedback.current
@@ -83,7 +108,7 @@ fun TerminalCanvas(
         }
     }
 
-    val sSnap by rememberUpdatedState(snapshot)
+    val sSnapCache by rememberUpdatedState(snapshotCache)
     val sSel by rememberUpdatedState(selection)
     val sMode by rememberUpdatedState(touchMode)
     val sFling by rememberUpdatedState(touchFlingEnabled)
@@ -97,14 +122,30 @@ fun TerminalCanvas(
     val sOnFontCommit by rememberUpdatedState(onFontSizeCommit)
     val sOnScroll by rememberUpdatedState(onScrollOffsetChange)
     val qLower = remember(searchQuery) { searchQuery.trim().lowercase() }
-    val searchMatches = remember(snapshot, qLower) { computeSearchMatches(snapshot, qLower, drawState) }
+    val searchMatchesState = remember(controller.sessionId) { mutableStateOf<List<SearchMatch>>(emptyList()) }
+
+    LaunchedEffect(controller, qLower, scrollOffset) {
+        if (qLower.isEmpty()) {
+            searchMatchesState.value = emptyList()
+            return@LaunchedEffect
+        }
+        controller.frameVersion.conflate().collect {
+            val matches = withContext(Dispatchers.Default) {
+                val snap = controller.snapshot(scrollOffset)
+                computeSearchMatches(snap, qLower)
+            }
+            searchMatchesState.value = matches
+            delay(50L)
+        }
+    }
 
     Box(modifier.fillMaxSize().background(AgBg).onSizeChanged { canvasSize = it }) {
         TerminalImeSink(focusReq, onImeInput, onHardwareArrow)
         Canvas(
             Modifier.fillMaxSize().pointerInput(Unit) {
                 detectTerminalTouchGestures(
-                    d, { sMode }, { sCtrl.isAlternateScreen() }, { sCW }, { sCH }, { sFont }, { sScroll }, { sSnap.scrollbackSize },
+                    d, { sMode }, { sCtrl.isAlternateScreen() }, { sCW }, { sCH }, { sFont }, { sScroll },
+                    { sSnapCache.currentOrFetch(sCtrl, sScroll).scrollbackSize },
                     { ts.cancelFling() },
                     { r, c ->
                         val handledCursorTap = ts.handleTapCell(r, c, sMode, sCtrl)
@@ -114,7 +155,11 @@ fun TerminalCanvas(
                         }
                     },
                     { sSel },
-                    { r, c -> haptic.performHapticFeedback(HapticFeedbackType.LongPress); sOnSel(TerminalSelectionHelper.selectWordAt(sSnap, r, c)) },
+                    { r, c ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        val snap = sSnapCache.currentOrFetch(sCtrl, sScroll)
+                        sOnSel(TerminalSelectionHelper.selectWordAt(snap, r, c))
+                    },
                     { sOnSel(it) },
                     { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
                     { sOnFont(it) },
@@ -125,21 +170,71 @@ fun TerminalCanvas(
                     { vx, vy -> ts.handleDragEnd(vx, vy, sCW / d, sCH / d, sFling, sCtrl) }
                 )
             }
-        ) { drawTerminalSnapshot(snapshot, paint, boldPaint, cellW, cellH, baseline, scrollOffset, searchMatches, drawState, ts.tapCell, selection) }
-        if (scrollOffset == 0 && selection == null) {
-            FloatingAutocompletePopup(autocomplete, snapshot.cursorRow, snapshot.cursorCol, cellW, cellH, canvasSize, d)
+        ) {
+            val version = frameVersionState.value
+            val snap = snapshotCache.getOrUpdate(controller, version, scrollOffset)
+            val matches = searchMatchesState.value
+            drawTerminalSnapshot(snap, paint, boldPaint, cellW, cellH, baseline, scrollOffset, matches, drawState, ts.tapCell, selection)
+        }
+        if (scrollOffset == 0 && selection == null && autocomplete.visible && autocomplete.suggestions.isNotEmpty()) {
+            FloatingAutocompleteHost(
+                controller = controller,
+                frameVersionState = frameVersionState,
+                autocomplete = autocomplete,
+                cellW = cellW,
+                cellH = cellH,
+                canvasSize = canvasSize,
+                density = d
+            )
         }
         selection?.let { sel ->
             SelectionActionToolbar(
                 sel, cellW, cellH, canvasSize, d,
-                { onCopySelection(TerminalSelectionHelper.extractText(sSnap, sel)); onSelectionChange(null) },
-                { onSelectionChange(TerminalSelectionHelper.selectLine(sSnap, sel.start.row)) },
-                { onSelectionChange(TerminalSelectionHelper.selectAllVisible(sSnap)) },
+                {
+                    val snap = snapshotCache.currentOrFetch(controller, scrollOffset)
+                    onCopySelection(TerminalSelectionHelper.extractText(snap, sel))
+                    onSelectionChange(null)
+                },
+                {
+                    val snap = snapshotCache.currentOrFetch(controller, scrollOffset)
+                    onSelectionChange(TerminalSelectionHelper.selectLine(snap, sel.start.row))
+                },
+                {
+                    val snap = snapshotCache.currentOrFetch(controller, scrollOffset)
+                    onSelectionChange(TerminalSelectionHelper.selectAllVisible(snap))
+                },
                 { onSelectionChange(null) }
             )
         }
         TouchVelocityBadgeOverlay(ts, Modifier.align(Alignment.TopEnd).padding(10.dp))
     }
+}
+
+@Composable
+private fun FloatingAutocompleteHost(
+    controller: TerminalSessionController,
+    frameVersionState: State<Long>,
+    autocomplete: FloatingAutocompleteState,
+    cellW: Float,
+    cellH: Float,
+    canvasSize: IntSize,
+    density: Float
+) {
+    val cursorPos by remember(controller, frameVersionState) {
+        derivedStateOf {
+            frameVersionState.value
+            controller.cursorPosition()
+        }
+    }
+    FloatingAutocompletePopup(
+        state = autocomplete,
+        cursorRow = cursorPos.first,
+        cursorCol = cursorPos.second,
+        cellW = cellW,
+        cellH = cellH,
+        canvasSize = canvasSize,
+        density = density
+    )
 }
 
 @Composable
