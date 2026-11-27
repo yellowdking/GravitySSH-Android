@@ -12,6 +12,7 @@ import com.gravityssh.app.ui.components.AgPasswordField
 import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.theme.*
+import com.gravityssh.app.vault.VaultCrudOps
 
 @Composable
 fun ServerProxyTab(
@@ -61,7 +62,9 @@ fun ServerJumpTab(
     ) { onChange(draft.copy(jumpHost = j.copy(mode = it))) }
     when (j.mode) {
         JumpMode.SERVER -> {
-            val candidates = allServers.filter { it.id != draft.id }
+            val candidates = allServers.filter {
+                it.id != draft.id && !VaultCrudOps.wouldCreateJumpCycle(draft.id, it.id, allServers)
+            }
             Text("选择堡垒机", style = MaterialTheme.typography.labelMedium, color = AgMuted)
             if (candidates.isEmpty()) Text("暂无其他可选主机", style = MaterialTheme.typography.bodySmall, color = AgMuted)
             else ServerChipRow(candidates.map { it.id to "${it.name} (${it.host})" }, j.serverId) {

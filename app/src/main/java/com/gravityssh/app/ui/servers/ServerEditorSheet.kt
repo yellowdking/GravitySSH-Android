@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.gravityssh.app.model.AuthType
 import com.gravityssh.app.model.JumpMode
 import com.gravityssh.app.model.ProxyType
 import com.gravityssh.app.model.SSHKeyRecord
@@ -23,6 +24,8 @@ import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.ui.components.AgConfirmDialog
 import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.theme.*
+import com.gravityssh.app.vault.VaultCrudOps
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
@@ -79,7 +82,8 @@ fun ServerEditorSheet(
     }
 
     fun buildValidatedServer(): ServerConfig? {
-        if (draft.host.isBlank()) {
+        val trimmedHost = draft.host.trim()
+        if (trimmedHost.isEmpty()) {
             validationError = "请输入主机地址"
             return null
         }
@@ -88,7 +92,19 @@ fun ServerEditorSheet(
             validationError = "主机端口必须在 1–65535 之间"
             return null
         }
+        val trimmedKeyId = draft.sshKeyId.trim()
+        if (draft.authType == AuthType.KEY || draft.authType == AuthType.BOTH) {
+            if (trimmedKeyId.isEmpty() || allKeys.none { it.id == trimmedKeyId }) {
+                validationError = "请选择有效的 SSH 密钥"
+                return null
+            }
+        }
+        val trimmedProxyHost = draft.proxy.host.trim()
         val proxyPort = if (draft.proxy.type != ProxyType.NONE) {
+            if (trimmedProxyHost.isEmpty()) {
+                validationError = "请输入代理地址"
+                return null
+            }
             val pp = proxyPortText.trim().toIntOrNull()
             if (pp == null || pp !in 1..65535) {
                 validationError = "代理端口必须在 1–65535 之间"
@@ -98,24 +114,81 @@ fun ServerEditorSheet(
         } else {
             proxyPortText.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: 0
         }
-        val jumpPort = if (draft.jumpHost.mode == JumpMode.CUSTOM) {
-            val jp = jumpPortText.trim().toIntOrNull()
-            if (jp == null || jp !in 1..65535) {
-                validationError = "跳板机端口必须在 1–65535 之间"
+        val trimmedJumpServerId = draft.jumpHost.serverId.trim()
+        val trimmedJumpHost = draft.jumpHost.host.trim()
+        val trimmedJumpKeyId = draft.jumpHost.sshKeyId.trim()
+        val jumpPort = when (draft.jumpHost.mode) {
+            JumpMode.SERVER -> {
+                if (trimmedJumpServerId.isEmpty() || allServers.none { it.id == trimmedJumpServerId }) {
+                    validationError = "请选择有效的跳板主机"
+                    return null
+                }
+                if (VaultCrudOps.wouldCreateJumpCycle(draft.id, trimmedJumpServerId, allServers)) {
+                    validationError = "跳板机链路存在循环引用，请重新选择"
+                    return null
+                }
+                jumpPortText.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: 22
+            }
+            JumpMode.CUSTOM -> {
+                if (trimmedJumpHost.isEmpty()) {
+                    validationError = "请输入跳板机地址"
+                    return null
+                }
+                val jp = jumpPortText.trim().toIntOrNull()
+                if (jp == null || jp !in 1..65535) {
+                    validationError = "跳板机端口必须在 1–65535 之间"
+                    return null
+                }
+                if (draft.jumpHost.authType == AuthType.KEY || draft.jumpHost.authType == AuthType.BOTH) {
+                    if (trimmedJumpKeyId.isEmpty() || allKeys.none { it.id == trimmedJumpKeyId }) {
+                        validationError = "请选择有效的跳板机 SSH 密钥"
+                        return null
+                    }
+                }
+                jp
+            }
+            else -> jumpPortText.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: 22
+        }
+        val timeoutRaw = timeoutText.trim()
+        val timeout = if (timeoutRaw.isEmpty()) {
+            15
+        } else {
+            val t = timeoutRaw.toIntOrNull()
+            if (t == null || t !in VaultCrudOps.MIN_TIMEOUT_SECONDS..VaultCrudOps.MAX_TIMEOUT_SECONDS) {
+                validationError = "连接超时必须在 ${VaultCrudOps.MIN_TIMEOUT_SECONDS}–${VaultCrudOps.MAX_TIMEOUT_SECONDS} 秒之间"
                 return null
             }
-            jp
-        } else {
-            jumpPortText.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: 22
+            t
         }
-        val timeout = timeoutText.trim().toIntOrNull()?.coerceIn(1, 300) ?: 15
-        val keepAlive = keepAliveText.trim().toIntOrNull()?.coerceIn(0, 600) ?: 30
+        val keepAliveRaw = keepAliveText.trim()
+        val keepAlive = if (keepAliveRaw.isEmpty()) {
+            30
+        } else {
+            val k = keepAliveRaw.toIntOrNull()
+            if (k == null || k !in VaultCrudOps.MIN_KEEPALIVE_SECONDS..VaultCrudOps.MAX_KEEPALIVE_SECONDS) {
+                validationError = "心跳间隔必须在 ${VaultCrudOps.MIN_KEEPALIVE_SECONDS}–${VaultCrudOps.MAX_KEEPALIVE_SECONDS} 秒之间"
+                return null
+            }
+            k
+        }
         validationError = null
         return draft.copy(
-            host = draft.host.trim(),
+            host = trimmedHost,
             port = port,
-            proxy = draft.proxy.copy(port = proxyPort),
-            jumpHost = draft.jumpHost.copy(port = jumpPort),
+            username = draft.username.trim().ifBlank { "root" },
+            sshKeyId = trimmedKeyId,
+            proxy = draft.proxy.copy(
+                host = trimmedProxyHost,
+                port = proxyPort,
+                username = draft.proxy.username.trim()
+            ),
+            jumpHost = draft.jumpHost.copy(
+                serverId = trimmedJumpServerId,
+                host = trimmedJumpHost,
+                port = jumpPort,
+                username = draft.jumpHost.username.trim(),
+                sshKeyId = trimmedJumpKeyId
+            ),
             timeoutSeconds = timeout,
             keepAliveSeconds = keepAlive
         )
@@ -246,8 +319,15 @@ fun ServerEditorSheet(
                             val valid = buildValidatedServer() ?: return@OutlinedButton
                             testing = true; testResult = null
                             scope.launch {
-                                testResult = onTest(valid).fold({ true to it }, { false to (it.message ?: "连接失败") })
-                                testing = false
+                                try {
+                                    testResult = onTest(valid).fold({ true to it }, { false to (it.message ?: "连接失败") })
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Throwable) {
+                                    testResult = false to (e.message ?: "连接失败")
+                                } finally {
+                                    testing = false
+                                }
                             }
                         },
                         enabled = draft.host.isNotBlank() && !testing,
