@@ -29,7 +29,6 @@ jobs:
     outputs:
       version: ${{ steps.pkg.outputs.version }}
       tag: ${{ steps.pkg.outputs.tag }}
-      ephemeral_signing: ${{ steps.keystore.outputs.ephemeral }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,60 +60,67 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Prepare Release Keystore
+      - name: Decode Release Keystore
         id: keystore
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REQUIRE_RELEASE_KEYSTORE: ${{ vars.REQUIRE_RELEASE_KEYSTORE }}
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+          SIGNING_KEY_BASE64: ${{ secrets.SIGNING_KEY_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
-            printf '%s' "$ANDROID_KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/release.jks"
-            keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "${ANDROID_KEYSTORE_PASS:-gravityssh}" -alias "${ANDROID_KEY_ALIAS:-gravityssh}" >/dev/null
-            echo "ephemeral=false" >> "$GITHUB_OUTPUT"
-          elif [ "$EVENT_NAME" = "pull_request" ]; then
-            echo "::warning::ANDROID_KEYSTORE_B64 secret is not available in pull_request; using an ephemeral signing keystore for PR verification only."
-            keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
-              -storepass gravityssh -keypass gravityssh -alias gravityssh \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=GravitySSH, OU=Mobile, O=GravitySSH, L=Net, S=Net, C=US"
-            echo "ephemeral=true" >> "$GITHUB_OUTPUT"
-          elif [ "$REQUIRE_RELEASE_KEYSTORE" = "true" ]; then
-            echo "::error::ANDROID_KEYSTORE_B64 secret is empty while REQUIRE_RELEASE_KEYSTORE=true on event '${EVENT_NAME}' (${GITHUB_REF}). Refusing to sign a release APK with an ephemeral keystore."
-            exit 1
-          else
-            echo "::warning::ANDROID_KEYSTORE_B64 secret is not configured; using an ephemeral signing keystore. Configure ANDROID_KEYSTORE_B64 and set repository variable REQUIRE_RELEASE_KEYSTORE=true to lock down upgrade signatures."
-            keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
-              -storepass gravityssh -keypass gravityssh -alias gravityssh \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=GravitySSH, OU=Mobile, O=GravitySSH, L=Net, S=Net, C=US"
-            echo "ephemeral=true" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -z "$SIGNING_KEY_BASE64" ]; then
+            echo "::notice::SIGNING_KEY_BASE64 is unavailable on pull_request; skipping release keystore decode (unsigned PR verification build)."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          missing=()
+          if [ -z "$SIGNING_KEY_BASE64" ]; then missing+=("SIGNING_KEY_BASE64"); fi
+          if [ -z "$SIGNING_STORE_PASSWORD" ]; then missing+=("SIGNING_STORE_PASSWORD"); fi
+          if [ -z "$SIGNING_KEY_ALIAS" ]; then missing+=("SIGNING_KEY_ALIAS"); fi
+          if [ -z "$SIGNING_KEY_PASSWORD" ]; then missing+=("SIGNING_KEY_PASSWORD"); fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required signing secret(s) for event '${EVENT_NAME}': ${missing[*]}."
+            exit 1
+          fi
+
+          umask 077
+          if ! printf '%s' "$SIGNING_KEY_BASE64" | tr -d '\r\n ' | base64 -d > app/release.jks 2>/dev/null; then
+            rm -f app/release.jks
+            echo "::error::Failed to base64-decode SIGNING_KEY_BASE64 into app/release.jks."
+            exit 1
+          fi
+          chmod 600 app/release.jks
+          if [ ! -s app/release.jks ]; then
+            rm -f app/release.jks
+            echo "::error::Decoded app/release.jks is empty."
+            exit 1
+          fi
+
+          if ! keytool -list -keystore app/release.jks -storepass "$SIGNING_STORE_PASSWORD" -alias "$SIGNING_KEY_ALIAS" >/dev/null 2>&1; then
+            rm -f app/release.jks
+            echo "::error::Keystore verification failed for SIGNING_KEY_ALIAS in app/release.jks (verify SIGNING_KEY_BASE64, SIGNING_STORE_PASSWORD, and SIGNING_KEY_ALIAS)."
+            exit 1
+          fi
+          echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Run Unit Tests, Lint & Build Release APK
         shell: bash
         env:
-          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
-          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
-          EPHEMERAL_SIGNING: ${{ steps.keystore.outputs.ephemeral }}
+          SIGNING_KEY_FILE: app/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           set -o pipefail
-          if [ "$EPHEMERAL_SIGNING" = "true" ]; then
-            export ANDROID_KEYSTORE_PASS="gravityssh"
-            export ANDROID_KEY_ALIAS="gravityssh"
-            export ANDROID_KEY_PASS="gravityssh"
-          else
-            export ANDROID_KEYSTORE_PASS="${ANDROID_KEYSTORE_PASS:-gravityssh}"
-            export ANDROID_KEY_ALIAS="${ANDROID_KEY_ALIAS:-gravityssh}"
-            export ANDROID_KEY_PASS="${ANDROID_KEY_PASS:-gravityssh}"
-          fi
           gradle testDebugUnitTest lintDebug assembleRelease --build-cache --stacktrace 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      - name: Clean Up Release Keystore
+        if: always()
+        shell: bash
+        run: rm -f app/release.jks
 
       - name: Emit Failure Annotations
         if: failure()
@@ -133,31 +139,137 @@ jobs:
       - name: Package Release Artifacts
         id: pkg
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SIGNED: ${{ steps.keystore.outputs.signed }}
         run: |
           VER=$(tr -d '\r\n ' < VERSION)
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "tag=v$VER" >> "$GITHUB_OUTPUT"
           mkdir -p dist
-          RELEASE_APK="dist/GravitySSH-Android-v${VER}-release.apk"
-          cp app/build/outputs/apk/release/app-release.apk "$RELEASE_APK"
+          if [ "$SIGNED" = "true" ]; then
+            SRC_APK="app/build/outputs/apk/release/app-release.apk"
+            OUT_NAME="GravitySSH-Android-v${VER}-release.apk"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            SRC_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+            OUT_NAME="GravitySSH-Android-v${VER}-unsigned.apk"
+            echo "::notice::Packaging unsigned PR build (${OUT_NAME}); release signature verification is skipped on unsigned pull_request."
+          else
+            echo "::error::Refusing to package unsigned APK on event '${EVENT_NAME}'."
+            exit 1
+          fi
+          if [ ! -f "$SRC_APK" ]; then
+            echo "::error::Expected APK not found: ${SRC_APK}"
+            exit 1
+          fi
+          RELEASE_APK="dist/${OUT_NAME}"
+          cp "$SRC_APK" "$RELEASE_APK"
+          echo "apk_path=$RELEASE_APK" >> "$GITHUB_OUTPUT"
           APK_BYTES=$(stat -c%s "$RELEASE_APK")
           APK_MB=$(awk -v b="$APK_BYTES" 'BEGIN { printf "%.2f", b / 1048576 }')
           echo "Release APK size: ${APK_MB} MB (${APK_BYTES} bytes)"
-          (cd dist && sha256sum "GravitySSH-Android-v${VER}-release.apk" > SHA256SUMS.txt)
+          (cd dist && sha256sum "$OUT_NAME" > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
 
       - name: R8 Release APK Smoke Test
         shell: bash
         env:
-          VER: ${{ steps.pkg.outputs.version }}
+          APK_PATH: ${{ steps.pkg.outputs.apk_path }}
+          REQUIRE_SIGNED: ${{ steps.keystore.outputs.signed == 'true' || github.event_name != 'pull_request' }}
         run: |
+          if [ "$REQUIRE_SIGNED" = "true" ]; then
+            APKSIGNER="$(command -v apksigner || true)"
+            if [ -z "$APKSIGNER" ]; then
+              SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+              if [ -d "$SDK_ROOT/build-tools" ]; then
+                APKSIGNER="$({ find "$SDK_ROOT/build-tools" -maxdepth 2 -name apksigner 2>/dev/null || true; } | sort -V | tail -n 1)"
+              fi
+            fi
+            if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
+              echo "Verifying APK signature with ${APKSIGNER}..."
+              "$APKSIGNER" verify --min-sdk-version 29 "$APK_PATH"
+            else
+              echo "::warning::apksigner not found under Android SDK build-tools; relying on APK Signing Block v2/v3 inspection."
+            fi
+          fi
+
           python3 - <<'PY'
           import os
+          import struct
           import sys
           import zipfile
 
-          ver = os.environ["VER"]
-          apk_path = f"dist/GravitySSH-Android-v{ver}-release.apk"
+          APK_SIG_BLOCK_MAGIC = b"APK Sig Block 42"
+          APK_SIG_SCHEME_IDS = {
+              0x7109871A: "v2",
+              0xF05368C0: "v3",
+              0x1B93AD61: "v3.1",
+          }
+
+          def find_apk_sig_schemes(path: str) -> list[str]:
+              with open(path, "rb") as f:
+                  f.seek(0, os.SEEK_END)
+                  file_size = f.tell()
+                  if file_size < 22:
+                      return []
+                  tail_len = min(file_size, 65535 + 22)
+                  f.seek(file_size - tail_len)
+                  tail = f.read(tail_len)
+
+                  eocd_rel = -1
+                  search_from = len(tail) - 22
+                  while search_from >= 0:
+                      idx = tail.rfind(b"PK\x05\x06", 0, search_from + 4)
+                      if idx == -1:
+                          break
+                      comment_len = struct.unpack_from("<H", tail, idx + 20)[0]
+                      if idx + 22 + comment_len == len(tail):
+                          eocd_rel = idx
+                          break
+                      search_from = idx - 1
+
+                  if eocd_rel == -1:
+                      return []
+
+                  cd_offset = struct.unpack_from("<I", tail, eocd_rel + 16)[0]
+                  if cd_offset < 32:
+                      return []
+
+                  f.seek(cd_offset - 24)
+                  footer = f.read(24)
+                  if len(footer) != 24 or footer[8:] != APK_SIG_BLOCK_MAGIC:
+                      return []
+
+                  block_size = struct.unpack_from("<Q", footer, 0)[0]
+                  if block_size < 24 or block_size + 8 > cd_offset:
+                      return []
+
+                  block_start = cd_offset - block_size - 8
+                  f.seek(block_start)
+                  header = f.read(8)
+                  if len(header) != 8 or struct.unpack_from("<Q", header, 0)[0] != block_size:
+                      return []
+
+                  pairs_len = block_size - 24
+                  pairs_data = f.read(pairs_len)
+                  if len(pairs_data) != pairs_len:
+                      return []
+
+                  schemes = []
+                  pos = 0
+                  while pos + 8 <= pairs_len:
+                      pair_len = struct.unpack_from("<Q", pairs_data, pos)[0]
+                      pos += 8
+                      if pair_len < 4 or pos + pair_len > pairs_len:
+                          return []
+                      pair_id = struct.unpack_from("<I", pairs_data, pos)[0]
+                      if pair_id in APK_SIG_SCHEME_IDS:
+                          schemes.append(APK_SIG_SCHEME_IDS[pair_id])
+                      pos += pair_len
+                  return schemes
+
+          apk_path = os.environ["APK_PATH"]
+          require_signed = os.environ.get("REQUIRE_SIGNED", "false").lower() == "true"
           if not os.path.isfile(apk_path):
               sys.exit(f"::error::Release APK not found: {apk_path}")
 
@@ -205,9 +317,18 @@ jobs:
               if missing:
                   sys.exit(f"::error::R8 stripped required BouncyCastle classes from release DEX: {', '.join(missing)}")
 
+              sig_schemes = find_apk_sig_schemes(apk_path)
+              has_v1 = any(n.startswith("META-INF/") and n.endswith(".SF") for n in names)
+              if has_v1 and "v1" not in sig_schemes:
+                  sig_schemes.insert(0, "v1")
+              if require_signed and not sig_schemes:
+                  sys.exit(f"::error::Release APK is unsigned (no APK Signing Block v2/v3 or v1 JAR signature found): {apk_path}")
+
+              sig_summary = "+".join(sig_schemes) if sig_schemes else "unsigned(pr)"
               print(
                   f"R8 Release APK Smoke Test PASSED: {apk_path} "
-                  f"(fragment={frag_ver}, dex_files={len(dex_entries)}, compressed_dex=true, pqc_resources=0, bc_providers=ok)"
+                  f"(fragment={frag_ver}, dex_files={len(dex_entries)}, compressed_dex=true, "
+                  f"pqc_resources=0, bc_providers=ok, signing={sig_summary})"
               )
           PY
 
@@ -264,7 +385,6 @@ jobs:
           tag_name: ${{ needs.build.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: GravitySSH Android ${{ needs.build.outputs.tag }}
-          body: ${{ needs.build.outputs.ephemeral_signing == 'true' && '> ⚠️ **签名提醒**：仓库尚未配置 `ANDROID_KEYSTORE_B64` Secret，本版本使用临时密钥签名。如需后续版本保留数据覆盖安装，请先在仓库 Secrets 配置固定 Keystore 并设置 Variable `REQUIRE_RELEASE_KEYSTORE=true`。' || '' }}
           generate_release_notes: true
           make_latest: true
           files: |

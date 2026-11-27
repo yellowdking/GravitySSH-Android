@@ -1,3 +1,4 @@
+import java.io.File
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -39,13 +40,34 @@ android {
     }
 
     signingConfigs {
-        val ksPath = System.getenv("ANDROID_KEYSTORE_PATH")
-        if (!ksPath.isNullOrBlank() && file(ksPath).exists()) {
+        val signingKeyFilePath = System.getenv("SIGNING_KEY_FILE")?.trim()
+        val signingStorePassword = System.getenv("SIGNING_STORE_PASSWORD")
+        val signingKeyAlias = System.getenv("SIGNING_KEY_ALIAS")
+        val signingKeyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+
+        val resolvedKeyFile = signingKeyFilePath
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { path ->
+                val raw = File(path)
+                when {
+                    raw.isAbsolute -> raw
+                    rootProject.file(path).isFile -> rootProject.file(path)
+                    else -> file(path)
+                }
+            }
+
+        if (
+            resolvedKeyFile != null &&
+            resolvedKeyFile.isFile &&
+            !signingStorePassword.isNullOrBlank() &&
+            !signingKeyAlias.isNullOrBlank() &&
+            !signingKeyPassword.isNullOrBlank()
+        ) {
             create("release") {
-                storeFile = file(ksPath)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASS") ?: "gravityssh"
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "gravityssh"
-                keyPassword = System.getenv("ANDROID_KEY_PASS") ?: "gravityssh"
+                storeFile = resolvedKeyFile
+                storePassword = signingStorePassword
+                keyAlias = signingKeyAlias
+                keyPassword = signingKeyPassword
             }
         }
     }

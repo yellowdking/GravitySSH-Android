@@ -7,6 +7,7 @@ local.properties
 .DS_Store
 *.keystore
 *.jks
+keystore.properties
 app/src/main/res/font/*.ttf
 app/src/main/res/font/*.otf
 dist/
