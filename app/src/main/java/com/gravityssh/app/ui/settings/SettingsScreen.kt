@@ -8,6 +8,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.ui.AppViewModel
@@ -20,7 +22,12 @@ import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
+fun SettingsScreen(
+    viewModel: AppViewModel,
+    onOpenSync: () -> Unit,
+    onOpenKeys: () -> Unit,
+    onOpenTools: () -> Unit
+) {
     val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
     val settings = vaultState.data.settings
     var fontSizeSlider by remember(settings.terminalFontSize) {
@@ -40,27 +47,29 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
             modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            AgCard(borderColor = AgCyan.copy(alpha = 0.5f), modifier = Modifier.clickable(onClick = onOpenSync)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
-                        Icon(AgIcons.QrCode2, null, tint = AgCyan, modifier = Modifier.size(28.dp))
-                        Column {
-                            Text("多端同步与中继", style = MaterialTheme.typography.titleMedium, color = AgText)
-                            Text(
-                                if (settings.syncRelayUrl.isNotBlank()) "自定义中继: ${settings.syncRelayUrl}"
-                                else "一次性同步码 / 二维码端到端加密迁移 · 中继设置",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = AgMuted
-                            )
-                        }
-                    }
-                    Icon(AgIcons.ChevronRight, null, tint = AgMuted)
-                }
-            }
+            SettingsNavCard(
+                icon = AgIcons.QrCode2,
+                tint = AgCyan,
+                borderColor = AgCyan.copy(alpha = 0.5f),
+                title = "多端同步与中继",
+                subtitle = if (settings.syncRelayUrl.isNotBlank()) "自定义中继: ${settings.syncRelayUrl}"
+                else "一次性同步码 / 二维码端到端加密迁移 · 中继设置",
+                onClick = onOpenSync
+            )
+            SettingsNavCard(
+                icon = AgIcons.Key,
+                tint = AgAccent,
+                title = "密钥",
+                subtitle = "${vaultState.data.sshKeys.size} 把 SSH 密钥 · 硬件级加密存储与主机部署",
+                onClick = onOpenKeys
+            )
+            SettingsNavCard(
+                icon = AgIcons.Bolt,
+                tint = AgCyan,
+                title = "快捷",
+                subtitle = "${vaultState.data.shortcuts.size} 快捷命令 · ${vaultState.data.templates.size} 模板 · ${vaultState.data.history.size} 历史",
+                onClick = onOpenTools
+            )
 
             AgCard {
                 Text("终端体验与智能辅助", style = MaterialTheme.typography.titleMedium, color = AgText)
@@ -92,6 +101,37 @@ fun SettingsScreen(viewModel: AppViewModel, onOpenSync: () -> Unit) {
             SettingsSecuritySection(viewModel = viewModel)
             SettingsUpdateCard(viewModel = viewModel)
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun SettingsNavCard(
+    icon: ImageVector,
+    tint: Color,
+    title: String,
+    subtitle: String,
+    borderColor: Color = AgBorder,
+    onClick: () -> Unit
+) {
+    AgCard(borderColor = borderColor, modifier = Modifier.clickable(onClick = onClick)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(icon, null, tint = tint, modifier = Modifier.size(28.dp))
+                Column {
+                    Text(title, style = MaterialTheme.typography.titleMedium, color = AgText)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = AgMuted)
+                }
+            }
+            Icon(AgIcons.ChevronRight, null, tint = AgMuted)
         }
     }
 }

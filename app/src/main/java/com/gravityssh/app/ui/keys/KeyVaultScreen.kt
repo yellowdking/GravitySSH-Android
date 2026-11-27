@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,7 +22,7 @@ import com.gravityssh.app.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KeyVaultScreen(viewModel: AppViewModel) {
+fun KeyVaultScreen(viewModel: AppViewModel, onBack: () -> Unit) {
     val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
     val keys = vaultState.data.sshKeys
     val servers = vaultState.data.servers
@@ -36,6 +37,11 @@ fun KeyVaultScreen(viewModel: AppViewModel) {
         containerColor = AgBg,
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = AgText)
+                    }
+                },
                 title = {
                     Column {
                         Text("SSH 密钥库", style = MaterialTheme.typography.titleLarge, color = AgText)

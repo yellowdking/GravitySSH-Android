@@ -85,7 +85,7 @@ fun ServerBasicTab(
 internal fun KeySelectorRow(label: String, keys: List<SSHKeyRecord>, selectedId: String, onSelect: (String) -> Unit) {
     Text(label, style = MaterialTheme.typography.labelMedium, color = AgMuted)
     if (keys.isEmpty()) {
-        Text("尚未添加密钥，请前往「密钥」页生成或导入", style = MaterialTheme.typography.bodySmall, color = AgMuted)
+        Text("尚未添加密钥，请前往「设置 → 密钥」生成或导入", style = MaterialTheme.typography.bodySmall, color = AgMuted)
     } else {
         ServerChipRow(keys.map { it.id to "${it.name} (${it.keyType})" }, selectedId, onSelect)
     }

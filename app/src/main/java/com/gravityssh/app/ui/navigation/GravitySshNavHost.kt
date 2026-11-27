@@ -88,7 +88,7 @@ fun GravitySshRoot(viewModel: AppViewModel) {
     val imeVisible by remember(density, imeInsets) {
         derivedStateOf { imeInsets.getBottom(density) > 0 }
     }
-    val hideBottomBar = currentRoute == Routes.SYNC || (currentRoute == Routes.TERMINAL && imeVisible)
+    val hideBottomBar = currentRoute == Routes.SYNC || currentRoute == Routes.KEYS || currentRoute == Routes.TOOLS || (currentRoute == Routes.TERMINAL && imeVisible)
 
     fun navigateTab(route: String) {
         navController.navigate(route) {
@@ -131,12 +131,23 @@ fun GravitySshRoot(viewModel: AppViewModel) {
                 composable(Routes.TERMINAL) {
                     TerminalWorkspaceScreen(viewModel = viewModel, onJumpToServers = { navigateTab(Routes.SERVERS) })
                 }
-                composable(Routes.KEYS) { KeyVaultScreen(viewModel = viewModel) }
+                composable(Routes.KEYS) {
+                    KeyVaultScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                }
                 composable(Routes.TOOLS) {
-                    ToolsScreen(viewModel = viewModel, onJumpToTerminal = { navigateTab(Routes.TERMINAL) })
+                    ToolsScreen(
+                        viewModel = viewModel,
+                        onJumpToTerminal = { navigateTab(Routes.TERMINAL) },
+                        onBack = { navController.popBackStack() }
+                    )
                 }
                 composable(Routes.SETTINGS) {
-                    SettingsScreen(viewModel = viewModel, onOpenSync = { navController.navigate(Routes.SYNC) })
+                    SettingsScreen(
+                        viewModel = viewModel,
+                        onOpenSync = { navController.navigate(Routes.SYNC) { launchSingleTop = true } },
+                        onOpenKeys = { navController.navigate(Routes.KEYS) { launchSingleTop = true } },
+                        onOpenTools = { navController.navigate(Routes.TOOLS) { launchSingleTop = true } }
+                    )
                 }
                 composable(Routes.SYNC) {
                     SyncScreen(viewModel = viewModel, onBack = { navController.popBackStack() })

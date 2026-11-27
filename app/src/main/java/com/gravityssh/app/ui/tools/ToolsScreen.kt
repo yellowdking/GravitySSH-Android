@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,7 +24,7 @@ import com.gravityssh.app.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit) {
+fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit, onBack: () -> Unit) {
     val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
     val shortcuts = vaultState.data.shortcuts
     val templates = vaultState.data.templates
@@ -72,7 +73,12 @@ fun ToolsScreen(viewModel: AppViewModel, onJumpToTerminal: () -> Unit) {
         containerColor = AgBg,
         topBar = {
             TopAppBar(
-                title = { Text("运维效率中心", style = MaterialTheme.typography.titleLarge, color = AgText) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = AgText)
+                    }
+                },
+                title = { Text("快捷中心", style = MaterialTheme.typography.titleLarge, color = AgText) },
                 actions = {
                     when (tabIndex) {
                         0 -> IconButton(onClick = { editingShortcut = CommandShortcut() }) { Icon(Icons.Rounded.Add, "新建", tint = AgAccent) }

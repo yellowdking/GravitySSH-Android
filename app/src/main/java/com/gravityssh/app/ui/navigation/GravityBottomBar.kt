@@ -23,8 +23,6 @@ private data class NavTab(val route: String, val label: String, val icon: ImageV
 private val BOTTOM_TABS = listOf(
     NavTab(Routes.SERVERS, "主机", AgIcons.Dns),
     NavTab(Routes.TERMINAL, "终端", AgIcons.Terminal),
-    NavTab(Routes.KEYS, "密钥", AgIcons.Key),
-    NavTab(Routes.TOOLS, "效率", AgIcons.Bolt),
     NavTab(Routes.SETTINGS, "设置", Icons.Rounded.Settings)
 )
 
