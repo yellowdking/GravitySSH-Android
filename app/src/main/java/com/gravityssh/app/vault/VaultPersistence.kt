@@ -98,6 +98,9 @@ internal class VaultPersistence(
         return backup
     }
 
-    private fun decode(plain: ByteArray): VaultData =
-        json.decodeFromString(VaultData.serializer(), plain.toString(Charsets.UTF_8))
+    private fun decode(plain: ByteArray): VaultData {
+        val decoded = json.decodeFromString(VaultData.serializer(), plain.toString(Charsets.UTF_8))
+        val sanitizedSettings = VaultCrudOps.sanitizeSettings(decoded.settings)
+        return if (sanitizedSettings == decoded.settings) decoded else decoded.copy(settings = sanitizedSettings)
+    }
 }

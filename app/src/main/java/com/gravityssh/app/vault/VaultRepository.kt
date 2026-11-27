@@ -268,8 +268,24 @@ class VaultRepository(
         }
     }
 
+    fun shouldAutoLock(backgroundedAtElapsedMs: Long, nowElapsedMs: Long): Boolean {
+        val snap = _state.value
+        return VaultCrudOps.shouldAutoLockAfterBackground(
+            lockState = snap.lockState,
+            autoLockMinutes = snap.data.settings.autoLockMinutes,
+            backgroundedAtElapsedMs = backgroundedAtElapsedMs,
+            nowElapsedMs = nowElapsedMs
+        )
+    }
+
+    fun lockIfAutoLockElapsed(backgroundedAtElapsedMs: Long, nowElapsedMs: Long): Boolean {
+        if (!shouldAutoLock(backgroundedAtElapsedMs, nowElapsedMs)) return false
+        lockNow()
+        return _state.value.lockState.locked
+    }
+
     fun updateSettings(transform: (AppSettings) -> AppSettings): AppSettings = mutate { d ->
-        val transformed = transform(d.settings)
+        val transformed = VaultCrudOps.sanitizeSettings(transform(d.settings))
         val u = if (cachedPasswordKey != null && transformed.biometricLockEnabled) {
             transformed.copy(biometricLockEnabled = false)
         } else {
