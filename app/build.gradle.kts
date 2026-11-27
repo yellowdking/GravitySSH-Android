@@ -7,7 +7,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val appVersionName = rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { "1.0.6" } ?: "1.0.6"
+val appVersionName = rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { "1.0.7" } ?: "1.0.7"
 val appVersionCode = appVersionName.split(".").let { p ->
     val maj = p.getOrNull(0)?.toIntOrNull() ?: 1
     val min = p.getOrNull(1)?.toIntOrNull() ?: 0

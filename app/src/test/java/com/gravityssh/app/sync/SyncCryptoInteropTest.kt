@@ -3,9 +3,12 @@ package com.gravityssh.app.sync
 import com.gravityssh.app.InMemoryMasterKeyProvider
 import com.gravityssh.app.model.AuthType
 import com.gravityssh.app.model.CommandShortcut
+import com.gravityssh.app.model.PairRequestPayload
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
+import com.gravityssh.app.model.SyncReceivePollState
+import com.gravityssh.app.model.SyncSendPollState
 import com.gravityssh.app.vault.VaultCrypto
 import com.gravityssh.app.vault.VaultRepository
 import kotlinx.coroutines.test.runTest
@@ -183,5 +186,339 @@ class SyncCryptoInteropTest {
         assertEquals(1, sum.serversAdded)
         // Consumed after success
         assertTrue(runCatching { service.applyReceive(okPreview.previewId, SyncImportMode.MERGE) }.exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test
+    fun decryptWindowsV2DualGoldenVectorsByteForByte() {
+        val sendCode = "K7M9-P4X2"
+        val recvCode = "M8N2-Q5R7"
+        val canonicalSend = SyncCrypto.canonicalizeCode(sendCode)
+        val canonicalRecv = SyncCrypto.canonicalizeCode(recvCode)
+        assertEquals("K7M9P4X2", canonicalSend)
+        assertEquals("M8N2Q5R7", canonicalRecv)
+
+        val channelId = SyncCrypto.deriveChannelId(sendCode)
+        val requestId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        assertEquals("dda9c60ab5d048fe1299e0815ff885d13047578a81a4b6969b676820a0371c7e", channelId)
+
+        val dualSecret = SyncCrypto.deriveDualSecret(sendCode, recvCode)
+        assertEquals("K7M9P4X2:M8N2Q5R7", dualSecret)
+
+        val dualAad = SyncCrypto.deriveDualAad(channelId, requestId, canonicalRecv)
+        assertEquals(
+            "dda9c60ab5d048fe1299e0815ff885d13047578a81a4b6969b676820a0371c7e:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:M8N2Q5R7",
+            dualAad
+        )
+
+        val saltB64 = "AAECAwQFBgcICQoLDA0ODw=="
+        val nonceB64 = "oKGio6Slpqeoqaqr"
+        val salt = Base64.getDecoder().decode(saltB64)
+        val nonce = Base64.getDecoder().decode(nonceB64)
+        val dualAesKeyHex = SyncCrypto.bytesToHex(SyncCrypto.deriveAesKey(dualSecret, salt))
+        assertEquals(
+            "1260b54d306f1fafd1cc9269c1bdbf28f3b5e0c781839dc38ad212d0c354a14a",
+            dualAesKeyHex
+        )
+
+        val pairReqCiphertextB64 =
+            "APaRyQ4BbxId1TM4rqq7naFWq7TYtpQZiLMxHR6ePklgv0iWXAgj/hxwBD9GmA1hehr88Gil2CwJry5gLkQGVuT7M4K76ftGg0q0JAakKlGMpPU90qXFkR88vNkqjuijkHPuSc4JWjpmribIQ95TdYF/6rIrLLFJt0/jlsXobDYUh7frQiGgkHEFcAeJWFHnbKmoAbh4I742hFtVbfOWbyyT"
+        val decodedReq = SyncCrypto.decryptPairRequest(sendCode, saltB64, nonceB64, pairReqCiphertextB64)
+        assertEquals("M8N2-Q5R7", decodedReq.receiverCode)
+        assertEquals("Pixel-9", decodedReq.receiverDevice)
+        assertEquals("android", decodedReq.receiverPlatform)
+        assertEquals("2026-01-02T03:04:05Z", decodedReq.requestedAt)
+
+        // Deterministic encryptPairRequest round-trip
+        val reEncReq = SyncCrypto.encryptPairRequest(sendCode, decodedReq, fixedSalt = salt, fixedNonce = nonce)
+        assertEquals(channelId, reEncReq.channelId)
+        assertEquals(saltB64, reEncReq.saltB64)
+        assertEquals(nonceB64, reEncReq.nonceB64)
+        assertEquals(decodedReq, SyncCrypto.decryptPairRequest(sendCode, reEncReq.saltB64, reEncReq.nonceB64, reEncReq.ciphertextB64))
+
+        val dualBundleCiphertextB64 =
+            "vzp6gCf3XAQ6HkWPOPwgdA3P8OZ/5+Z0UtAOnfbhwtJlUxLS0SR9gz7kcmUaC8MuWVLXvVoWQtEntbvDuLkQw/ZH7K8StuM5j6Iv2+SiywqyPD3I+/2MFKIPssjBGJ3Acl0mG4f/BlCZl7FQg8u22EI4YlgHNDqJpehpbdBoAS6eSH++HspnBHiAnbAPDHpFZL2wE1c0/2IfrfdFpjNvdUWR2z4Tbw99ZiUoiujrR77kuNUEDoSUz10H1p1Si3VgrTt4wrrZoVID7NRgyD6WQf8p45KNG6c4nxtnLd9slkCn0cPzxGz+zgA+LfJc8Ndt9Ef9KkJeNIQkPgp98tCwE6gBWGYo14cdazo97J01TyJr/1qzrL7+oPhz3rqTXeweLCXN1ewVc188oG3/Q8Tj8IXyMCoLc1F8S8nsqs8nKfxhPVIhn9BAwL1Bm1Y8nhSv7Bgoz2SryJnLkkv+IvKDfz4HKCOfNowjQYBgiMgdYccXTqpj2k84qkeO01AcaKb3u4YCbaTl6zpJ1aC34ol1CZhdbtHZnsb+U9K561XccWsvPdjBRb0IvyCZlS8XGzNtPWFk0/Ci5VdGJaxLDw=="
+        val decodedBundle = SyncCrypto.decryptBundleDual(
+            saltB64 = saltB64,
+            nonceB64 = nonceB64,
+            ctB64 = dualBundleCiphertextB64,
+            sendCode = sendCode,
+            recvCode = recvCode,
+            requestId = requestId
+        )
+        assertEquals(1, decodedBundle.schemaVersion)
+        assertEquals("2026-01-02T03:04:05Z", decodedBundle.exportedAt)
+        assertEquals("windows", decodedBundle.sourcePlatform)
+        assertEquals("WIN-DEV-01", decodedBundle.sourceDevice)
+        assertEquals(1, decodedBundle.servers.size)
+        assertEquals("srv-golden-1", decodedBundle.servers[0].id)
+        assertEquals("192.0.2.10", decodedBundle.servers[0].host)
+        assertEquals("golden-pass-!@#", decodedBundle.servers[0].password)
+        assertEquals(1, decodedBundle.shortcuts.size)
+        assertEquals("sc-golden-1", decodedBundle.shortcuts[0].id)
+
+        // Deterministic encryptBundleDual round-trip
+        val reEncDual = SyncCrypto.encryptBundleDual(decodedBundle, sendCode, recvCode, requestId, fixedSalt = salt, fixedNonce = nonce)
+        assertEquals(channelId, reEncDual.channelId)
+        assertEquals(saltB64, reEncDual.saltB64)
+        assertEquals(nonceB64, reEncDual.nonceB64)
+        assertEquals(
+            decodedBundle,
+            SyncCrypto.decryptBundleDual(reEncDual.saltB64, reEncDual.nonceB64, reEncDual.ciphertextB64, sendCode, recvCode, requestId)
+        )
+    }
+
+    @Test
+    fun v2DualKeyCryptoAndPairRequestRoundTrip() {
+        val tok = SyncCrypto.generateHexToken32()
+        assertTrue(tok.matches(Regex("^[0-9a-f]{64}$")))
+
+        val sendCode = "K7M9-P4X2"
+        val recvCode = "R3T8-W5Y6"
+        val channelId = SyncCrypto.deriveChannelId(sendCode)
+        val requestId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        assertEquals("K7M9P4X2:R3T8W5Y6", SyncCrypto.deriveDualSecret(sendCode, recvCode))
+        assertEquals(
+            "$channelId:$requestId:R3T8W5Y6",
+            SyncCrypto.deriveDualAad(channelId, requestId, SyncCrypto.canonicalizeCode(recvCode))
+        )
+
+        val reqInfo = PairRequestPayload(
+            receiverCode = recvCode,
+            receiverDevice = "Pixel 9",
+            receiverPlatform = "android",
+            requestedAt = "2026-11-27T11:00:00Z"
+        )
+        val reqBlob = SyncCrypto.encryptPairRequest(sendCode, reqInfo)
+        val decodedReq = SyncCrypto.decryptPairRequest(sendCode, reqBlob.saltB64, reqBlob.nonceB64, reqBlob.ciphertextB64)
+        assertEquals(reqInfo, decodedReq)
+        assertTrue(
+            runCatching {
+                SyncCrypto.decryptPairRequest(recvCode, reqBlob.saltB64, reqBlob.nonceB64, reqBlob.ciphertextB64)
+            }.exceptionOrNull() is SecurityException
+        )
+
+        val bundle = SyncBundle(
+            schemaVersion = 1,
+            exportedAt = "2026-11-27T11:01:00Z",
+            sourcePlatform = "android",
+            sourceDevice = "Pixel 9",
+            servers = listOf(ServerConfig(id = "s-v2", name = "DualHost", host = "10.0.1.2", port = 22, username = "ubuntu")),
+            shortcuts = listOf(CommandShortcut(id = "c-v2", name = "Logs", command = "journalctl -n 50"))
+        )
+        val dualBlob = SyncCrypto.encryptBundleDual(bundle, sendCode, recvCode, requestId)
+        assertEquals(channelId, dualBlob.channelId)
+        val decodedBundle = SyncCrypto.decryptBundleDual(
+            dualBlob.saltB64,
+            dualBlob.nonceB64,
+            dualBlob.ciphertextB64,
+            sendCode,
+            recvCode,
+            requestId
+        )
+        assertEquals(bundle, decodedBundle)
+
+        // Wrong recvCode, wrong sendCode, or wrong requestId (AAD) must fail with SecurityException
+        assertTrue(
+            runCatching {
+                SyncCrypto.decryptBundleDual(dualBlob.saltB64, dualBlob.nonceB64, dualBlob.ciphertextB64, sendCode, "2222-3333", requestId)
+            }.exceptionOrNull() is SecurityException
+        )
+        assertTrue(
+            runCatching {
+                SyncCrypto.decryptBundleDual(dualBlob.saltB64, dualBlob.nonceB64, dualBlob.ciphertextB64, "2222-3333", recvCode, requestId)
+            }.exceptionOrNull() is SecurityException
+        )
+        assertTrue(
+            runCatching {
+                SyncCrypto.decryptBundleDual(
+                    dualBlob.saltB64,
+                    dualBlob.nonceB64,
+                    dualBlob.ciphertextB64,
+                    sendCode,
+                    recvCode,
+                    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+                )
+            }.exceptionOrNull() is SecurityException
+        )
+    }
+
+    @Test
+    fun v2MutualPairingServiceFlowAndLockChecks() = runTest {
+        val senderRepo = VaultRepository(File(tempFolder.root, "sender.gsv"), VaultCrypto(InMemoryMasterKeyProvider()))
+        senderRepo.open()
+        assertTrue(senderRepo.setMasterPassword("", "pw123").isSuccess)
+        senderRepo.saveServer(ServerConfig(id = "srv-1", name = "Prod", host = "192.168.1.10", username = "ops"))
+
+        val receiverRepo = VaultRepository(File(tempFolder.root, "receiver.gsv"), VaultCrypto(InMemoryMasterKeyProvider()))
+        receiverRepo.open()
+        assertTrue(receiverRepo.setMasterPassword("", "pw456").isSuccess)
+
+        var slotState = ""
+        var slotChannel = ""
+        var slotToken = ""
+        var slotRequestId = ""
+        var reqSalt = ""
+        var reqNonce = ""
+        var reqCt = ""
+        var appSalt = ""
+        var appNonce = ""
+        var appCt = ""
+        val pairRequestCalls = AtomicInteger(0)
+        val dropCalls = AtomicInteger(0)
+
+        val relay = object : SyncRelayClient() {
+            override suspend fun drop(relayUrl: String, req: DropRequest): DropResponse {
+                dropCalls.incrementAndGet()
+                return DropResponse(ok = true)
+            }
+
+            override suspend fun pairInit(relayUrl: String, channelId: String, senderToken: String, ttlSeconds: Int): PairInitResponse {
+                slotState = "waiting"
+                slotChannel = channelId
+                slotToken = senderToken
+                return PairInitResponse(ok = true, expiresAt = "2099-01-01T00:00:00Z")
+            }
+
+            override suspend fun pairRequest(
+                relayUrl: String,
+                channelId: String,
+                requestId: String,
+                salt: String,
+                nonce: String,
+                ciphertext: String
+            ): PairRequestResponse {
+                pairRequestCalls.incrementAndGet()
+                assertEquals(slotChannel, channelId)
+                slotState = "requested"
+                slotRequestId = requestId
+                reqSalt = salt
+                reqNonce = nonce
+                reqCt = ciphertext
+                return PairRequestResponse(ok = true, expiresAt = "2099-01-01T00:00:00Z")
+            }
+
+            override suspend fun pairPoll(relayUrl: String, channelId: String, senderToken: String): PairPollResponse {
+                assertEquals(slotChannel, channelId)
+                assertEquals(slotToken, senderToken)
+                return when (slotState) {
+                    "waiting" -> PairPollResponse(state = "waiting")
+                    "requested" -> PairPollResponse(state = "requested", requestId = slotRequestId, salt = reqSalt, nonce = reqNonce, ciphertext = reqCt)
+                    "approved" -> PairPollResponse(state = "approved", requestId = slotRequestId)
+                    "rejected" -> PairPollResponse(state = "rejected", requestId = slotRequestId)
+                    else -> PairPollResponse(state = "gone")
+                }
+            }
+
+            override suspend fun pairApprove(
+                relayUrl: String,
+                channelId: String,
+                senderToken: String,
+                requestId: String,
+                salt: String,
+                nonce: String,
+                ciphertext: String
+            ) {
+                assertEquals(slotChannel, channelId)
+                assertEquals(slotToken, senderToken)
+                assertEquals(slotRequestId, requestId)
+                slotState = "approved"
+                appSalt = salt
+                appNonce = nonce
+                appCt = ciphertext
+            }
+
+            override suspend fun pairReject(relayUrl: String, channelId: String, senderToken: String, requestId: String) {
+                if (slotState.isEmpty()) throw RelayGoneException("gone")
+                slotState = "rejected"
+            }
+
+            override suspend fun pairStatus(relayUrl: String, channelId: String, requestId: String): PairStatusResponse {
+                if (slotState.isEmpty()) throw RelayGoneException("gone")
+                assertEquals(slotChannel, channelId)
+                assertEquals(slotRequestId, requestId)
+                return when (slotState) {
+                    "waiting", "requested" -> PairStatusResponse(state = "pending")
+                    "rejected" -> {
+                        slotState = ""
+                        PairStatusResponse(state = "rejected")
+                    }
+                    "approved" -> {
+                        slotState = "" // burn after read
+                        PairStatusResponse(state = "approved", salt = appSalt, nonce = appNonce, ciphertext = appCt)
+                    }
+                    else -> throw RelayGoneException("gone")
+                }
+            }
+
+            override suspend fun pairCancel(relayUrl: String, channelId: String, senderToken: String) {
+                if (slotState.isEmpty()) throw RelayGoneException("gone")
+                slotState = ""
+            }
+        }
+
+        val senderService = SyncService(senderRepo, relay)
+        val receiverService = SyncService(receiverRepo, relay)
+
+        // 1. Locked receiver must fail BEFORE touching relay
+        receiverRepo.lockNow()
+        val recvCode = receiverService.generateReceiverCode()
+        assertTrue(runCatching { receiverService.startReceiveRequest("K7M9-P4X2", recvCode) }.exceptionOrNull() is SecurityException)
+        assertEquals(0, pairRequestCalls.get())
+        assertTrue(receiverRepo.unlock("pw456").isSuccess)
+
+        // 2. Sender starts v2 send -> ZERO dropCalls (no vault payload uploaded before verification!)
+        val sendSess = senderService.startSend()
+        assertEquals(0, dropCalls.get())
+        assertTrue(sendSess.sessionId.isNotBlank())
+        assertEquals(SyncSendPollState.WAITING, senderService.pollSend(sendSess.sessionId).state)
+
+        // 3. Receiver submits request; both poll -> sender sees receiverCode, receiver sees PENDING
+        val waitSess = receiverService.startReceiveRequest(sendSess.qrText, recvCode)
+        assertEquals(SyncReceivePollState.PENDING, receiverService.pollReceiveStatus(waitSess.waitId).state)
+
+        val pollReq = senderService.pollSend(sendSess.sessionId)
+        assertEquals(SyncSendPollState.REQUESTED, pollReq.state)
+        assertEquals(recvCode, pollReq.receiverCode)
+        assertEquals("android", pollReq.receiverPlatform)
+        assertEquals(waitSess.requestId, pollReq.requestId)
+
+        // 4. Sender approves -> receiver pulls and burns -> sender sees CONSUMED
+        senderService.approveSend(sendSess.sessionId, pollReq.requestId, pollReq.receiverCode)
+        assertEquals(SyncSendPollState.APPROVED, senderService.pollSend(sendSess.sessionId).state)
+
+        val recvDone = receiverService.pollReceiveStatus(waitSess.waitId)
+        assertEquals(SyncReceivePollState.APPROVED, recvDone.state)
+        assertNotNull(recvDone.preview)
+        assertEquals(1, recvDone.preview!!.serverCount)
+
+        assertEquals(SyncSendPollState.CONSUMED, senderService.pollSend(sendSess.sessionId).state)
+
+        // 5. Receiver imports preview
+        val summary = receiverService.applyReceive(recvDone.preview!!.previewId, SyncImportMode.MERGE)
+        assertEquals(1, summary.serversAdded)
+
+        // 6. Rejection flow & auto-reject on corrupted PairRequest
+        val sendSess2 = senderService.startSend()
+        val waitSess2 = receiverService.startReceiveRequest(sendSess2.code, receiverService.generateReceiverCode())
+        val pollReq2 = senderService.pollSend(sendSess2.sessionId)
+        senderService.rejectSend(sendSess2.sessionId, pollReq2.requestId)
+        assertEquals(SyncReceivePollState.REJECTED, receiverService.pollReceiveStatus(waitSess2.waitId).state)
+
+        val sendSess3 = senderService.startSend()
+        receiverService.startReceiveRequest(sendSess3.code, receiverService.generateReceiverCode())
+        reqCt = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" // corrupt pair request ciphertext
+        val errPoll = senderService.pollSend(sendSess3.sessionId)
+        assertEquals(SyncSendPollState.ERROR, errPoll.state)
+        assertEquals("rejected", slotState)
+
+        // 7. cancelSend with unknown/expired UUID and cancelSend/rejectSend on RelayGoneException must not throw
+        senderService.cancelSend("00000000-0000-0000-0000-000000000000")
+        val sendSess4 = senderService.startSend()
+        slotState = "" // simulate expired/consumed on relay
+        senderService.cancelSend(sendSess4.sessionId)
+        val sendSess5 = senderService.startSend()
+        slotState = "" // simulate expired/consumed on relay
+        senderService.rejectSend(sendSess5.sessionId, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
     }
 }
