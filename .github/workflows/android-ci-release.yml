@@ -4,20 +4,31 @@ on:
   push:
     branches: ["main"]
     tags: ["v*"]
+    paths-ignore:
+      - 'README.md'
+      - '*.md'
+      - 'docs/**'
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - 'README.md'
+      - '*.md'
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: android-ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pkg.outputs.version }}
+      tag: ${{ steps.pkg.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,10 +48,17 @@ jobs:
         run: python3 scripts/fetch_fonts.py
 
       - name: Prepare Release Keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
         run: |
-          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
-            echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/release.jks"
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/release.jks"
           else
+            echo "::warning::ANDROID_KEYSTORE_B64 secret is not configured; falling back to an ephemeral signing keystore. Configure ANDROID_KEYSTORE_B64 for consistent release upgrade signatures."
             keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
               -storepass gravityssh -keypass gravityssh -alias gravityssh \
               -keyalg RSA -keysize 2048 -validity 10000 \
@@ -50,16 +68,12 @@ jobs:
           echo "ANDROID_KEYSTORE_PASS=${ANDROID_KEYSTORE_PASS:-gravityssh}" >> "$GITHUB_ENV"
           echo "ANDROID_KEY_ALIAS=${ANDROID_KEY_ALIAS:-gravityssh}" >> "$GITHUB_ENV"
           echo "ANDROID_KEY_PASS=${ANDROID_KEY_PASS:-gravityssh}" >> "$GITHUB_ENV"
-        env:
-          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
 
-      - name: Run Unit Tests & Build APKs
+      - name: Run Unit Tests & Build Release APK
         shell: bash
         run: |
           set -o pipefail
-          gradle testDebugUnitTest assembleDebug assembleRelease --stacktrace --no-daemon 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+          gradle testDebugUnitTest assembleRelease --build-cache --stacktrace 2>&1 | tee "$RUNNER_TEMP/gradle.log"
 
       - name: Emit Failure Annotations
         if: failure()
@@ -77,14 +91,18 @@ jobs:
 
       - name: Package Release Artifacts
         id: pkg
+        shell: bash
         run: |
           VER=$(tr -d '\r\n ' < VERSION)
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "tag=v$VER" >> "$GITHUB_OUTPUT"
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk "dist/GravitySSH-Android-v${VER}-debug.apk"
-          cp app/build/outputs/apk/release/app-release.apk "dist/GravitySSH-Android-v${VER}-release.apk"
-          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
+          RELEASE_APK="dist/GravitySSH-Android-v${VER}-release.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$RELEASE_APK"
+          APK_BYTES=$(stat -c%s "$RELEASE_APK")
+          APK_MB=$(awk -v b="$APK_BYTES" 'BEGIN { printf "%.2f", b / 1048576 }')
+          echo "Release APK size: ${APK_MB} MB (${APK_BYTES} bytes)"
+          (cd dist && sha256sum "GravitySSH-Android-v${VER}-release.apk" > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
 
       - name: Upload Build Artifacts
@@ -93,15 +111,26 @@ jobs:
           name: gravityssh-android-v${{ steps.pkg.outputs.version }}
           path: dist/*
 
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: gravityssh-android-v${{ needs.build.outputs.version }}
+          path: dist
+
       - name: Publish GitHub Release
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.pkg.outputs.tag }}
-          name: GravitySSH Android ${{ steps.pkg.outputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: GravitySSH Android ${{ github.ref_name }}
           generate_release_notes: true
           make_latest: true
           files: |
-            dist/GravitySSH-Android-v${{ steps.pkg.outputs.version }}-release.apk
-            dist/GravitySSH-Android-v${{ steps.pkg.outputs.version }}-debug.apk
+            dist/GravitySSH-Android-v${{ needs.build.outputs.version }}-release.apk
             dist/SHA256SUMS.txt

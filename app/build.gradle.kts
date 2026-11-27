@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,11 +7,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val appVersionName = rootProject.file("VERSION").readText().trim().ifEmpty { "1.0.5" }
+val appVersionName = rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { "1.0.6" } ?: "1.0.6"
 val appVersionCode = appVersionName.split(".").let { p ->
     val maj = p.getOrNull(0)?.toIntOrNull() ?: 1
     val min = p.getOrNull(1)?.toIntOrNull() ?: 0
-    val pat = p.getOrNull(2)?.toIntOrNull() ?: 0
+    val pat = p.getOrNull(2)?.toIntOrNull() ?: 6
     maj * 10000 + min * 100 + pat
 }
 
@@ -25,7 +27,7 @@ android {
         versionName = appVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "APP_VERSION", "\"$appVersionName\"")
-        vectorDrawables { useSupportLibrary = true }
+        resourceConfigurations += listOf("zh", "en")
     }
 
     signingConfigs {
@@ -42,8 +44,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -58,9 +60,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = "17"
     }
     buildFeatures {
         compose = true
@@ -96,15 +95,21 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-tooling-preview")
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
@@ -123,8 +128,8 @@ dependencies {
     implementation("com.hierynomus:sshj:0.39.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.79")
-    implementation("net.i2p.crypto:eddsa:0.3.0")
-    implementation("org.slf4j:slf4j-nop:2.0.16")
+    runtimeOnly("net.i2p.crypto:eddsa:0.3.0")
+    runtimeOnly("org.slf4j:slf4j-nop:2.0.16")
 
     // QR Code generation & CameraX scanning
     implementation("com.google.zxing:core:3.5.3")
