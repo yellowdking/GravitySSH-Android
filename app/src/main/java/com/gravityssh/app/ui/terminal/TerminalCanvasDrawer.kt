@@ -17,8 +17,6 @@ internal class TerminalCanvasDrawState {
     var glyphBuf: CharArray = CharArray(32)
     val measureBuf: CharArray = CharArray(1)
     val teardropPath: Path = Path()
-    val searchSb: StringBuilder = StringBuilder(256)
-    var searchColMap: IntArray = IntArray(256)
 
     private var lastPaint: Paint? = null
     private var lastBoldPaint: Paint? = null
@@ -39,13 +37,6 @@ internal class TerminalCanvasDrawState {
             glyphBuf = CharArray(maxOf(minLen, glyphBuf.size * 2))
         }
         return glyphBuf
-    }
-
-    fun ensureSearchColMap(minLen: Int): IntArray {
-        if (searchColMap.size < minLen) {
-            searchColMap = searchColMap.copyOf(maxOf(minLen, searchColMap.size * 2))
-        }
-        return searchColMap
     }
 
     fun beginFrame(paint: Paint, boldPaint: Paint, cellW: Float) {
@@ -94,18 +85,20 @@ internal class TerminalCanvasDrawState {
 
 internal fun computeSearchMatches(
     snapshot: TerminalSnapshot,
-    qLower: String,
-    drawState: TerminalCanvasDrawState
+    qLower: String
 ): List<SearchMatch> {
     if (qLower.isEmpty()) return emptyList()
     val matches = ArrayList<SearchMatch>()
     val qLen = qLower.length
-    val sb = drawState.searchSb
+    val sb = StringBuilder(256)
+    var colMap = IntArray(256)
     for (r in snapshot.lines.indices) {
         val row = snapshot.lines[r]
         if (row.isEmpty()) continue
         sb.setLength(0)
-        var colMap = drawState.ensureSearchColMap(row.size)
+        if (colMap.size < row.size) {
+            colMap = IntArray(maxOf(row.size, colMap.size * 2))
+        }
         var mappedLen = 0
         for (c in row.indices) {
             val cell = row[c]
@@ -119,7 +112,7 @@ internal fun computeSearchMatches(
             }
             val added = sb.length - beforeLen
             if (mappedLen + added > colMap.size) {
-                colMap = drawState.ensureSearchColMap(mappedLen + added)
+                colMap = colMap.copyOf(maxOf(mappedLen + added, colMap.size * 2))
             }
             for (k in 0 until added) {
                 colMap[mappedLen++] = c

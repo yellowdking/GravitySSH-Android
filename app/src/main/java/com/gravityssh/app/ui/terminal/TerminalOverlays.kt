@@ -5,10 +5,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gravityssh.app.model.BuiltinTemplate
+import com.gravityssh.app.model.CommandRecord
+import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.terminal.*
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgEmptyState
@@ -16,6 +20,14 @@ import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgTextField
 import com.gravityssh.app.ui.sftp.SftpSheet
 import com.gravityssh.app.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+private data class QuickDrawerVaultSlice(
+    val shortcuts: List<CommandShortcut>,
+    val templates: List<BuiltinTemplate>,
+    val history: List<CommandRecord>
+)
 
 private val BRACKETED_PASTE_SEQ_RE = Regex("(?:\\u001B\\[|\\u009B)20[01]~")
 
@@ -88,16 +100,28 @@ internal fun TerminalOverlays(
     onDismissPaste: () -> Unit
 ) {
     if (showSftp) {
-        val tabs by viewModel.sessionTabs.collectAsStateWithLifecycle()
-        val activeTab = tabs.find { it.sessionId == activeSessionId }
-        if (activeTab != null) {
-            SftpSheet(viewModel = viewModel, session = activeTab, onDismiss = onDismissSftp)
+        val activeTab by remember(viewModel, activeSessionId) {
+            viewModel.sessionTabs
+                .map { tabs -> tabs.find { it.sessionId == activeSessionId }?.copy(metrics = null) }
+                .distinctUntilChanged()
+        }.collectAsStateWithLifecycle(
+            initialValue = viewModel.sessionTabs.value.find { it.sessionId == activeSessionId }?.copy(metrics = null)
+        )
+        activeTab?.let { tab ->
+            SftpSheet(viewModel = viewModel, session = tab, onDismiss = onDismissSftp)
         }
     }
     quickDrawerTab?.let { startTab ->
-        val vaultState by viewModel.vaultState.collectAsStateWithLifecycle()
-        val vaultData = vaultState.data
-        TerminalQuickDrawer(startTab, vaultData.shortcuts, vaultData.templates, vaultData.history, onRunScript, onDismissDrawer)
+        val drawerSlice by remember(viewModel) {
+            viewModel.vaultState
+                .map { QuickDrawerVaultSlice(it.data.shortcuts, it.data.templates, it.data.history) }
+                .distinctUntilChanged()
+        }.collectAsStateWithLifecycle(
+            initialValue = viewModel.vaultState.value.data.let {
+                QuickDrawerVaultSlice(it.shortcuts, it.templates, it.history)
+            }
+        )
+        TerminalQuickDrawer(startTab, drawerSlice.shortcuts, drawerSlice.templates, drawerSlice.history, onRunScript, onDismissDrawer)
     }
     pendingPaste?.let { (raw, insp) ->
         PasteGuardDialog(
