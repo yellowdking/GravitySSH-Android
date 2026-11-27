@@ -34,7 +34,16 @@ class SshSessionManager(
 
     fun openSession(server: ServerConfig, cols: Int = 80, rows: Int = 24): String {
         val sid = UUID.randomUUID().toString()
-        val ctrl = ManagedSession.createController(sid, server, cols, rows, vaultRepository, { id -> _tabs.value.find { it.sessionId == id } }, ::updateTab)
+        val ctrl = ManagedSession.createController(
+            sessionId = sid,
+            server = server,
+            cols = cols,
+            rows = rows,
+            vault = vaultRepository,
+            findTab = { id -> _tabs.value.find { it.sessionId == id } },
+            updateTab = ::updateTab,
+            onDirDirty = { invalidateDirCache(sid) }
+        )
         val m = ManagedSession(sid, server, ctrl, cols, rows)
         val gen = m.generation.incrementAndGet()
         sessions[sid] = m
@@ -88,7 +97,6 @@ class SshSessionManager(
     }
 
     fun sendInput(sessionId: String, text: String) {
-        if (text.contains('\r') || text.contains('\n')) invalidateDirCache(sessionId)
         sessions[sessionId]?.sendRaw(text)
     }
 
@@ -113,10 +121,23 @@ class SshSessionManager(
     fun resizeSession(sessionId: String, cols: Int, rows: Int) {
         val m = sessions[sessionId] ?: return
         val c = cols.coerceIn(20, 300); val r = rows.coerceIn(8, 120)
+        if (m.lastCols == c && m.lastRows == r) return
         m.lastCols = c; m.lastRows = r
         m.terminal.resize(c, r)
-        val sh = m.shell ?: return
-        scope.launch { runCatching { sh.changeWindowDimensions(c, r, 0, 0) } }
+        if (m.shell == null) return
+        scope.launch {
+            m.resizeMutex.withLock {
+                val targetCols = m.lastCols
+                val targetRows = m.lastRows
+                if (m.lastSentCols == targetCols && m.lastSentRows == targetRows) return@withLock
+                val curShell = m.shell ?: return@withLock
+                runCatching {
+                    curShell.changeWindowDimensions(targetCols, targetRows, 0, 0)
+                    m.lastSentCols = targetCols
+                    m.lastSentRows = targetRows
+                }
+            }
+        }
     }
 
     suspend fun testConnection(server: ServerConfig): Result<String> =

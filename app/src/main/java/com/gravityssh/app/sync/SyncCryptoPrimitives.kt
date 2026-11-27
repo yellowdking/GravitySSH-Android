@@ -2,6 +2,8 @@ package com.gravityssh.app.sync
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
@@ -45,20 +47,23 @@ internal object SyncCryptoPrimitives {
 
     private const val MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024
 
-    fun gzipDecompress(data: ByteArray): ByteArray {
-        val out = ByteArrayOutputStream()
+    fun gzipDecompress(data: ByteArray): ByteArray =
         GZIPInputStream(ByteArrayInputStream(data)).use { gis ->
-            val buf = ByteArray(8192)
-            var total = 0
-            while (true) {
-                val n = gis.read(buf)
-                if (n < 0) break
-                total += n
-                if (total > MAX_DECOMPRESSED_BYTES) {
-                    throw IllegalStateException("同步数据包超过 16 MiB 上限")
-                }
-                out.write(buf, 0, n)
+            readStreamCapped(gis, MAX_DECOMPRESSED_BYTES, "同步数据包超过 16 MiB 上限")
+        }
+
+    fun readStreamCapped(input: InputStream, maxBytes: Int, limitErrorMsg: String): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) {
+                throw IOException(limitErrorMsg)
             }
+            out.write(buf, 0, n)
         }
         return out.toByteArray()
     }

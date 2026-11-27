@@ -12,7 +12,6 @@ import kotlinx.coroutines.sync.withLock
 import net.schmizz.keepalive.KeepAliveRunner
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
-import net.schmizz.sshj.sftp.SFTPClient
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
@@ -32,15 +31,12 @@ internal class SshSessionWorker(
             var localConn: ConnectedSsh? = null
             var localSess: Session? = null
             var localShell: Session.Shell? = null
-            var localSftp: SFTPClient? = null
             var committed = false
 
             fun closeLocal() {
-                runCatching { localSftp?.close() }
                 runCatching { localShell?.close() }
                 runCatching { localSess?.close() }
                 runCatching { localConn?.close() }
-                localSftp = null
                 localShell = null
                 localSess = null
                 localConn = null
@@ -66,15 +62,20 @@ internal class SshSessionWorker(
                 localSess = sshSess
                 runCatching { sshSess.setEnvVar("LANG", "en_US.UTF-8") }
                 runCatching { sshSess.setEnvVar("LC_CTYPE", "en_US.UTF-8") }
-                sshSess.allocatePTY("xterm-256color", managed.lastCols, managed.lastRows, 0, 0, emptyMap())
+                val initCols = managed.lastCols
+                val initRows = managed.lastRows
+                sshSess.allocatePTY("xterm-256color", initCols, initRows, 0, 0, emptyMap())
                 val shell = sshSess.startShell()
                 localShell = shell
-                runCatching { shell.changeWindowDimensions(managed.lastCols, managed.lastRows, 0, 0) }
 
-                val sftp = runCatching { conn.client.newSFTPClient() }.getOrNull()
-                localSftp = sftp
-                val home = runCatching { sftp?.canonicalize(".") }.getOrNull().orEmpty().ifBlank { "/" }
-                val startDir = managed.server.defaultRemotePath.trim().ifBlank { home }
+                val curCols = managed.lastCols
+                val curRows = managed.lastRows
+                if (curCols != initCols || curRows != initRows) {
+                    runCatching { shell.changeWindowDimensions(curCols, curRows, 0, 0) }
+                }
+
+                val customStartDir = managed.server.defaultRemotePath.trim()
+                val initialDir = customStartDir.ifBlank { "/" }
 
                 managed.lifecycleMutex.withLock {
                     if (managed.closed || managed.generation.get() != gen) {
@@ -84,9 +85,8 @@ internal class SshSessionWorker(
                     managed.conn = conn
                     managed.sshSession = sshSess
                     managed.shell = shell
-                    synchronized(managed.sftpLock) {
-                        managed.sftpClient = sftp
-                    }
+                    managed.lastSentCols = curCols
+                    managed.lastSentRows = curRows
                     managed.startWriter(scope, shell)
                     committed = true
                 }
@@ -95,20 +95,21 @@ internal class SshSessionWorker(
                 updateTab(sid) {
                     it.copy(
                         status = SessionStatus.CONNECTED,
-                        sftpReady = sftp != null,
-                        homeDir = home,
-                        currentDir = startDir,
+                        sftpReady = false,
+                        homeDir = "/",
+                        currentDir = initialDir,
                         viaSummary = conn.viaSummary,
                         error = null
                     )
                 }
                 syncKeepAlive()
                 startReader(managed, shell, gen)
+                startSftpInit(managed, conn.client, customStartDir, gen)
                 startKeepAlive(managed, conn, gen)
                 startMetrics(managed, conn.client, gen)
 
                 if (managed.server.startupCommand.isNotBlank()) {
-                    delay(250)
+                    delay(50)
                     if (isActive && !managed.closed && managed.generation.get() == gen) {
                         runStartup(sid, managed.server.startupCommand)
                     }
@@ -123,6 +124,34 @@ internal class SshSessionWorker(
                     managed.terminal.onRemoteOutput("\r\n\u001B[31m[连接失败] $msg\u001B[0m\r\n")
                     updateTab(sid) { it.copy(status = SessionStatus.ERROR, error = msg) }
                     syncKeepAlive()
+                }
+            }
+        }
+    }
+
+    private fun startSftpInit(managed: ManagedSession, client: SSHClient, customStartDir: String, gen: Long) {
+        managed.sftpInitJob = scope.launch {
+            if (managed.closed || managed.generation.get() != gen || !client.isConnected) return@launch
+            val sftp = runCatching { client.newSFTPClient() }.getOrNull() ?: return@launch
+            val home = runCatching { sftp.canonicalize(".") }.getOrNull().orEmpty().ifBlank { "/" }
+            var adopted = false
+            synchronized(managed.sftpLock) {
+                if (!managed.closed && managed.generation.get() == gen && managed.conn?.client === client && managed.sftpClient == null) {
+                    managed.sftpClient = sftp
+                    adopted = true
+                }
+            }
+            if (!adopted) {
+                runCatching { sftp.close() }
+                return@launch
+            }
+            if (!managed.closed && managed.generation.get() == gen) {
+                updateTab(managed.sessionId) { tab ->
+                    tab.copy(
+                        sftpReady = true,
+                        homeDir = home,
+                        currentDir = if (customStartDir.isBlank() && tab.currentDir == "/") home else tab.currentDir
+                    )
                 }
             }
         }

@@ -29,13 +29,17 @@ internal class ManagedSession(
     @Volatile var shell: Session.Shell? = null
     @Volatile var sftpClient: SFTPClient? = null
     @Volatile var closed: Boolean = false
+    @Volatile var lastSentCols: Int = -1
+    @Volatile var lastSentRows: Int = -1
 
     val lifecycleMutex = Mutex()
+    val resizeMutex = Mutex()
     val sftpLock = Any()
     val generation = AtomicLong(0L)
     val metricsSampler = HostMetricsSampler(sessionId)
 
     @Volatile var connectJob: Job? = null
+    @Volatile var sftpInitJob: Job? = null
     @Volatile var readerJob: Job? = null
     @Volatile var keepAliveJob: Job? = null
     @Volatile var metricsJob: Job? = null
@@ -95,6 +99,7 @@ internal class ManagedSession(
             connectJob?.cancel()
             connectJob = null
         }
+        sftpInitJob?.cancel(); sftpInitJob = null
         readerJob?.cancel(); readerJob = null
         keepAliveJob?.cancel(); keepAliveJob = null
         metricsJob?.cancel(); metricsJob = null
@@ -115,6 +120,8 @@ internal class ManagedSession(
         shell = null
         sshSession = null
         conn = null
+        lastSentCols = -1
+        lastSentRows = -1
         metricsSampler.reset()
     }
 
@@ -132,7 +139,8 @@ internal class ManagedSession(
             rows: Int,
             vault: VaultRepository,
             findTab: (String) -> SessionTab?,
-            updateTab: (String, (SessionTab) -> SessionTab) -> Unit
+            updateTab: (String, (SessionTab) -> SessionTab) -> Unit,
+            onDirDirty: () -> Unit = {}
         ): TerminalSessionController = TerminalSessionController(
             sessionId = sessionId,
             initialCols = cols,
@@ -146,6 +154,9 @@ internal class ManagedSession(
                         updateTab(sessionId) { it.copy(currentDir = next) }
                     }
                 }
+                if (!ShellPathTracker.isLikelyReadOnlyCommand(cmd)) {
+                    onDirDirty()
+                }
             }
         )
     }
@@ -153,6 +164,22 @@ internal class ManagedSession(
 
 internal object ShellPathTracker {
     private val CD_RE = Regex("^cd(?:\\s+(.+))?$")
+    private val WS_RE = Regex("\\s+")
+    private val READ_ONLY_CMDS = setOf(
+        "ls", "ll", "la", "dir", "cd", "pwd", "cat", "head", "tail", "less", "more",
+        "grep", "egrep", "fgrep", "rg", "ag", "find", "locate", "which", "whereis", "type",
+        "file", "stat", "wc", "du", "df", "free", "uptime", "uname", "hostname", "whoami",
+        "id", "groups", "ps", "top", "htop", "pgrep", "ss", "netstat", "lsof", "ip",
+        "ifconfig", "ping", "traceroute", "dig", "nslookup", "host", "echo", "printf",
+        "date", "cal", "env", "printenv", "history", "clear", "exit", "logout", "man",
+        "help", "tree", "bat", "fd", "jq", "journalctl", "dmesg", "lsblk", "lscpu",
+        "lsusb", "lspci"
+    )
+    private val READ_ONLY_SUBCMDS = mapOf(
+        "git" to setOf("status", "log", "diff", "show", "branch", "tag", "remote", "rev-parse"),
+        "docker" to setOf("ps", "images", "logs", "stats", "inspect", "version", "info"),
+        "systemctl" to setOf("status", "list-units", "list-unit-files", "is-active", "is-enabled")
+    )
 
     fun resolveNextDir(command: String, currentDir: String, homeDir: String): String? {
         val m = CD_RE.matchEntire(command.trim()) ?: return null
@@ -164,8 +191,20 @@ internal object ShellPathTracker {
             rawArg.startsWith("/") -> rawArg
             else -> "${currentDir.trimEnd('/')}/$rawArg"
         }
-        return normalizePosixPath(target)
+        return SshPathUtils.normalizePosixPath(target)
     }
 
-    fun normalizePosixPath(path: String): String = SshPathUtils.normalizePosixPath(path)
+    fun isLikelyReadOnlyCommand(command: String): Boolean {
+        val trimmed = command.trim()
+        if (trimmed.isEmpty()) return true
+        if (trimmed.any { it == '>' || it == ';' || it == '|' || it == '&' || it == '`' } || trimmed.contains("$(")) {
+            return false
+        }
+        val tokens = trimmed.split(WS_RE)
+        val cmd = tokens.firstOrNull()?.substringAfterLast('/') ?: return true
+        if (cmd in READ_ONLY_CMDS) return true
+        val allowedSubs = READ_ONLY_SUBCMDS[cmd] ?: return false
+        val sub = tokens.getOrNull(1) ?: return false
+        return sub in allowedSubs
+    }
 }

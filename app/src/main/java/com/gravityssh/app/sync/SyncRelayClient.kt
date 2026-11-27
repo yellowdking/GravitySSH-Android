@@ -10,7 +10,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 
 class RelayGoneException(message: String) : IOException(message)
@@ -27,32 +26,14 @@ open class SyncRelayClient(
         "${u.host}:${u.port}"
     }
 
-    private val pinnedClient: OkHttpClient by lazy { SyncTlsFactory.buildPinnedClient(pinnedSpkiSha256) }
-    private val selfSignedIpClient: OkHttpClient by lazy { SyncTlsFactory.buildSelfSignedIpClient() }
-    private val standardClient: OkHttpClient by lazy { SyncTlsFactory.buildStandardClient() }
+    private val pinnedClient: OkHttpClient by lazy { SyncHttpClients.buildPinnedClient(pinnedSpkiSha256) }
+    private val selfSignedIpClient: OkHttpClient by lazy { SyncHttpClients.buildSelfSignedIpClient() }
+    private val standardClient: OkHttpClient get() = SyncHttpClients.baseClient
 
     open suspend fun ping(relayUrl: String): Long = withContext(Dispatchers.IO) {
         val start = System.nanoTime()
         executePost(relayUrl, "/v1/ping", "{}".toByteArray(Charsets.UTF_8), isPing = true)
         ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(1L)
-    }
-
-    open suspend fun drop(relayUrl: String, req: DropRequest): DropResponse = withContext(Dispatchers.IO) {
-        val body = json.encodeToString(req).toByteArray(Charsets.UTF_8)
-        val respText = executePost(relayUrl, "/v1/drop", body)
-        json.decodeFromString(DropResponse.serializer(), respText)
-    }
-
-    open suspend fun pickup(relayUrl: String, channelId: String): PickupResponse = withContext(Dispatchers.IO) {
-        val body = json.encodeToString(ChannelRequest(channelId)).toByteArray(Charsets.UTF_8)
-        val respText = executePost(relayUrl, "/v1/pickup", body)
-        json.decodeFromString(PickupResponse.serializer(), respText)
-    }
-
-    open suspend fun cancel(relayUrl: String, channelId: String) = withContext(Dispatchers.IO) {
-        val body = json.encodeToString(ChannelRequest(channelId)).toByteArray(Charsets.UTF_8)
-        executePost(relayUrl, "/v1/cancel", body)
-        Unit
     }
 
     open suspend fun pairInit(
@@ -181,7 +162,7 @@ open class SyncRelayClient(
         }
 
         val ts = System.currentTimeMillis() / 1000L
-        val sig = SyncCrypto.signAppGate(appGateKey, "POST", path, ts, rawBody)
+        val sig = SyncCryptoPrimitives.signAppGate(appGateKey, "POST", path, ts, rawBody)
 
         val request = Request.Builder()
             .url(url)
@@ -215,21 +196,10 @@ open class SyncRelayClient(
         if (declared > MAX_RESPONSE_BYTES) {
             throw IOException("中继响应超过 4 MiB 上限")
         }
-        val out = ByteArrayOutputStream()
-        body.byteStream().use { input ->
-            val buf = ByteArray(8192)
-            var total = 0
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                total += n
-                if (total > MAX_RESPONSE_BYTES) {
-                    throw IOException("中继响应超过 4 MiB 上限")
-                }
-                out.write(buf, 0, n)
-            }
+        return body.byteStream().use { input ->
+            SyncCryptoPrimitives.readStreamCapped(input, MAX_RESPONSE_BYTES, "中继响应超过 4 MiB 上限")
+                .toString(Charsets.UTF_8)
         }
-        return out.toByteArray().toString(Charsets.UTF_8)
     }
 
     companion object {

@@ -54,13 +54,13 @@ object SyncCrypto {
 
     fun deriveChannelId(code: String): String {
         val canonical = canonicalizeCode(code)
-        return sha256Hex("${SyncConfig.CHANNEL_PREFIX}$canonical".toByteArray(Charsets.UTF_8))
+        return SyncCryptoPrimitives.sha256Hex("${SyncConfig.CHANNEL_PREFIX}$canonical".toByteArray(Charsets.UTF_8))
     }
 
     fun generateHexToken32(): String {
         val bytes = ByteArray(32)
         random.nextBytes(bytes)
-        return bytesToHex(bytes)
+        return SyncCryptoPrimitives.bytesToHex(bytes)
     }
 
     fun deriveDualSecret(sendCode: String, recvCode: String): String =
@@ -75,29 +75,6 @@ object SyncCrypto {
 
     fun deriveAesKey(canonicalCode: String, salt: ByteArray): ByteArray =
         CryptoUtils.pbkdf2Sha256(canonicalCode, salt, SyncConfig.PBKDF2_ITERATIONS, 256)
-
-    fun encryptBundle(
-        bundle: SyncBundle,
-        code: String,
-        fixedSalt: ByteArray? = null,
-        fixedNonce: ByteArray? = null
-    ): EncryptedDropBlob {
-        val canonical = canonicalizeCode(code)
-        val channelId = deriveChannelId(canonical)
-        return encryptRawJsonWithSecret(
-            rawJson = json.encodeToString(bundle),
-            secret = canonical,
-            aad = channelId,
-            channelId = channelId,
-            fixedSalt = fixedSalt,
-            fixedNonce = fixedNonce
-        )
-    }
-
-    fun decryptBundle(saltB64: String, nonceB64: String, ciphertextB64: String, code: String): SyncBundle {
-        val rawJson = decryptRawJson(saltB64, nonceB64, ciphertextB64, code)
-        return json.decodeFromString(SyncBundle.serializer(), rawJson)
-    }
 
     fun encryptPairRequest(
         sendCode: String,
@@ -123,7 +100,9 @@ object SyncCrypto {
         nonceB64: String,
         ctB64: String
     ): PairRequestPayload {
-        val rawJson = decryptRawJson(saltB64, nonceB64, ctB64, sendCode)
+        val canonicalSend = canonicalizeCode(sendCode)
+        val channelId = deriveChannelId(canonicalSend)
+        val rawJson = decryptRawJsonWithSecret(saltB64, nonceB64, ctB64, canonicalSend, channelId)
         return json.decodeFromString(PairRequestPayload.serializer(), rawJson)
     }
 
@@ -165,12 +144,6 @@ object SyncCrypto {
         val dualAad = deriveDualAad(channelId, requestId, canonicalRecv)
         val rawJson = decryptRawJsonWithSecret(saltB64, nonceB64, ctB64, dualSecret, dualAad)
         return json.decodeFromString(SyncBundle.serializer(), rawJson)
-    }
-
-    fun decryptRawJson(saltB64: String, nonceB64: String, ciphertextB64: String, code: String): String {
-        val canonical = canonicalizeCode(code)
-        val channelId = deriveChannelId(canonical)
-        return decryptRawJsonWithSecret(saltB64, nonceB64, ciphertextB64, canonical, channelId)
     }
 
     private fun encryptRawJsonWithSecret(
@@ -231,8 +204,6 @@ object SyncCrypto {
 
     fun signAppGate(appGateKey: String, method: String, path: String, timestampSec: Long, rawBody: ByteArray): String =
         SyncCryptoPrimitives.signAppGate(appGateKey, method, path, timestampSec, rawBody)
-
-    fun sha256Hex(data: ByteArray): String = SyncCryptoPrimitives.sha256Hex(data)
 
     fun bytesToHex(bytes: ByteArray): String = SyncCryptoPrimitives.bytesToHex(bytes)
 }

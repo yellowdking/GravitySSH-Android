@@ -82,6 +82,21 @@ class SyncService(
         }
     }
 
+    private fun parseExpiresMs(expiresAt: String): Long =
+        runCatching { Instant.parse(expiresAt).toEpochMilli() }
+            .getOrElse { System.currentTimeMillis() + SyncConfig.DEFAULT_TTL_SECONDS * 1000L }
+
+    private inline fun <V> evictOldestIfAtCapacity(
+        map: MutableMap<String, V>,
+        maxSize: Int,
+        crossinline expiresAtOf: (V) -> Long
+    ) {
+        while (map.size >= maxSize) {
+            val oldest = map.entries.minByOrNull { expiresAtOf(it.value) }?.key ?: break
+            map.remove(oldest)
+        }
+    }
+
     suspend fun testRelay(relayUrl: String? = null): Long =
         relayClient.ping(resolveRelayUrl(relayUrl))
 
@@ -101,15 +116,11 @@ class SyncService(
             senderToken = senderToken,
             ttlSeconds = SyncConfig.DEFAULT_TTL_SECONDS
         )
-        val expiresMs = runCatching { Instant.parse(resp.expiresAt).toEpochMilli() }
-            .getOrElse { System.currentTimeMillis() + SyncConfig.DEFAULT_TTL_SECONDS * 1000L }
+        val expiresMs = parseExpiresMs(resp.expiresAt)
 
         synchronized(sessionLock) {
             pruneExpiredLocked()
-            while (pendingSends.size >= MAX_PENDING_SESSIONS) {
-                val oldest = pendingSends.entries.minByOrNull { it.value.expiresAtEpochMs }?.key ?: break
-                pendingSends.remove(oldest)
-            }
+            evictOldestIfAtCapacity(pendingSends, MAX_PENDING_SESSIONS) { it.expiresAtEpochMs }
             pendingSends[sessionId] = PendingSendSession(
                 sessionId = sessionId,
                 channelId = channelId,
@@ -258,27 +269,16 @@ class SyncService(
         }
     }
 
-    suspend fun cancelSend(sessionIdOrCode: String, relayUrl: String? = null) {
+    suspend fun cancelSend(sessionIdOrCode: String) {
         val removed = synchronized(sessionLock) {
             pendingSends.remove(sessionIdOrCode) ?: pendingSends.entries
                 .firstOrNull { it.value.sendCode == sessionIdOrCode }
                 ?.let { pendingSends.remove(it.key) }
-        }
-        if (removed != null) {
-            try {
-                relayClient.pairCancel(removed.relayUrl, removed.channelId, removed.senderToken)
-            } catch (_: RelayGoneException) {
-                // Already expired or consumed on relay
-            }
-        } else {
-            val canonical = runCatching { SyncCrypto.canonicalizeCode(sessionIdOrCode) }.getOrNull() ?: return
-            val url = resolveRelayUrl(relayUrl)
-            val channelId = SyncCrypto.deriveChannelId(canonical)
-            try {
-                relayClient.cancel(url, channelId)
-            } catch (_: RelayGoneException) {
-                // Already expired or consumed on relay
-            }
+        } ?: return
+        try {
+            relayClient.pairCancel(removed.relayUrl, removed.channelId, removed.senderToken)
+        } catch (_: RelayGoneException) {
+            // Already expired or consumed on relay
         }
     }
 
@@ -316,16 +316,12 @@ class SyncService(
             nonce = encrypted.nonceB64,
             ciphertext = encrypted.ciphertextB64
         )
-        val expiresMs = runCatching { Instant.parse(resp.expiresAt).toEpochMilli() }
-            .getOrElse { System.currentTimeMillis() + SyncConfig.DEFAULT_TTL_SECONDS * 1000L }
+        val expiresMs = parseExpiresMs(resp.expiresAt)
         val waitId = UUID.randomUUID().toString()
 
         synchronized(sessionLock) {
             pruneExpiredLocked()
-            while (pendingReceives.size >= MAX_PENDING_SESSIONS) {
-                val oldest = pendingReceives.entries.minByOrNull { it.value.expiresAtEpochMs }?.key ?: break
-                pendingReceives.remove(oldest)
-            }
+            evictOldestIfAtCapacity(pendingReceives, MAX_PENDING_SESSIONS) { it.expiresAtEpochMs }
             pendingReceives[waitId] = PendingReceiveSession(
                 waitId = waitId,
                 channelId = encrypted.channelId,
@@ -401,26 +397,11 @@ class SyncService(
         }
     }
 
-    suspend fun previewReceive(codeOrUri: String, relayUrl: String? = null): SyncReceivePreview {
-        requireUnlocked("接收同步数据")
-        val url = resolveRelayUrl(relayUrl)
-        val canonical = SyncCrypto.canonicalizeCode(codeOrUri)
-        val channelId = SyncCrypto.deriveChannelId(canonical)
-        val pickup = relayClient.pickup(url, channelId)
-        val bundle = withContext(Dispatchers.Default) {
-            SyncCrypto.decryptBundle(pickup.salt, pickup.nonce, pickup.ciphertext, canonical)
-        }
-        return cachePreview(bundle)
-    }
-
     private fun cachePreview(bundle: SyncBundle): SyncReceivePreview {
         val previewId = UUID.randomUUID().toString()
         synchronized(sessionLock) {
             pruneExpiredLocked()
-            while (previews.size >= MAX_CACHED_PREVIEWS) {
-                val oldestKey = previews.entries.minByOrNull { it.value.expiresAtMs }?.key ?: break
-                previews.remove(oldestKey)
-            }
+            evictOldestIfAtCapacity(previews, MAX_CACHED_PREVIEWS) { it.expiresAtMs }
             previews[previewId] = CachedPreview(
                 bundle = bundle,
                 expiresAtMs = System.currentTimeMillis() + PREVIEW_TTL_MS
@@ -455,12 +436,6 @@ class SyncService(
     fun discardPreview(previewId: String) {
         synchronized(sessionLock) {
             previews.remove(previewId)
-        }
-    }
-
-    fun clearPreviews() {
-        synchronized(sessionLock) {
-            previews.clear()
         }
     }
 
