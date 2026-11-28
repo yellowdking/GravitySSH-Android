@@ -35,6 +35,19 @@ private data class ActiveTabMeta(
     val status: SessionStatus
 )
 
+private fun resolveActiveTabMeta(tabs: List<SessionTab>, activeId: String?): ActiveTabMeta? =
+    (tabs.find { it.sessionId == activeId } ?: tabs.firstOrNull())?.let {
+        ActiveTabMeta(
+            sessionId = it.sessionId,
+            serverId = it.serverId,
+            serverName = it.serverName,
+            homeDir = it.homeDir,
+            currentDir = it.currentDir,
+            viaSummary = it.viaSummary,
+            status = it.status
+        )
+    }
+
 @Composable
 fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit) {
     val vm = viewModel
@@ -54,21 +67,13 @@ fun TerminalWorkspaceScreen(viewModel: AppViewModel, onJumpToServers: () -> Unit
             emptyList()
         }
     )
+    val initialTabMeta = remember(vm) {
+        resolveActiveTabMeta(vm.sessionTabs.value, vm.activeSessionId.value)
+    }
     val tab by remember(vm) {
-        combine(vm.sessionTabs, vm.activeSessionId) { tabs, aid ->
-            (tabs.find { it.sessionId == aid } ?: tabs.firstOrNull())?.let {
-                ActiveTabMeta(
-                    sessionId = it.sessionId,
-                    serverId = it.serverId,
-                    serverName = it.serverName,
-                    homeDir = it.homeDir,
-                    currentDir = it.currentDir,
-                    viaSummary = it.viaSummary,
-                    status = it.status
-                )
-            }
-        }.distinctUntilChanged()
-    }.collectState(initialValue = null)
+        combine(vm.sessionTabs, vm.activeSessionId, ::resolveActiveTabMeta)
+            .distinctUntilChanged()
+    }.collectAsState(initial = initialTabMeta)
 
     val clip = LocalClipboardManager.current
     val density = LocalDensity.current
@@ -290,11 +295,14 @@ private fun SessionTabsStripObserver(
     onSelect: (String) -> Unit,
     onClose: (String) -> Unit
 ) {
+    val initialHeaders = remember(viewModel) {
+        viewModel.sessionTabs.value.map { SessionTabHeader(it.sessionId, it.serverName, it.status) }
+    }
     val tabs by remember(viewModel) {
         viewModel.sessionTabs.map { list ->
             list.map { SessionTabHeader(it.sessionId, it.serverName, it.status) }
         }.distinctUntilChanged()
-    }.collectState(initialValue = emptyList())
+    }.collectState(initialValue = initialHeaders)
     SessionTabsStrip(tabs, activeId, onSelect, onClose)
 }
 
@@ -305,10 +313,13 @@ private fun MonitorBarObserver(
     enabled: Boolean
 ) {
     if (!enabled) return
+    val initialMetrics = remember(viewModel, sessionId) {
+        viewModel.sessionTabs.value.find { it.sessionId == sessionId }?.metrics
+    }
     val metrics by remember(viewModel, sessionId) {
         viewModel.sessionTabs.map { tabs ->
             tabs.find { it.sessionId == sessionId }?.metrics
         }.distinctUntilChanged()
-    }.collectState(initialValue = null)
+    }.collectState(initialValue = initialMetrics)
     metrics?.let { MonitorBar(it) }
 }
