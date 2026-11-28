@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gravityssh.app.model.SyncRelayStatusUi
+import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgBadge
 import com.gravityssh.app.ui.components.AgCard
@@ -25,7 +26,6 @@ import kotlinx.coroutines.flow.map
 import kotlin.math.roundToInt
 
 private data class SettingsNavCounts(
-    val keyCount: Int,
     val shortcutCount: Int,
     val templateCount: Int,
     val historyCount: Int
@@ -33,7 +33,6 @@ private data class SettingsNavCounts(
 
 private data class SettingsSyncOverview(
     val relay: SyncRelayStatusUi,
-    val pairedCount: Int,
     val inboxCount: Int
 )
 
@@ -53,7 +52,6 @@ fun SettingsScreen(
         vm.vaultState
             .map {
                 SettingsNavCounts(
-                    keyCount = it.data.sshKeys.size,
                     shortcutCount = it.data.shortcuts.size,
                     templateCount = it.data.templates.size,
                     historyCount = it.data.history.size
@@ -62,7 +60,7 @@ fun SettingsScreen(
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(
         initialValue = vm.vaultState.value.data.let {
-            SettingsNavCounts(it.sshKeys.size, it.shortcuts.size, it.templates.size, it.history.size)
+            SettingsNavCounts(it.shortcuts.size, it.templates.size, it.history.size)
         }
     )
     val syncOverview by remember(vm) {
@@ -70,7 +68,6 @@ fun SettingsScreen(
             .map {
                 SettingsSyncOverview(
                     relay = it.relay,
-                    pairedCount = it.pairedDevices.size,
                     inboxCount = it.inboxItems.size
                 )
             }
@@ -79,7 +76,6 @@ fun SettingsScreen(
         initialValue = vm.syncUiState.value.let {
             SettingsSyncOverview(
                 relay = it.relay,
-                pairedCount = it.pairedDevices.size,
                 inboxCount = it.inboxItems.size
             )
         }
@@ -89,20 +85,14 @@ fun SettingsScreen(
         mutableFloatStateOf(settings.terminalFontSize.toFloat())
     }
 
-    val relaySubtitle = remember(syncOverview) {
-        val relayLabel = if (syncOverview.relay.mode == "custom") {
-            val safeRedacted = syncOverview.relay.redactedUri
-                .ifBlank { syncOverview.relay.endpoint }
+    val relaySubtitle = remember(syncOverview.relay) {
+        if (syncOverview.relay.mode == "custom") {
+            SyncConfig.redactUri(syncOverview.relay.endpoint)
                 .substringBefore('#')
+                .ifBlank { syncOverview.relay.redactedUri.substringBefore('#') }
                 .ifBlank { "自定义中继" }
-            "自定义中继: $safeRedacted"
         } else {
-            "官方默认中继 (TLS 1.3 + SPKI Pin)"
-        }
-        if (syncOverview.pairedCount > 0) {
-            "$relayLabel · 已配对 ${syncOverview.pairedCount} 台"
-        } else {
-            relayLabel
+            "默认官方中继"
         }
     }
 
@@ -129,16 +119,16 @@ fun SettingsScreen(
                 icon = AgIcons.QrCode2,
                 tint = AgCyan,
                 borderColor = AgCyan.copy(alpha = 0.5f),
-                title = "多端同步与中继",
+                title = "多端同步",
                 subtitle = relaySubtitle,
-                badgeText = if (syncOverview.inboxCount > 0) "待收 ${syncOverview.inboxCount}" else null,
+                badgeText = if (syncOverview.inboxCount > 0) "${syncOverview.inboxCount}" else null,
                 onClick = onOpenSync
             )
             SettingsNavCard(
                 icon = AgIcons.Key,
                 tint = AgAccent,
                 title = "密钥",
-                subtitle = "${navCounts.keyCount} 把 SSH 密钥 · 硬件级加密存储与主机部署",
+                subtitle = null,
                 onClick = onOpenKeys
             )
             SettingsNavCard(
@@ -188,7 +178,7 @@ private fun SettingsNavCard(
     icon: ImageVector,
     tint: Color,
     title: String,
-    subtitle: String,
+    subtitle: String? = null,
     borderColor: Color = AgBorder,
     badgeText: String? = null,
     onClick: () -> Unit
@@ -215,7 +205,9 @@ private fun SettingsNavCard(
                             AgBadge(text = badgeText, color = AgCyan)
                         }
                     }
-                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = AgMuted)
+                    if (!subtitle.isNullOrBlank()) {
+                        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = AgMuted)
+                    }
                 }
             }
             Icon(AgIcons.ChevronRight, null, tint = AgMuted)
