@@ -33,7 +33,21 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.gravityssh.app.ui.theme.*
 
 @Composable
-fun QrScannerDialog(onResult: (String) -> Unit, onDismiss: () -> Unit) {
+fun QrScannerDialog(
+    onResult: (String) -> Unit,
+    onDismiss: () -> Unit,
+    qrKind: SyncQrKind = SyncQrKind.PAIR,
+    title: String = when (qrKind) {
+        SyncQrKind.RELAY -> "扫描自定义中继二维码"
+        SyncQrKind.PAIR -> "扫描同步 / 绑定二维码"
+        SyncQrKind.ANY -> "扫描 synctool 二维码"
+    },
+    hint: String = when (qrKind) {
+        SyncQrKind.RELAY -> "将 synctool-relay init 生成的 synctool://relay 二维码对准取景框"
+        SyncQrKind.PAIR -> "将对端 GravitySSH 显示的 synctool://pair 二维码对准取景框"
+        SyncQrKind.ANY -> "将二维码对准取景框自动识别"
+    }
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasPermission by remember {
@@ -74,7 +88,11 @@ fun QrScannerDialog(onResult: (String) -> Unit, onDismiss: () -> Unit) {
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            modifier = Modifier.fillMaxWidth(0.92f).clip(RoundedCornerShape(18.dp)).background(AgPanel).padding(16.dp),
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(AgPanel)
+                .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
@@ -82,24 +100,31 @@ fun QrScannerDialog(onResult: (String) -> Unit, onDismiss: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("扫描同步二维码", style = MaterialTheme.typography.titleLarge, color = AgText)
+                Text(title, style = MaterialTheme.typography.titleLarge, color = AgText)
                 TextButton(onClick = onDismiss) { Text("关闭", color = AgMuted) }
             }
             Spacer(Modifier.height(10.dp))
             if (hasPermission) {
                 Box(
-                    modifier = Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(14.dp)).background(AgBg),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AgBg),
                     contentAlignment = Alignment.Center
                 ) {
-                    QrCameraPreview(onScanned = onResult)
-                    Box(modifier = Modifier.size(190.dp).border(2.dp, AgCyan, RoundedCornerShape(14.dp)))
+                    QrCameraPreview(qrKind = qrKind, onScanned = onResult)
+                    Box(modifier = Modifier.size(216.dp).border(2.dp, AgCyan, RoundedCornerShape(14.dp)))
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("将电脑端 GravitySSH 显示的二维码对准取景框", style = MaterialTheme.typography.bodySmall, color = AgMuted)
+                Text(hint, style = MaterialTheme.typography.bodySmall, color = AgMuted)
             } else {
                 Text(
-                    if (permanentlyDenied) "相机权限已被拒绝，请前往系统设置开启相机权限后再扫码，或直接手动输入 8 位同步码。"
-                    else "需要相机权限才能扫描同步二维码，您也可以直接手动输入 8 位同步码。",
+                    if (permanentlyDenied) {
+                        "相机权限已被拒绝，请前往系统设置开启相机权限后再扫码，或直接手动输入。"
+                    } else {
+                        "需要相机权限才能扫描二维码，您也可以直接手动输入房间码或 URI。"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = AgMuted,
                     modifier = Modifier.padding(vertical = 20.dp)
