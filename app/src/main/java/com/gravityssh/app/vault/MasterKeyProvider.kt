@@ -11,6 +11,7 @@ import javax.crypto.SecretKey
 
 interface MasterKeyProvider {
     fun getOrCreateKey(): SecretKey
+    fun resetMasterKey() {}
     fun createBiometricAuthCipher(): Cipher? = null
     fun resetBiometricAuthKey() {}
 }
@@ -52,6 +53,15 @@ class AndroidKeystoreMasterKeyProvider(
             runCatching { initBiometricCipher(getOrCreateBiometricAuthKey()) }.getOrNull()
         } catch (_: Exception) {
             null
+        }
+    }
+
+    override fun resetMasterKey() {
+        runCatching {
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (ks.containsAlias(alias)) {
+                ks.deleteEntry(alias)
+            }
         }
     }
 
