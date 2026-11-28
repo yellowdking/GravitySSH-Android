@@ -1,184 +1,167 @@
 package com.gravityssh.app.sync
 
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-
-data class ResolvedRelayEndpoint(
-    val baseUrl: String,
-    val hostPort: String,
-    val host: String,
-    val explicitSpkiPins: List<String> = emptyList(),
-    val customAppGateKey: String? = null,
-    val isDefaultRelay: Boolean = false,
-    val isRawIp: Boolean = false
-) {
-    val explicitSpkiPin: String?
-        get() = explicitSpkiPins.firstOrNull()
-}
-
-internal data class ParsedRelayFragment(
-    val spkiPins: List<String> = emptyList(),
-    val appGateKey: String? = null
-)
+import com.gravityssh.app.model.SyncRelayStatusUi
+import com.yellowdking.synctool.crypto.Crockford
+import com.yellowdking.synctool.envelope.ErrorCode
+import com.yellowdking.synctool.envelope.Redact
+import com.yellowdking.synctool.envelope.RelayProfile
+import com.yellowdking.synctool.envelope.SyncError
+import com.yellowdking.synctool.envelope.SyncUri
+import java.io.IOException
+import java.time.Instant
 
 object SyncConfig {
-    const val DEFAULT_RELAY_URL = "https://43.155.231.14:54843"
-    const val CLIENT_HEADER = "GravitySSH/1"
-    const val WIRE_PROTO_VERSION = 2
-    const val WIRE_PROTO_MIN_VERSION = 1
-    const val WIRE_PROTO_MAX_VERSION = 2
-    const val WIRE_PROTO_HEADER = "X-GSSH-Proto"
-    const val WIRE_PROTO_MIN_HEADER = "X-GSSH-Proto-Min"
-    const val WIRE_PROTO_MAX_HEADER = "X-GSSH-Proto-Max"
-    const val MAX_SPKI_PINS_PER_RELAY = 8
-    const val DEFAULT_TTL_SECONDS = 300
-    const val PAIR_POLL_INTERVAL_MS = 1500L
-    const val PBKDF2_ITERATIONS = 200_000
-    const val CHANNEL_PREFIX = "gssh-sync-channel-v1:"
-    const val QR_SCHEME_PREFIX = "gssh-sync://v1?code="
+    const val APP_ID: String = "com.yellowdking.gravityssh"
+    const val PARCEL_SCHEMA: String = "gravityssh.vault.v1"
 
-    // Live credentials from relay-ops deployment on 43.155.231.14:54843
-    const val PINNED_SPKI_SHA256 = "ca1a5f441de4962b6269449325ded3a284a0a8a9d8fd3d995ffcb218c8eb7575"
-    val DEFAULT_RELAY_SPKI_PINS: List<String> = listOf(PINNED_SPKI_SHA256)
-    const val APP_GATE_KEY = "fb6f39e339dffe1141537e5e8154491cce0044c7bc2ecb26b17828571b9d5aae"
+    // Updated in Batch B after live VPS2 synctool-relay v0.3.0 cutover
+    const val DEFAULT_RELAY_URI: String =
+        "synctool://relay?v=1&u=https%3A%2F%2F43.155.231.14%3A54843&pin=0000000000000000000000000000000000000000000000000000000000000000#k=SYNCTOOL_VPS2_DEFAULT_ACCESS_KEY_PLACEHOLDER"
 
-    internal val SPKI_HEX_RE = Regex("^[0-9a-f]{64}$")
-    internal val GATE_KEY_HEX_RE = Regex("^[0-9a-f]{64}$")
+    const val ENV_DEFAULT_RELAY_URI: String = "SYNCTOOL_DEFAULT_RELAY_URI"
+    const val DEFAULT_ROOM_TTL_SEC: Int = 300
+    const val MAX_INLINE_SUMMARY_BYTES: Int = 512
+    const val MAX_BUNDLE_GUNZIP_BYTES: Int = 16 * 1024 * 1024
 
-    private val IPV4_RE = Regex(
-        "^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$"
-    )
-    private val IPV6_CHARS_RE = Regex("^[0-9a-fA-F:.]+$")
+    fun redactUri(raw: String): String = Redact.redactUri(raw.trim())
 
-    private val defaultHostPortKey: String = run {
-        val u = DEFAULT_RELAY_URL.toHttpUrlOrNull()!!
-        formatHostPortKey(u.host, u.port)
-    }
+    fun parseRelayFromPairURI(raw: String): RelayProfile? = SyncUri.extractRelayFromPairUri(raw)
 
-    fun isRawIpHost(host: String): Boolean {
-        val clean = host.trim().removePrefix("[").removeSuffix("]")
-        if (clean.isEmpty()) return false
-        if (IPV4_RE.matches(clean)) return true
-        return clean.count { it == ':' } >= 2 && IPV6_CHARS_RE.matches(clean)
-    }
+    fun parseRelayFromPairUri(raw: String): RelayProfile? = SyncUri.extractRelayFromPairUri(raw)
 
-    fun parseSpkiPinList(raw: String): List<String> {
+    fun isValidRelayUri(raw: String): Boolean =
+        runCatching { SyncUri.parseRelayUri(raw.trim()) }.isSuccess
+
+    fun isValidPairUri(raw: String): Boolean = runCatching {
+        val offer = SyncUri.parsePairUri(raw.trim())
+        offer.zeroSecrets()
+    }.isSuccess
+
+    fun isValidRoomCodeOrPairUri(raw: String): Boolean {
         val trimmed = raw.trim()
-        if (trimmed.isEmpty()) {
-            throw IllegalArgumentException("中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）")
-        }
-        val parts = trimmed.split(',')
-        if (parts.size > MAX_SPKI_PINS_PER_RELAY) {
-            throw IllegalArgumentException("中继 SPKI 指纹数量超出上限（最多 $MAX_SPKI_PINS_PER_RELAY 个）")
-        }
-        val seen = LinkedHashSet<String>(parts.size)
-        for (item in parts) {
-            val pin = item.trim().lowercase().removePrefix("sha256:")
-            if (!SPKI_HEX_RE.matches(pin)) {
-                throw IllegalArgumentException("中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）")
-            }
-            seen.add(pin)
-        }
-        if (seen.isEmpty()) {
-            throw IllegalArgumentException("中继 SPKI 指纹格式无效（应为 64 位 SHA-256 十六进制字符串）")
-        }
-        return seen.toList()
-    }
-
-    internal fun parseRelayFragment(fragment: String?): ParsedRelayFragment {
-        val trimmed = fragment?.trim().orEmpty()
-        if (trimmed.isEmpty()) return ParsedRelayFragment()
-        var pins: List<String> = emptyList()
-        var gateKey: String? = null
-        for (part in trimmed.split('&')) {
-            val eqIdx = part.indexOf('=')
-            if (eqIdx <= 0) continue
-            val key = part.substring(0, eqIdx).trim()
-            val value = part.substring(eqIdx + 1).trim()
-            when {
-                key.equals("spki", ignoreCase = true) -> {
-                    pins = parseSpkiPinList(value)
-                }
-                key.equals("gate", ignoreCase = true) -> {
-                    val g = value.lowercase()
-                    if (!GATE_KEY_HEX_RE.matches(g)) {
-                        throw IllegalArgumentException("自定义中继 App Gate 密钥格式无效（应为 64 位十六进制字符串）")
-                    }
-                    gateKey = g
-                }
-            }
-        }
-        return ParsedRelayFragment(spkiPins = pins, appGateKey = gateKey)
-    }
-
-    internal fun parseExplicitSpkiFragment(fragment: String?): String? =
-        parseRelayFragment(fragment).spkiPins.firstOrNull()
-
-    fun normalizeRelayUrl(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isEmpty()) return ""
-        if (trimmed.startsWith("http://", ignoreCase = true)) {
-            throw IllegalArgumentException("同步中继仅支持 HTTPS，禁止使用明文 HTTP")
-        }
-        val withScheme = if ("://" in trimmed) trimmed else "https://$trimmed"
-        val parsed = withScheme.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("中继地址格式无效，请输入如 1.2.3.4:54843")
-        if (!parsed.scheme.equals("https", ignoreCase = true) || parsed.host.isBlank()) {
-            throw IllegalArgumentException("同步中继仅支持有效的 HTTPS 地址")
-        }
-        if (parsed.username.isNotEmpty() || parsed.password.isNotEmpty()) {
-            throw IllegalArgumentException("中继服务器地址不支持包含用户名或密码")
-        }
-        val frag = parseRelayFragment(parsed.fragment)
-        val cleanHost = parsed.host.removeSurrounding("[", "]")
-        val hostPart = if (':' in cleanHost) "[$cleanHost]" else cleanHost
-        val authority = withScheme.substringAfter("://")
-            .substringBefore('/')
-            .substringBefore('?')
-            .substringBefore('#')
-        val explicitPort = if (authority.startsWith("[")) {
-            authority.substringAfter("]", "").startsWith(":")
+        if (trimmed.isEmpty()) return false
+        return if (trimmed.startsWith("synctool://", ignoreCase = true)) {
+            isValidPairUri(trimmed)
         } else {
-            authority.contains(':')
+            runCatching { Crockford.normalizeRoomId(trimmed) }.isSuccess
         }
-        val origin = if (parsed.port == 443 && !explicitPort) {
-            "https://$hostPart"
-        } else {
-            "https://$hostPart:${parsed.port}"
-        }
-        val cleanPath = parsed.encodedPath.trimEnd('/')
-        val base = "$origin$cleanPath"
-        val fragParts = ArrayList<String>(2)
-        if (frag.spkiPins.isNotEmpty()) {
-            fragParts.add("spki=${frag.spkiPins.joinToString(",")}")
-        }
-        if (frag.appGateKey != null) {
-            fragParts.add("gate=${frag.appGateKey}")
-        }
-        return if (fragParts.isNotEmpty()) "$base#${fragParts.joinToString("&")}" else base
     }
 
-    fun parseRelayEndpoint(raw: String): ResolvedRelayEndpoint {
-        val normalized = normalizeRelayUrl(raw).ifEmpty { DEFAULT_RELAY_URL }
-        val parsed = normalized.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("中继地址格式无效，请输入如 1.2.3.4:54843")
-        val frag = parseRelayFragment(parsed.fragment)
-        val baseUrl = normalized.substringBefore('#')
-        val cleanHost = parsed.host.removeSurrounding("[", "]")
-        val hostPort = formatHostPortKey(cleanHost, parsed.port)
-        return ResolvedRelayEndpoint(
-            baseUrl = baseUrl,
-            hostPort = hostPort,
-            host = cleanHost,
-            explicitSpkiPins = frag.spkiPins,
-            customAppGateKey = frag.appGateKey,
-            isDefaultRelay = hostPort == defaultHostPortKey,
-            isRawIp = isRawIpHost(cleanHost)
+    fun formatRoomCode(raw: String): String =
+        runCatching { Crockford.formatRoomId(raw.trim()) }.getOrDefault(raw.trim())
+
+    fun resolveDefaultRelayUri(overrideDefaultUri: (() -> String)? = null): String {
+        val explicit = overrideDefaultUri?.invoke()?.trim().orEmpty()
+        if (explicit.isNotEmpty()) return explicit
+        val envVal = System.getenv(ENV_DEFAULT_RELAY_URI)?.trim().orEmpty()
+        return envVal.ifEmpty { DEFAULT_RELAY_URI }
+    }
+
+    fun resolveRelayProfile(
+        customRelayUri: String,
+        overrideDefaultUri: (() -> String)? = null
+    ): Pair<RelayProfile, Boolean> {
+        val trimmedCustom = customRelayUri.trim()
+        if (trimmedCustom.isNotEmpty()) {
+            val profile = SyncUri.parseRelayUri(trimmedCustom)
+            return profile to true
+        }
+        val defaultUri = resolveDefaultRelayUri(overrideDefaultUri)
+        val profile = SyncUri.parseRelayUri(defaultUri).copy(isDefault = true)
+        return profile to false
+    }
+
+    fun toRelayStatusUi(
+        profile: RelayProfile,
+        isCustom: Boolean,
+        certExpiresAtEpochSec: Long = 0L,
+        certRotateRecommended: Boolean = false
+    ): SyncRelayStatusUi {
+        val redacted = if (isCustom) {
+            runCatching { redactUri(SyncUri.formatRelayUri(profile)) }.getOrDefault(redactUri(profile.endpoint))
+        } else {
+            ""
+        }
+        val certIso = if (certExpiresAtEpochSec > 0L) {
+            runCatching { Instant.ofEpochSecond(certExpiresAtEpochSec).toString() }.getOrDefault("")
+        } else {
+            ""
+        }
+        return SyncRelayStatusUi(
+            mode = if (isCustom) "custom" else "default",
+            endpoint = profile.endpoint,
+            redactedUri = redacted,
+            relayId = profile.relayId,
+            tlsMode = profile.tlsMode,
+            spkiPinShort = profile.spkiPin.take(12),
+            certExpiresAt = certIso,
+            certRotateRecommended = certRotateRecommended
         )
     }
 
-    private fun formatHostPortKey(host: String, port: Int): String {
-        val clean = host.trim().removeSurrounding("[", "]")
-        val hostPart = if (':' in clean) "[$clean]" else clean
-        return "$hostPart:$port".lowercase()
+    fun toFriendlyException(error: Throwable): Exception {
+        if (error is SecurityException || error is IllegalArgumentException || error is IllegalStateException) {
+            val safe = Redact.redactMessage(error.message.orEmpty())
+            return when (error) {
+                is SecurityException -> SecurityException(safe.ifEmpty { "安全校验未通过" })
+                is IllegalArgumentException -> IllegalArgumentException(safe.ifEmpty { "同步参数无效" })
+                else -> IllegalStateException(safe.ifEmpty { "同步状态异常" })
+            }
+        }
+        if (error is SyncError) {
+            val detail = error.cleanMessage
+            val msg = when (error.code) {
+                ErrorCode.ERR_TLS_PIN_MISMATCH ->
+                    "中继服务器 TLS SPKI 指纹不匹配，已阻断连接以防中间人攻击"
+                ErrorCode.ERR_TLS_CERT_INVALID ->
+                    "中继服务器 TLS 证书无效或已过期"
+                ErrorCode.ERR_AUTH_FAILED ->
+                    "中继访问密钥（#k=）认证失败，请核对中继 URI"
+                ErrorCode.ERR_UNAUTHORIZED_TOKEN ->
+                    "投递令牌或房间凭证已失效（可能已被对端吊销）"
+                ErrorCode.ERR_URI_INVALID ->
+                    "同步 URI 格式无效（需为 synctool://relay?...#k=... 或 synctool://pair?...）"
+                ErrorCode.ERR_SAS_MISMATCH ->
+                    "6 位安全核验码不一致或已拒绝，配对房间已自动销毁"
+                ErrorCode.ERR_ROOM_BURNED ->
+                    "配对房间已被销毁或已过期，请重新发起"
+                ErrorCode.ERR_ROOM_BUSY ->
+                    "该配对房间已被其他设备占用，请重新生成"
+                ErrorCode.ERR_HANDSHAKE_TIMEOUT,
+                ErrorCode.ERR_PIPE_PEER_TIMEOUT ->
+                    "等待对端响应超时，请确认双方网络畅通后重试"
+                ErrorCode.ERR_SPOOL_DISABLED ->
+                    "当前中继未启用离线信箱暂存（--spool=off），请改用实时直传"
+                ErrorCode.ERR_OFFLINE_QUOTA_EXCEEDED ->
+                    "离线信箱配额已满或配置包超出上限，请清理收件箱或改用实时直传"
+                ErrorCode.ERR_MSG_REPLAY_DETECTED,
+                ErrorCode.ERR_REPLAY_DETECTED ->
+                    "检测到重复或过期的同步包裹，已自动拦截重放"
+                ErrorCode.ERR_DEVICE_UNTRUSTED ->
+                    "发送端设备未配对或已被吊销"
+                ErrorCode.ERR_CRYPTO_DECRYPT_FAILED,
+                ErrorCode.ERR_CRYPTO_SIGNATURE_INVALID,
+                ErrorCode.ERR_CRYPTO_HANDSHAKE_FAILED,
+                ErrorCode.ERR_HASH_MISMATCH,
+                ErrorCode.ERR_STREAM_TRUNCATED ->
+                    "端到端加密签名或完整性校验失败，已拒绝导入"
+                ErrorCode.ERR_UNSUPPORTED_VERSION ->
+                    "同步协议版本不兼容，请将两端 GravitySSH 升级至最新版本"
+                ErrorCode.ERR_RATE_LIMITED ->
+                    "中继请求过于频繁，请稍后再试"
+                ErrorCode.ERR_CLOCK_SKEW ->
+                    "本机系统时间偏差过大，请开启自动对时后重试"
+                ErrorCode.ERR_INTERRUPTED_RESUMABLE ->
+                    "传输中断（已保存断点，重新执行可续传）"
+                ErrorCode.ERR_NOT_FOUND ->
+                    "同步房间或待收项目不存在（可能已过期或已销毁）"
+                ErrorCode.ERR_RELAY_UNREACHABLE ->
+                    "无法连接同步中继服务器，请检查网络或中继地址"
+                else -> if (detail.isNotEmpty()) "同步失败 (${error.code}): $detail" else "同步失败 (${error.code})"
+            }
+            return IOException(Redact.redactMessage(msg), error)
+        }
+        val safeMsg = Redact.redactMessage(error.message.orEmpty()).ifEmpty { error.javaClass.simpleName }
+        return IOException(safeMsg, error)
     }
 }
