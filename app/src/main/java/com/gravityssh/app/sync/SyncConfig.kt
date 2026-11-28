@@ -16,7 +16,7 @@ object SyncConfig {
 
     // Updated in Batch B after live VPS2 synctool-relay v0.3.0 cutover
     const val DEFAULT_RELAY_URI: String =
-        "synctool://relay?v=1&u=https%3A%2F%2F43.155.231.14%3A54843&pin=0000000000000000000000000000000000000000000000000000000000000000#k=SYNCTOOL_VPS2_DEFAULT_ACCESS_KEY_PLACEHOLDER"
+        "synctool://relay?v=1&u=https%3A%2F%2F43.155.231.14%3A54843&pin=f7757f3863cfd16d6f3c92c36d48d12fc500058f42a8946987056f6263335da8#k=vAs_uYp5mZn187h54j6LsFG-0w3b5qtEQif3C5lcTyQ"
 
     const val ENV_DEFAULT_RELAY_URI: String = "SYNCTOOL_DEFAULT_RELAY_URI"
     const val DEFAULT_ROOM_TTL_SEC: Int = 300
