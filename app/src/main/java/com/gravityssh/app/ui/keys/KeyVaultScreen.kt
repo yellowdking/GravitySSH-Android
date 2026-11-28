@@ -58,10 +58,7 @@ fun KeyVaultScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                     }
                 },
                 title = {
-                    Column {
-                        Text("SSH 密钥库", style = MaterialTheme.typography.titleLarge, color = AgText)
-                        Text("${keys.size} 把密钥 · 硬件级加密存储", style = MaterialTheme.typography.labelSmall, color = AgMuted)
-                    }
+                    Text("SSH 密钥", style = MaterialTheme.typography.titleLarge, color = AgText)
                 },
                 actions = {
                     IconButton(onClick = { showImport = true }) {
@@ -80,7 +77,7 @@ fun KeyVaultScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 AgEmptyState(
                     icon = AgIcons.Key,
                     title = "暂无 SSH 密钥",
-                    subtitle = "可本地生成 Ed25519 / RSA-4096 密钥对，或导入 PEM/OpenSSH 私钥",
+                    subtitle = "生成新密钥或导入已有私钥",
                     actionLabel = "生成新密钥",
                     onAction = { showGenerate = true }
                 )
