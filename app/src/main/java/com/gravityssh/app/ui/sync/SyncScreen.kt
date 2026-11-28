@@ -27,8 +27,6 @@ import com.gravityssh.app.ui.cancelSyncFlow
 import com.gravityssh.app.ui.clearLastSyncSummary
 import com.gravityssh.app.ui.clearSyncPendingPreview
 import com.gravityssh.app.ui.components.AgBadge
-import com.gravityssh.app.ui.components.AgCard
-import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.refreshSyncOverview
 import com.gravityssh.app.ui.startSyncInboxWatch
@@ -127,14 +125,14 @@ fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                     selected = selectedTab == 1,
                     onClick = { userTabChoice = 1 },
                     text = {
-                        Text("一次性发送", color = if (selectedTab == 1) AgText else AgMuted)
+                        Text("发送", color = if (selectedTab == 1) AgText else AgMuted)
                     }
                 )
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { userTabChoice = 2 },
                     text = {
-                        Text("一次性接收", color = if (selectedTab == 2) AgText else AgMuted)
+                        Text("接收", color = if (selectedTab == 2) AgText else AgMuted)
                     }
                 )
             }
@@ -147,22 +145,6 @@ fun SyncScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 SyncRelayCard(viewModel = viewModel, state = state)
-
-                AgCard(borderColor = AgCyan.copy(alpha = 0.35f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(AgIcons.Shield, contentDescription = null, tint = AgCyan, modifier = Modifier.size(18.dp))
-                        Text("synctool-v1 零知识端到端加密 · 签名阅后即焚", style = MaterialTheme.typography.titleSmall, color = AgCyan)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "采用 X25519 + Ed25519 + 64 KiB 分块 AES-256-GCM 流式加密及 TLS 1.3 SPKI 指纹钉扎；中继不可见任何明文或私钥，确认导入后立即物理焚毁。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AgMuted
-                    )
-                }
 
                 state.errorMessage?.takeIf { it.isNotBlank() && state.flowStage != SyncFlowStage.AWAITING_SAS_INPUT }?.let { err ->
                     AgStatusBanner(message = err.substringBefore('#'), color = AgDanger)

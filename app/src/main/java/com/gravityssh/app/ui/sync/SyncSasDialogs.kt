@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -102,12 +100,6 @@ private fun InitiatorSasInputDialog(
                 )
             }
 
-            AgStatusBanner(
-                message = "防社工攻击提示：请当面或语音核对接收端屏幕上显示的 6 位安全码，严禁通过发送 8 位房间码的同一聊天窗口索要安全码！",
-                color = AgWarning,
-                icon = Icons.Rounded.Warning
-            )
-
             errorMessage?.takeIf { it.isNotBlank() }?.let { err ->
                 AgStatusBanner(message = err, color = AgDanger)
             }
@@ -117,8 +109,8 @@ private fun InitiatorSasInputDialog(
                 onValueChange = { raw ->
                     digits = raw.filter(Char::isDigit).take(6)
                 },
-                label = "接收端显示的 6 位数字安全码",
-                placeholder = "例如 042819",
+                label = "对端显示的 6 位安全码",
+                placeholder = "000000",
                 mono = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Number,
@@ -141,7 +133,7 @@ private fun InitiatorSasInputDialog(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(1f).height(44.dp)
                 ) {
-                    Text("取消并销毁", color = AgDanger)
+                    Text("取消", color = AgDanger)
                 }
                 Button(
                     onClick = {
@@ -155,7 +147,7 @@ private fun InitiatorSasInputDialog(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(1.2f).height(44.dp)
                 ) {
-                    Text(if (submitted) "核验中..." else "验证并发送", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    Text(if (submitted) "验证中..." else "确认", color = Color.White, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -196,7 +188,7 @@ private fun ResponderSasConfirmDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(AgIcons.VerifiedUser, null, tint = AgWarning, modifier = Modifier.size(22.dp))
-                Text("核对 6 位安全码", style = MaterialTheme.typography.titleLarge, color = AgText)
+                Text("核对安全码", style = MaterialTheme.typography.titleLarge, color = AgText)
             }
 
             Surface(
@@ -221,16 +213,10 @@ private fun ResponderSasConfirmDialog(
             }
 
             Text(
-                text = "请与发送端当面或语音核对 6 位安全码是否完全一致",
+                text = "请确认两端显示的 6 位安全码一致",
                 style = MaterialTheme.typography.bodyMedium,
                 color = AgText,
                 fontWeight = FontWeight.Medium
-            )
-
-            AgStatusBanner(
-                message = "请将上方 6 位数字口头告知发送端输入，并双向确认完全一致后再点击允许。若不一致请立即点击拒绝以阻断中间人攻击！",
-                color = AgWarning,
-                icon = Icons.Rounded.Warning
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -246,7 +232,7 @@ private fun ResponderSasConfirmDialog(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(1f).height(46.dp)
                 ) {
-                    Text("不一致，拒绝", color = AgDanger, fontWeight = FontWeight.SemiBold)
+                    Text("拒绝", color = AgDanger, fontWeight = FontWeight.SemiBold)
                 }
                 Button(
                     onClick = {
@@ -260,7 +246,7 @@ private fun ResponderSasConfirmDialog(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(1.15f).height(46.dp)
                 ) {
-                    Text("一致，允许", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("允许", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         }
