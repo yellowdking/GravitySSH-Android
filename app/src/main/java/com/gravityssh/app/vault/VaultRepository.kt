@@ -10,6 +10,7 @@ import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SyncBundle
 import com.gravityssh.app.model.SyncImportMode
 import com.gravityssh.app.model.SyncImportSummary
+import com.gravityssh.app.model.SyncVaultState
 import com.gravityssh.app.model.VaultData
 import com.gravityssh.app.model.VaultLockState
 import com.gravityssh.app.model.VaultState
@@ -26,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
 import java.io.File
 import java.time.Instant
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 
 class VaultRepository(
@@ -89,7 +91,14 @@ class VaultRepository(
     fun resetCorruptedVault(): Result<Unit> = synchronized(lock) {
         runCatching {
             store.backupCorruptedFile()
-            val res = store.openInitial()
+            val res = try {
+                store.openInitial()
+            } catch (_: Throwable) {
+                masterKeyProvider.resetMasterKey()
+                masterKeyProvider.resetBiometricAuthKey()
+                store.deleteVaultFileIfExists()
+                store.openInitial()
+            }
             clearSecretsLocked()
             currentData = res.data
             pendingDirty = false
@@ -155,13 +164,19 @@ class VaultRepository(
     }
 
     fun lockNow() {
+        var dirtySnapshot: VaultData? = null
+        var dirtyKeyCopy: CachedPasswordKey? = null
+        var flushFuture: CompletableFuture<Unit>? = null
+
         val didLock = synchronized(lock) {
             val cur = _state.value.lockState
             if (cur.locked) return@synchronized false
             if (!cur.hasPassword && !cur.biometricEnabled) return@synchronized false
+
             if (pendingDirty) {
-                runCatching { store.save(currentData, cachedPasswordKey) }
-                    .onFailure { e -> runCatching { Log.e(TAG, "Failed to save pending vault changes before lock", e) } }
+                dirtySnapshot = currentData
+                dirtyKeyCopy = cachedPasswordKey?.let(::clonePasswordKey)
+                flushFuture = store.registerPendingFlush()
             }
             cancelDebouncedFlushLocked()
             pendingDirty = false
@@ -176,8 +191,25 @@ class VaultRepository(
             )
             true
         }
-        if (didLock) {
-            onLockCallbacks.forEach { cb -> runCatching { cb() } }
+
+        if (!didLock) return
+
+        onLockCallbacks.forEach { cb -> runCatching { cb() } }
+
+        val snap = dirtySnapshot
+        val fut = flushFuture
+        if (snap != null && fut != null) {
+            val keyCopy = dirtyKeyCopy
+            ioScope.launch {
+                try {
+                    store.saveFromAsyncFlush(snap, keyCopy)
+                } catch (e: Throwable) {
+                    runCatching { Log.e(TAG, "Failed to save pending vault changes after lock", e) }
+                } finally {
+                    keyCopy?.clear()
+                    store.completePendingFlush(fut)
+                }
+            }
         }
     }
 
@@ -227,6 +259,28 @@ class VaultRepository(
     fun deleteTemplate(id: String) = mutateUnit { it.copy(templates = it.templates.filterNot { t -> t.id == id }) }
     fun clearHistory() = mutateUnit { it.copy(history = emptyList()) }
     fun importSyncBundle(bundle: SyncBundle, mode: SyncImportMode): SyncImportSummary = mutate { VaultSyncOps.applyBundle(it, bundle, mode) }
+
+    fun importSyncBundle(bundle: SyncBundle, mode: String): SyncImportSummary =
+        importSyncBundle(bundle, SyncImportMode.fromWire(mode))
+
+    fun readSyncState(): SyncVaultState = synchronized(lock) {
+        requireUnlocked()
+        currentData.syncState
+    }
+
+    fun readSyncStateOrNull(): SyncVaultState? = synchronized(lock) {
+        if (_state.value.lockState.locked) null else currentData.syncState
+    }
+
+    fun <T> mutateSyncState(op: (SyncVaultState) -> Pair<SyncVaultState, T>): T = mutate { d ->
+        val (nextSync, res) = op(d.syncState)
+        d.copy(syncState = nextSync) to res
+    }
+
+    fun updateSyncState(op: (SyncVaultState) -> SyncVaultState): SyncVaultState = mutate { d ->
+        val nextSync = op(d.syncState)
+        d.copy(syncState = nextSync) to nextSync
+    }
 
     fun markServerConnected(id: String) = mutateDebouncedIfUnlocked { d ->
         if (d.servers.none { it.id == id }) return@mutateDebouncedIfUnlocked d
@@ -285,7 +339,7 @@ class VaultRepository(
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings): AppSettings = mutate { d ->
-        val transformed = VaultCrudOps.sanitizeSettings(transform(d.settings))
+        val transformed = VaultCrudOps.sanitizeSettings(transform(d.settings).copy(syncRelayUrl = ""))
         val u = if (cachedPasswordKey != null && transformed.biometricLockEnabled) {
             transformed.copy(biometricLockEnabled = false)
         } else {
@@ -355,6 +409,17 @@ class VaultRepository(
     private fun cancelDebouncedFlushLocked() {
         debouncedFlushJob?.cancel()
         debouncedFlushJob = null
+    }
+
+    private fun clonePasswordKey(src: CachedPasswordKey): CachedPasswordKey {
+        val salt = src.saltCopy()
+        val raw = src.secretKey().encoded
+        return try {
+            CachedPasswordKey(salt, raw)
+        } finally {
+            CryptoUtils.zero(salt)
+            CryptoUtils.zero(raw)
+        }
     }
 
     private fun clearSecretsLocked() {
