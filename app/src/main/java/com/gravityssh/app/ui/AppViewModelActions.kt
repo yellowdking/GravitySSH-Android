@@ -17,6 +17,7 @@ import com.gravityssh.app.model.SyncInboxItemUi
 import com.gravityssh.app.model.SyncPingResultUi
 import com.gravityssh.app.model.SyncRelayStatusUi
 import com.gravityssh.app.ssh.SshKeyGenerator
+import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.terminal.TouchCursorMode
 import com.gravityssh.app.terminal.TouchSensitivity
 import kotlinx.coroutines.CancellationException
@@ -259,13 +260,15 @@ fun AppViewModel.saveCustomSyncRelay(
         val res = container.syncService.saveCustomRelayUri(trimmed)
         res.onSuccess { status ->
             if (trimmed.isEmpty() || status.mode != "custom") {
-                showToast("已恢复官方默认同步中继")
+                showToast("已恢复默认官方中继")
             } else {
-                val safeDisplay = status.redactedUri.ifBlank { status.endpoint }.substringBefore('#')
+                val safeDisplay = SyncConfig.redactUri(status.endpoint)
+                    .substringBefore('#')
+                    .ifBlank { status.redactedUri.substringBefore('#') }
                 showToast("已保存自定义中继: $safeDisplay")
             }
         }.onFailure { err ->
-            showToast((err.message ?: "中继 URI 无效").substringBefore('#'))
+            showToast((err.message ?: "中继地址无效").substringBefore('#'))
         }
         onResult(res)
     }
@@ -325,7 +328,7 @@ fun AppViewModel.sendSyncToPairedDevice(
         try {
             val res = container.syncService.sendToPairedDevice(deviceId, deliveryMode)
             res.onSuccess {
-                showToast(if (deliveryMode == "pipe") "实时直传完成" else "已加密推送至配对设备")
+                showToast(if (deliveryMode == "pipe") "实时直传完成" else "已推送")
             }.onFailure { err ->
                 showToast(err.message ?: "推送失败")
             }
@@ -348,9 +351,9 @@ fun AppViewModel.applySyncInboxItem(
             val res = container.syncService.applyInboxItem(itemId, importMode)
             res.onSuccess { summary ->
                 _lastSyncSummary.value = summary
-                showToast("收件箱配置已导入并销毁云端密文")
+                showToast("导入完成")
             }.onFailure { err ->
-                showToast(err.message ?: "解密导入失败")
+                showToast(err.message ?: "导入失败")
             }
             onResult(res)
         } finally {
@@ -368,8 +371,8 @@ fun AppViewModel.dismissSyncInboxItem(
         _syncActionBusy.value = true
         try {
             val res = container.syncService.dismissInboxItem(itemId)
-            res.onSuccess { showToast("已销毁该待收密文") }
-                .onFailure { showToast(it.message ?: "销毁失败") }
+            res.onSuccess { showToast("已删除") }
+                .onFailure { showToast(it.message ?: "删除失败") }
             onResult(res)
         } finally {
             _syncActionBusy.value = false
@@ -386,8 +389,8 @@ fun AppViewModel.revokeSyncPairedDevice(
         _syncActionBusy.value = true
         try {
             val res = container.syncService.revokePairedDevice(deviceId)
-            res.onSuccess { showToast("已吊销配对设备信任") }
-                .onFailure { showToast(it.message ?: "吊销设备失败") }
+            res.onSuccess { showToast("已解除配对") }
+                .onFailure { showToast(it.message ?: "解除配对失败") }
             onResult(res)
         } finally {
             _syncActionBusy.value = false
