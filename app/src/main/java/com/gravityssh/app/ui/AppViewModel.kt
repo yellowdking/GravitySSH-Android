@@ -7,17 +7,13 @@ import com.gravityssh.app.AppContainer
 import com.gravityssh.app.model.ServerConfig
 import com.gravityssh.app.model.SessionTab
 import com.gravityssh.app.model.SyncImportSummary
-import com.gravityssh.app.model.SyncReceivePreview
-import com.gravityssh.app.model.SyncReceiveWaitSession
-import com.gravityssh.app.model.SyncSendPollResult
-import com.gravityssh.app.model.SyncSendSession
+import com.gravityssh.app.model.SyncUiState
 import com.gravityssh.app.model.TransferProgress
 import com.gravityssh.app.model.UpdateCheckResult
 import com.gravityssh.app.model.VaultState
 import com.gravityssh.app.vault.KnownHostEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,31 +26,6 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
-
-data class SyncSendUiState(
-    val session: SyncSendSession? = null,
-    val pollResult: SyncSendPollResult? = null,
-    val busy: Boolean = false,
-    val error: String? = null,
-    val consumedSuccess: Boolean = false,
-    val remainingSec: Long = 0L,
-    val consecutivePollErrors: Int = 0,
-    val lastPollError: String? = null
-)
-
-data class SyncReceiveUiState(
-    val inputCode: String = "",
-    val receiverCode: String = "",
-    val busy: Boolean = false,
-    val error: String? = null,
-    val waitSession: SyncReceiveWaitSession? = null,
-    val waitRemainingSec: Long = 0L,
-    val consecutivePollErrors: Int = 0,
-    val lastPollError: String? = null,
-    val preview: SyncReceivePreview? = null,
-    val summary: SyncImportSummary? = null
-)
 
 class AppViewModel(val container: AppContainer) : ViewModel() {
 
@@ -63,6 +34,7 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     val activeSessionId: StateFlow<String?> = container.sshSessionManager.activeSessionId
     val knownHosts: StateFlow<List<KnownHostEntry>> = container.knownHostsManager.knownHosts
     val knownHostsError: StateFlow<String?> = container.knownHostsManager.lastError
+    val syncUiState: StateFlow<SyncUiState> = container.syncService.uiState
 
     private val _toastEvents = MutableSharedFlow<String>(
         extraBufferCapacity = 16,
@@ -85,25 +57,11 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
     internal val sftpTransferJobs = ConcurrentHashMap<String, Job>()
     internal val pendingSftpDownloadTargets = ConcurrentHashMap<String, Pair<String, String>>()
 
-    internal val _syncSendState = MutableStateFlow(SyncSendUiState())
-    val syncSendState: StateFlow<SyncSendUiState> = _syncSendState.asStateFlow()
+    internal val _syncActionBusy = MutableStateFlow(false)
+    val syncActionBusy: StateFlow<Boolean> = _syncActionBusy.asStateFlow()
 
-    internal var syncStartJob: Job? = null
-    internal var syncApproveJob: Job? = null
-    internal var syncCountdownJob: Job? = null
-    internal var syncPollJob: Job? = null
-    internal val syncSendGeneration = AtomicLong(0L)
-
-    internal val _syncReceiveState = MutableStateFlow(
-        SyncReceiveUiState(receiverCode = container.syncService.generateReceiverCode())
-    )
-    val syncReceiveState: StateFlow<SyncReceiveUiState> = _syncReceiveState.asStateFlow()
-
-    internal var syncReceiveStartJob: Job? = null
-    internal var syncReceiveApplyJob: Job? = null
-    internal var syncReceiveCountdownJob: Job? = null
-    internal var syncReceivePollJob: Job? = null
-    internal val syncReceiveGeneration = AtomicLong(0L)
+    internal val _lastSyncSummary = MutableStateFlow<SyncImportSummary?>(null)
+    val lastSyncSummary: StateFlow<SyncImportSummary?> = _lastSyncSummary.asStateFlow()
 
     private var startupUpdateChecked = false
 
@@ -127,11 +85,16 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
         }
         viewModelScope.launch {
             vaultState
-                .map { it.lockState.locked }
+                .map { it.lockState }
                 .distinctUntilChanged()
-                .collect { locked ->
-                    if (locked) {
-                        resetSyncUiOnLock()
+                .collect { vState ->
+                    if (vState.locked) {
+                        cancelAllSftpOnLock()
+                        _syncActionBusy.value = false
+                        _lastSyncSummary.value = null
+                        container.syncService.onVaultLocked()
+                    } else if (vState.initialized) {
+                        container.syncService.refreshOverview()
                     }
                 }
         }
@@ -153,9 +116,7 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
         pendingSftpDownloadTargets.remove(sessionId)
 
     fun lockVault() {
-        viewModelScope.launch(Dispatchers.IO) {
-            container.vaultRepository.lockNow()
-        }
+        container.vaultRepository.lockNow()
     }
 
     fun clearHostKnownKey(host: String, port: Int) {
@@ -202,60 +163,18 @@ class AppViewModel(val container: AppContainer) : ViewModel() {
         }
     }
 
-    private fun resetSyncUiOnLock() {
-        syncSendGeneration.incrementAndGet()
-        syncStartJob?.cancel()
-        syncStartJob = null
-        syncApproveJob?.cancel()
-        syncApproveJob = null
-        syncCountdownJob?.cancel()
-        syncCountdownJob = null
-        syncPollJob?.cancel()
-        syncPollJob = null
-        _syncSendState.value = SyncSendUiState()
-
-        syncReceiveGeneration.incrementAndGet()
-        syncReceiveStartJob?.cancel()
-        syncReceiveStartJob = null
-        syncReceiveApplyJob?.cancel()
-        syncReceiveApplyJob = null
-        syncReceiveCountdownJob?.cancel()
-        syncReceiveCountdownJob = null
-        syncReceivePollJob?.cancel()
-        syncReceivePollJob = null
-        _syncReceiveState.value = SyncReceiveUiState(
-            receiverCode = container.syncService.generateReceiverCode()
-        )
+    private fun cancelAllSftpOnLock() {
+        val activeJobs = sftpTransferJobs.values.toList()
+        sftpTransferJobs.clear()
+        activeJobs.forEach { it.cancel() }
+        pendingSftpDownloadTargets.clear()
+        _sftpTransfers.value = emptyMap()
     }
 
     override fun onCleared() {
-        sftpTransferJobs.values.forEach { it.cancel() }
-        sftpTransferJobs.clear()
-        pendingSftpDownloadTargets.clear()
-
-        syncSendGeneration.incrementAndGet()
-        syncStartJob?.cancel()
-        syncApproveJob?.cancel()
-        syncCountdownJob?.cancel()
-        syncPollJob?.cancel()
-        val pendingId = _syncSendState.value.session?.sessionId
-        if (!pendingId.isNullOrBlank()) {
-            kotlinx.coroutines.CoroutineScope(Dispatchers.IO + NonCancellable).launch {
-                runCatching { container.syncService.cancelSend(pendingId) }
-            }
-        }
-
-        syncReceiveGeneration.incrementAndGet()
-        syncReceiveStartJob?.cancel()
-        syncReceiveApplyJob?.cancel()
-        syncReceiveCountdownJob?.cancel()
-        syncReceivePollJob?.cancel()
-        _syncReceiveState.value.waitSession?.waitId?.let { waitId ->
-            runCatching { container.syncService.cancelReceiveWait(waitId) }
-        }
-        _syncReceiveState.value.preview?.previewId?.let { previewId ->
-            runCatching { container.syncService.discardPreview(previewId) }
-        }
+        cancelAllSftpOnLock()
+        container.syncService.stopForegroundInboxWatch()
+        container.syncService.cancelActiveFlow()
         super.onCleared()
     }
 }
