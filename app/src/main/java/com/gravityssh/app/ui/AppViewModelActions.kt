@@ -12,13 +12,11 @@ import com.gravityssh.app.model.CommandShortcut
 import com.gravityssh.app.model.KeyDeployResult
 import com.gravityssh.app.model.SSHKeyRecord
 import com.gravityssh.app.model.ServerConfig
-import com.gravityssh.app.model.SyncImportMode
-import com.gravityssh.app.model.SyncReceivePollState
-import com.gravityssh.app.model.SyncReceiveWaitSession
-import com.gravityssh.app.model.SyncSendPollState
-import com.gravityssh.app.model.SyncSendSession
+import com.gravityssh.app.model.SyncImportSummary
+import com.gravityssh.app.model.SyncInboxItemUi
+import com.gravityssh.app.model.SyncPingResultUi
+import com.gravityssh.app.model.SyncRelayStatusUi
 import com.gravityssh.app.ssh.SshKeyGenerator
-import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.terminal.TouchCursorMode
 import com.gravityssh.app.terminal.TouchSensitivity
 import kotlinx.coroutines.CancellationException
@@ -26,7 +24,6 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -241,18 +238,228 @@ fun AppViewModel.cycleTouchCursorSensitivity() {
     showToast("光标灵敏度：${next.label}")
 }
 
-fun AppViewModel.saveSyncRelayUrl(rawUrl: String) {
-    runCatching { SyncConfig.normalizeRelayUrl(rawUrl) }.onSuccess { norm ->
-        updateSettings { it.copy(syncRelayUrl = norm) }
-        showToast(if (norm.isEmpty()) "已恢复默认同步中继" else "已保存中继地址 $norm")
-    }.onFailure { showToast(it.message ?: "中继地址无效") }
+// ---------------------------------------------------------------------------
+// Sync Actions (delegating to locked SyncService synctool-v1 contract)
+// ---------------------------------------------------------------------------
+
+fun AppViewModel.clearLastSyncSummary() {
+    _lastSyncSummary.value = null
 }
 
-fun AppViewModel.testSyncRelay(rawUrl: String, onResult: (Result<Long>) -> Unit) {
+fun AppViewModel.refreshSyncOverview() {
+    container.syncService.refreshOverview()
+}
+
+fun AppViewModel.saveCustomSyncRelay(
+    rawUri: String,
+    onResult: (Result<SyncRelayStatusUi>) -> Unit = {}
+) {
+    val trimmed = rawUri.trim()
     viewModelScope.launch {
-        onResult(runCatching { container.syncService.testRelay(rawUrl.trim().ifEmpty { null }) })
+        val res = container.syncService.saveCustomRelayUri(trimmed)
+        res.onSuccess { status ->
+            if (trimmed.isEmpty() || status.mode != "custom") {
+                showToast("已恢复官方默认同步中继")
+            } else {
+                val safeDisplay = status.redactedUri.ifBlank { status.endpoint }.substringBefore('#')
+                showToast("已保存自定义中继: $safeDisplay")
+            }
+        }.onFailure { err ->
+            showToast((err.message ?: "中继 URI 无效").substringBefore('#'))
+        }
+        onResult(res)
     }
 }
+
+fun AppViewModel.testSyncRelay(
+    rawUri: String = "",
+    onResult: (Result<SyncPingResultUi>) -> Unit = {}
+) {
+    viewModelScope.launch {
+        val res = container.syncService.testRelay(rawUri.trim())
+        onResult(res)
+    }
+}
+
+fun AppViewModel.updateSyncDeviceLabel(
+    label: String,
+    onResult: (Result<Unit>) -> Unit = {}
+) {
+    viewModelScope.launch {
+        val res = container.syncService.updateDeviceLabel(label.trim())
+        res.onSuccess { showToast("已更新本机同步名称") }
+            .onFailure { showToast(it.message ?: "更新设备名称失败") }
+        onResult(res)
+    }
+}
+
+fun AppViewModel.startSyncInboxWatch() {
+    container.syncService.startForegroundInboxWatch()
+}
+
+fun AppViewModel.stopSyncInboxWatch() {
+    container.syncService.stopForegroundInboxWatch()
+}
+
+fun AppViewModel.refreshSyncInbox(
+    silent: Boolean = false,
+    onResult: (Result<List<SyncInboxItemUi>>) -> Unit = {}
+) {
+    viewModelScope.launch {
+        val res = container.syncService.refreshInbox()
+        if (!silent) {
+            res.onFailure { showToast(it.message ?: "刷新收件箱失败") }
+        }
+        onResult(res)
+    }
+}
+
+fun AppViewModel.sendSyncToPairedDevice(
+    deviceId: String,
+    deliveryMode: String = "auto",
+    onResult: (Result<Unit>) -> Unit = {}
+) {
+    if (_syncActionBusy.value) return
+    viewModelScope.launch {
+        _syncActionBusy.value = true
+        try {
+            val res = container.syncService.sendToPairedDevice(deviceId, deliveryMode)
+            res.onSuccess {
+                showToast(if (deliveryMode == "pipe") "实时直传完成" else "已加密推送至配对设备")
+            }.onFailure { err ->
+                showToast(err.message ?: "推送失败")
+            }
+            onResult(res)
+        } finally {
+            _syncActionBusy.value = false
+        }
+    }
+}
+
+fun AppViewModel.applySyncInboxItem(
+    itemId: String,
+    importMode: String,
+    onResult: (Result<SyncImportSummary>) -> Unit = {}
+) {
+    if (_syncActionBusy.value) return
+    viewModelScope.launch {
+        _syncActionBusy.value = true
+        try {
+            val res = container.syncService.applyInboxItem(itemId, importMode)
+            res.onSuccess { summary ->
+                _lastSyncSummary.value = summary
+                showToast("收件箱配置已导入并销毁云端密文")
+            }.onFailure { err ->
+                showToast(err.message ?: "解密导入失败")
+            }
+            onResult(res)
+        } finally {
+            _syncActionBusy.value = false
+        }
+    }
+}
+
+fun AppViewModel.dismissSyncInboxItem(
+    itemId: String,
+    onResult: (Result<Unit>) -> Unit = {}
+) {
+    if (_syncActionBusy.value) return
+    viewModelScope.launch {
+        _syncActionBusy.value = true
+        try {
+            val res = container.syncService.dismissInboxItem(itemId)
+            res.onSuccess { showToast("已销毁该待收密文") }
+                .onFailure { showToast(it.message ?: "销毁失败") }
+            onResult(res)
+        } finally {
+            _syncActionBusy.value = false
+        }
+    }
+}
+
+fun AppViewModel.revokeSyncPairedDevice(
+    deviceId: String,
+    onResult: (Result<Unit>) -> Unit = {}
+) {
+    if (_syncActionBusy.value) return
+    viewModelScope.launch {
+        _syncActionBusy.value = true
+        try {
+            val res = container.syncService.revokePairedDevice(deviceId)
+            res.onSuccess { showToast("已吊销配对设备信任") }
+                .onFailure { showToast(it.message ?: "吊销设备失败") }
+            onResult(res)
+        } finally {
+            _syncActionBusy.value = false
+        }
+    }
+}
+
+fun AppViewModel.startSyncDeviceBindOffer(mode: Int, includeRelay: Boolean = false) {
+    _lastSyncSummary.value = null
+    container.syncService.startDeviceBindOffer(mode, includeRelay)
+}
+
+fun AppViewModel.acceptSyncDeviceBind(codeOrUri: String) {
+    val clean = codeOrUri.trim()
+    if (clean.isEmpty()) return
+    _lastSyncSummary.value = null
+    container.syncService.acceptDeviceBind(clean)
+}
+
+fun AppViewModel.startSyncOneShotSend(mode: Int, includeRelay: Boolean = false) {
+    _lastSyncSummary.value = null
+    container.syncService.startOneShotSend(mode, includeRelay)
+}
+
+fun AppViewModel.startSyncReceive(codeOrUri: String) {
+    val clean = codeOrUri.trim()
+    if (clean.isEmpty()) return
+    _lastSyncSummary.value = null
+    container.syncService.startReceive(clean)
+}
+
+fun AppViewModel.submitSyncSasInput(sasDigits: String) {
+    container.syncService.submitSasInput(sasDigits.trim())
+}
+
+fun AppViewModel.confirmSyncResponderSas(approved: Boolean) {
+    container.syncService.confirmResponderSas(approved)
+}
+
+fun AppViewModel.cancelSyncFlow() {
+    container.syncService.cancelActiveFlow()
+}
+
+fun AppViewModel.applySyncPendingPreview(
+    importMode: String,
+    onResult: (Result<SyncImportSummary>) -> Unit = {}
+) {
+    if (_syncActionBusy.value) return
+    viewModelScope.launch {
+        _syncActionBusy.value = true
+        try {
+            val res = container.syncService.applyPendingPreview(importMode)
+            res.onSuccess { summary ->
+                _lastSyncSummary.value = summary
+                showToast("同步导入完成")
+            }.onFailure { err ->
+                showToast(err.message ?: "同步导入失败")
+            }
+            onResult(res)
+        } finally {
+            _syncActionBusy.value = false
+        }
+    }
+}
+
+fun AppViewModel.clearSyncPendingPreview() {
+    container.syncService.clearPendingPreview()
+}
+
+// ---------------------------------------------------------------------------
+// SFTP Transfer & File Actions
+// ---------------------------------------------------------------------------
 
 internal fun sanitizeUploadDisplayName(raw: String?): String {
     if (raw.isNullOrBlank() || '\u0000' in raw) return "upload.bin"
@@ -451,586 +658,5 @@ fun AppViewModel.runSftpOp(
             showToast("$errorPrefix: ${err.message}")
         }
         onDone?.invoke(res)
-    }
-}
-
-private const val SYNC_OFFLINE_EXPIRE_GRACE_MS = 150_000L
-
-fun AppViewModel.startSyncSend() {
-    if (_syncSendState.value.busy) return
-    val gen = syncSendGeneration.incrementAndGet()
-    syncStartJob?.cancel()
-    syncApproveJob?.cancel()
-    syncCountdownJob?.cancel()
-    syncPollJob?.cancel()
-    _syncSendState.value = SyncSendUiState(busy = true)
-    syncStartJob = viewModelScope.launch {
-        var createdSess: SyncSendSession? = null
-        try {
-            val sess = container.syncService.startSend()
-            createdSess = sess
-            if (syncSendGeneration.get() != gen) {
-                val sid = sess.sessionId.ifBlank { sess.code }
-                withContext(Dispatchers.IO + NonCancellable) {
-                    runCatching { container.syncService.cancelSend(sid) }
-                }
-                return@launch
-            }
-            _syncSendState.value = SyncSendUiState(
-                session = sess,
-                remainingSec = ((sess.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
-            )
-            launchSyncSendLoops(sess)
-        } catch (e: CancellationException) {
-            createdSess?.let { sess ->
-                val sid = sess.sessionId.ifBlank { sess.code }
-                withContext(Dispatchers.IO + NonCancellable) {
-                    runCatching { container.syncService.cancelSend(sid) }
-                }
-            }
-            throw e
-        } catch (err: Throwable) {
-            if (syncSendGeneration.get() == gen) {
-                _syncSendState.value = SyncSendUiState(error = err.message ?: "初始化同步通道失败")
-            }
-        }
-    }
-}
-
-private fun AppViewModel.launchSyncSendLoops(sess: SyncSendSession) {
-    syncCountdownJob?.cancel()
-    syncCountdownJob = viewModelScope.launch {
-        while (true) {
-            val left = ((sess.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
-            _syncSendState.update {
-                if (it.session?.sessionId == sess.sessionId) it.copy(remainingSec = left) else it
-            }
-            // Do not terminate polling on local countdown reaching 0 (allows ±120s client/relay clock skew).
-            // Authoritative relay gone/404 response terminates polling in startSyncSendPolling.
-            if (left <= 0L) break
-            delay(1000L)
-        }
-    }
-    startSyncSendPolling(sess.sessionId, sess.expiresAtEpochMs)
-}
-
-private fun AppViewModel.startSyncSendPolling(sessionId: String, expiresAtEpochMs: Long) {
-    syncPollJob?.cancel()
-    syncPollJob = viewModelScope.launch {
-        while (true) {
-            val cur = _syncSendState.value
-            if (cur.session?.sessionId != sessionId || cur.pollResult?.state == SyncSendPollState.REQUESTED) {
-                break
-            }
-            try {
-                val res = container.syncService.pollSend(sessionId)
-                when (res.state) {
-                    SyncSendPollState.WAITING, SyncSendPollState.APPROVED -> {
-                        _syncSendState.update {
-                            if (it.session?.sessionId == sessionId) {
-                                it.copy(pollResult = res, consecutivePollErrors = 0, lastPollError = null)
-                            } else it
-                        }
-                    }
-                    SyncSendPollState.REQUESTED -> {
-                        _syncSendState.update {
-                            if (it.session?.sessionId == sessionId) {
-                                it.copy(pollResult = res, consecutivePollErrors = 0, lastPollError = null)
-                            } else it
-                        }
-                        break
-                    }
-                    SyncSendPollState.CONSUMED -> {
-                        var matched = false
-                        _syncSendState.update { state ->
-                            if (state.session?.sessionId == sessionId) {
-                                matched = true
-                                SyncSendUiState(consumedSuccess = true)
-                            } else state
-                        }
-                        if (matched) {
-                            syncCountdownJob?.cancel()
-                            showToast("对方已成功接收配置")
-                        }
-                        break
-                    }
-                    SyncSendPollState.REJECTED -> {
-                        var matched = false
-                        _syncSendState.update { state ->
-                            if (state.session?.sessionId == sessionId) {
-                                matched = true
-                                SyncSendUiState(error = "已拒绝配对请求")
-                            } else state
-                        }
-                        if (matched) syncCountdownJob?.cancel()
-                        break
-                    }
-                    SyncSendPollState.EXPIRED -> {
-                        var matched = false
-                        _syncSendState.update { state ->
-                            if (state.session?.sessionId == sessionId) {
-                                matched = true
-                                SyncSendUiState(error = "同步码已过期或已失效，请重新生成")
-                            } else state
-                        }
-                        if (matched) syncCountdownJob?.cancel()
-                        break
-                    }
-                    SyncSendPollState.ERROR -> {
-                        var matched = false
-                        _syncSendState.update { state ->
-                            if (state.session?.sessionId == sessionId) {
-                                matched = true
-                                SyncSendUiState(error = res.errorMessage ?: "验证请求异常，已终止同步")
-                            } else state
-                        }
-                        if (matched) syncCountdownJob?.cancel()
-                        break
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: SecurityException) {
-                var matched = false
-                _syncSendState.update { state ->
-                    if (state.session?.sessionId == sessionId) {
-                        matched = true
-                        SyncSendUiState(error = e.message ?: "保险库已锁定")
-                    } else state
-                }
-                if (matched) syncCountdownJob?.cancel()
-                break
-            } catch (e: Exception) {
-                var nextErrors = 0
-                _syncSendState.update { state ->
-                    if (state.session?.sessionId == sessionId) {
-                        nextErrors = state.consecutivePollErrors + 1
-                        state.copy(
-                            consecutivePollErrors = nextErrors,
-                            lastPollError = e.message ?: "网络异常"
-                        )
-                    } else state
-                }
-                if (nextErrors >= 5 && System.currentTimeMillis() > expiresAtEpochMs + SYNC_OFFLINE_EXPIRE_GRACE_MS) {
-                    var matched = false
-                    _syncSendState.update { state ->
-                        if (state.session?.sessionId == sessionId) {
-                            matched = true
-                            SyncSendUiState(error = "同步码已过期且网络不可达，请重新生成")
-                        } else state
-                    }
-                    if (matched) syncCountdownJob?.cancel()
-                    break
-                }
-            }
-            delay(SyncConfig.PAIR_POLL_INTERVAL_MS)
-        }
-    }
-}
-
-fun AppViewModel.approveSyncSend(sessionId: String, requestId: String, receiverCode: String) {
-    val initial = _syncSendState.value
-    val sess = initial.session ?: return
-    if (initial.busy || sess.sessionId != sessionId) return
-    val expiresAtEpochMs = sess.expiresAtEpochMs
-    _syncSendState.update {
-        if (it.session?.sessionId == sessionId) it.copy(busy = true, error = null) else it
-    }
-    syncApproveJob?.cancel()
-    syncApproveJob = viewModelScope.launch {
-        try {
-            container.syncService.approveSend(sessionId, requestId, receiverCode)
-            var matched = false
-            _syncSendState.update { cur ->
-                if (cur.session?.sessionId == sessionId) {
-                    matched = true
-                    cur.copy(
-                        busy = false,
-                        pollResult = cur.pollResult?.copy(state = SyncSendPollState.APPROVED),
-                        consecutivePollErrors = 0,
-                        lastPollError = null
-                    )
-                } else cur
-            }
-            if (matched) {
-                startSyncSendPolling(sessionId, expiresAtEpochMs)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (err: Throwable) {
-            _syncSendState.update { cur ->
-                if (cur.session?.sessionId == sessionId) {
-                    cur.copy(busy = false, error = err.message ?: "同意发送失败")
-                } else cur
-            }
-        }
-    }
-}
-
-fun AppViewModel.cancelSyncSend(sessionIdOrCode: String) {
-    syncSendGeneration.incrementAndGet()
-    syncStartJob?.cancel()
-    syncStartJob = null
-    syncApproveJob?.cancel()
-    syncApproveJob = null
-    syncCountdownJob?.cancel()
-    syncPollJob?.cancel()
-    _syncSendState.value = SyncSendUiState()
-    viewModelScope.launch(Dispatchers.IO) {
-        runCatching { container.syncService.cancelSend(sessionIdOrCode) }
-            .onSuccess { showToast("已撤销同步码") }
-            .onFailure { showToast("撤销同步码失败: ${it.message}") }
-    }
-}
-
-fun AppViewModel.rejectSyncSend(sessionId: String, requestId: String) {
-    syncSendGeneration.incrementAndGet()
-    syncStartJob?.cancel()
-    syncStartJob = null
-    syncApproveJob?.cancel()
-    syncApproveJob = null
-    syncCountdownJob?.cancel()
-    syncPollJob?.cancel()
-    _syncSendState.value = SyncSendUiState()
-    viewModelScope.launch(Dispatchers.IO) {
-        runCatching { container.syncService.rejectSend(sessionId, requestId) }
-            .onSuccess { showToast("已拒绝配对请求并撤销同步") }
-            .onFailure { showToast("拒绝配对失败: ${it.message}") }
-    }
-}
-
-fun AppViewModel.updateSyncReceiveInputCode(code: String) {
-    _syncReceiveState.update { it.copy(inputCode = code, error = null) }
-}
-
-fun AppViewModel.refreshSyncReceiverCode() {
-    val cur = _syncReceiveState.value
-    if (cur.busy || cur.waitSession != null) return
-    _syncReceiveState.update {
-        it.copy(receiverCode = container.syncService.generateReceiverCode())
-    }
-}
-
-fun AppViewModel.startSyncReceive(codeOrUri: String) {
-    val cur = _syncReceiveState.value
-    if (codeOrUri.isBlank() || cur.busy || cur.waitSession != null) return
-    val receiverCode = cur.receiverCode.ifBlank { container.syncService.generateReceiverCode() }
-    val gen = syncReceiveGeneration.incrementAndGet()
-    syncReceiveStartJob?.cancel()
-    syncReceiveCountdownJob?.cancel()
-    syncReceivePollJob?.cancel()
-    _syncReceiveState.update {
-        it.copy(
-            receiverCode = receiverCode,
-            busy = true,
-            error = null,
-            summary = null,
-            consecutivePollErrors = 0,
-            lastPollError = null
-        )
-    }
-    syncReceiveStartJob = viewModelScope.launch {
-        var createdWait: SyncReceiveWaitSession? = null
-        try {
-            val wait = container.syncService.startReceiveRequest(codeOrUri, receiverCode)
-            createdWait = wait
-            if (syncReceiveGeneration.get() != gen) {
-                container.syncService.cancelReceiveWait(wait.waitId)
-                return@launch
-            }
-            val oldPreviewId = _syncReceiveState.value.preview?.previewId
-            if (oldPreviewId != null) {
-                runCatching { container.syncService.discardPreview(oldPreviewId) }
-            }
-            _syncReceiveState.update {
-                it.copy(
-                    busy = false,
-                    error = null,
-                    preview = null,
-                    waitSession = wait,
-                    waitRemainingSec = ((wait.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L),
-                    consecutivePollErrors = 0,
-                    lastPollError = null
-                )
-            }
-            launchSyncReceiveLoops(wait)
-        } catch (e: CancellationException) {
-            createdWait?.let { runCatching { container.syncService.cancelReceiveWait(it.waitId) } }
-            throw e
-        } catch (err: Throwable) {
-            if (syncReceiveGeneration.get() == gen) {
-                _syncReceiveState.update {
-                    it.copy(
-                        busy = false,
-                        error = err.message ?: "发起验证失败，请确认同步码有效"
-                    )
-                }
-            }
-        }
-    }
-}
-
-private fun AppViewModel.launchSyncReceiveLoops(wait: SyncReceiveWaitSession) {
-    syncReceiveCountdownJob?.cancel()
-    syncReceiveCountdownJob = viewModelScope.launch {
-        while (true) {
-            val left = ((wait.expiresAtEpochMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
-            _syncReceiveState.update { state ->
-                if (state.waitSession?.waitId == wait.waitId) state.copy(waitRemainingSec = left) else state
-            }
-            // Do not halt polling on local clock reaching 0 (tolerates ±120s client/relay clock skew).
-            if (left <= 0L) break
-            delay(1000L)
-        }
-    }
-    syncReceivePollJob?.cancel()
-    syncReceivePollJob = viewModelScope.launch {
-        while (true) {
-            if (_syncReceiveState.value.waitSession?.waitId != wait.waitId) break
-            try {
-                val res = container.syncService.pollReceiveStatus(wait.waitId)
-                when (res.state) {
-                    SyncReceivePollState.PENDING -> {
-                        _syncReceiveState.update { state ->
-                            if (state.waitSession?.waitId == wait.waitId) {
-                                state.copy(consecutivePollErrors = 0, lastPollError = null)
-                            } else state
-                        }
-                    }
-                    SyncReceivePollState.APPROVED -> {
-                        var matched = false
-                        _syncReceiveState.update { state ->
-                            if (state.waitSession?.waitId == wait.waitId) {
-                                matched = true
-                                state.copy(
-                                    waitSession = null,
-                                    waitRemainingSec = 0L,
-                                    preview = res.preview,
-                                    consecutivePollErrors = 0,
-                                    lastPollError = null,
-                                    error = null
-                                )
-                            } else state
-                        }
-                        if (matched) {
-                            syncReceiveCountdownJob?.cancel()
-                        } else {
-                            res.preview?.previewId?.let { pid ->
-                                runCatching { container.syncService.discardPreview(pid) }
-                            }
-                        }
-                        break
-                    }
-                    SyncReceivePollState.REJECTED -> {
-                        var matched = false
-                        _syncReceiveState.update { state ->
-                            if (state.waitSession?.waitId == wait.waitId) {
-                                matched = true
-                                state.copy(
-                                    waitSession = null,
-                                    waitRemainingSec = 0L,
-                                    consecutivePollErrors = 0,
-                                    lastPollError = null,
-                                    receiverCode = container.syncService.generateReceiverCode(),
-                                    error = "发送端已拒绝此次同步请求"
-                                )
-                            } else state
-                        }
-                        if (matched) syncReceiveCountdownJob?.cancel()
-                        break
-                    }
-                    SyncReceivePollState.EXPIRED -> {
-                        var matched = false
-                        _syncReceiveState.update { state ->
-                            if (state.waitSession?.waitId == wait.waitId) {
-                                matched = true
-                                state.copy(
-                                    waitSession = null,
-                                    waitRemainingSec = 0L,
-                                    consecutivePollErrors = 0,
-                                    lastPollError = null,
-                                    receiverCode = container.syncService.generateReceiverCode(),
-                                    error = "同步请求已过期或被发送端撤销"
-                                )
-                            } else state
-                        }
-                        if (matched) syncReceiveCountdownJob?.cancel()
-                        break
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: SecurityException) {
-                var matched = false
-                _syncReceiveState.update { state ->
-                    if (state.waitSession?.waitId == wait.waitId) {
-                        matched = true
-                        state.copy(
-                            waitSession = null,
-                            waitRemainingSec = 0L,
-                            error = e.message ?: "解密或校验失败"
-                        )
-                    } else state
-                }
-                if (matched) syncReceiveCountdownJob?.cancel()
-                break
-            } catch (e: IllegalStateException) {
-                var matched = false
-                _syncReceiveState.update { state ->
-                    if (state.waitSession?.waitId == wait.waitId) {
-                        matched = true
-                        state.copy(
-                            waitSession = null,
-                            waitRemainingSec = 0L,
-                            error = e.message ?: "中继状态异常"
-                        )
-                    } else state
-                }
-                if (matched) syncReceiveCountdownJob?.cancel()
-                break
-            } catch (e: Exception) {
-                var nextErrors = 0
-                _syncReceiveState.update { state ->
-                    if (state.waitSession?.waitId == wait.waitId) {
-                        nextErrors = state.consecutivePollErrors + 1
-                        state.copy(
-                            consecutivePollErrors = nextErrors,
-                            lastPollError = e.message ?: "网络异常"
-                        )
-                    } else state
-                }
-                if (nextErrors >= 5 && System.currentTimeMillis() > wait.expiresAtEpochMs + SYNC_OFFLINE_EXPIRE_GRACE_MS) {
-                    container.syncService.cancelReceiveWait(wait.waitId)
-                    var matched = false
-                    _syncReceiveState.update { state ->
-                        if (state.waitSession?.waitId == wait.waitId) {
-                            matched = true
-                            state.copy(
-                                waitSession = null,
-                                waitRemainingSec = 0L,
-                                consecutivePollErrors = 0,
-                                lastPollError = null,
-                                receiverCode = container.syncService.generateReceiverCode(),
-                                error = "等待发送端确认已超时且网络不可达，请重试"
-                            )
-                        } else state
-                    }
-                    if (matched) syncReceiveCountdownJob?.cancel()
-                    break
-                }
-            }
-            delay(SyncConfig.PAIR_POLL_INTERVAL_MS)
-        }
-    }
-}
-
-fun AppViewModel.cancelSyncReceiveWait() {
-    val waitId = _syncReceiveState.value.waitSession?.waitId
-    syncReceiveGeneration.incrementAndGet()
-    syncReceiveStartJob?.cancel()
-    syncReceiveStartJob = null
-    syncReceiveCountdownJob?.cancel()
-    syncReceiveCountdownJob = null
-    syncReceivePollJob?.cancel()
-    syncReceivePollJob = null
-    _syncReceiveState.update {
-        it.copy(
-            busy = false,
-            waitSession = null,
-            waitRemainingSec = 0L,
-            consecutivePollErrors = 0,
-            lastPollError = null,
-            receiverCode = container.syncService.generateReceiverCode()
-        )
-    }
-    if (waitId != null) {
-        runCatching { container.syncService.cancelReceiveWait(waitId) }
-    }
-}
-
-fun AppViewModel.applySyncReceive(mode: SyncImportMode) {
-    val cur = _syncReceiveState.value
-    val p = cur.preview ?: return
-    if (cur.busy) return
-    _syncReceiveState.update {
-        if (it.preview?.previewId == p.previewId) it.copy(busy = true, error = null) else it
-    }
-    syncReceiveApplyJob?.cancel()
-    syncReceiveApplyJob = viewModelScope.launch {
-        try {
-            val summary = withContext(Dispatchers.IO) {
-                container.syncService.applyReceive(p.previewId, mode)
-            }
-            _syncReceiveState.update { state ->
-                if (state.preview?.previewId == p.previewId) {
-                    state.copy(
-                        busy = false,
-                        summary = summary,
-                        preview = null,
-                        inputCode = "",
-                        receiverCode = container.syncService.generateReceiverCode(),
-                        error = null
-                    )
-                } else state
-            }
-            showToast("同步导入完成")
-        } catch (e: CancellationException) {
-            _syncReceiveState.update { state ->
-                if (state.preview?.previewId == p.previewId) state.copy(busy = false) else state
-            }
-            throw e
-        } catch (err: Throwable) {
-            _syncReceiveState.update { state ->
-                if (state.preview?.previewId == p.previewId) {
-                    state.copy(busy = false, error = err.message ?: "导入失败")
-                } else state
-            }
-        }
-    }
-}
-
-fun AppViewModel.discardSyncReceivePreview() {
-    val previewId = _syncReceiveState.value.preview?.previewId ?: return
-    if (_syncReceiveState.value.busy) return
-    runCatching { container.syncService.discardPreview(previewId) }
-    _syncReceiveState.update {
-        if (it.preview?.previewId == previewId) {
-            it.copy(preview = null, error = null)
-        } else it
-    }
-}
-
-fun AppViewModel.cleanupAbandonedSyncOnLeave() {
-    val cur = _syncSendState.value
-    val sess = cur.session
-    if (sess == null && cur.busy) {
-        syncSendGeneration.incrementAndGet()
-        syncStartJob?.cancel()
-        syncStartJob = null
-        syncCountdownJob?.cancel()
-        syncPollJob?.cancel()
-        _syncSendState.value = SyncSendUiState()
-    } else if (sess != null && cur.pollResult?.state != SyncSendPollState.APPROVED) {
-        val sid = sess.sessionId.ifBlank { sess.code }
-        syncSendGeneration.incrementAndGet()
-        syncStartJob?.cancel()
-        syncStartJob = null
-        syncApproveJob?.cancel()
-        syncApproveJob = null
-        syncCountdownJob?.cancel()
-        syncPollJob?.cancel()
-        _syncSendState.value = SyncSendUiState()
-        viewModelScope.launch(Dispatchers.IO + NonCancellable) {
-            runCatching { container.syncService.cancelSend(sid) }
-        }
-    } else if (sess == null && cur.consumedSuccess) {
-        _syncSendState.value = SyncSendUiState()
-    }
-
-    val recv = _syncReceiveState.value
-    if (recv.waitSession != null || (recv.busy && recv.preview == null)) {
-        cancelSyncReceiveWait()
-    } else if (recv.preview == null && recv.summary != null) {
-        _syncReceiveState.update { it.copy(summary = null) }
     }
 }
