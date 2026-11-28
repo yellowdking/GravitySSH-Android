@@ -88,7 +88,7 @@ fun SyncPairedCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Icon(AgIcons.VerifiedUser, null, tint = AgAccentLight, modifier = Modifier.size(18.dp))
-                    Text("已配对信任设备", style = MaterialTheme.typography.titleMedium, color = AgText)
+                    Text("已配对设备", style = MaterialTheme.typography.titleMedium, color = AgText)
                     AgBadge(text = "${state.pairedDevices.size}", color = AgAccent)
                 }
                 OutlinedButton(
@@ -98,16 +98,18 @@ fun SyncPairedCard(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     modifier = Modifier.height(32.dp)
                 ) {
-                    Icon(Icons.Rounded.Add, null, tint = AgCyan, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (showBindSection) "收起绑定" else "+ 绑定新设备", color = AgCyan, fontSize = 12.sp)
+                    if (!showBindSection) {
+                        Icon(Icons.Rounded.Add, null, tint = AgCyan, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Text(if (showBindSection) "收起" else "绑定设备", color = AgCyan, fontSize = 12.sp)
                 }
             }
 
             if (state.pairedDevices.isEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "尚未绑定常用设备。绑定一次后即可支持 0-RTT 一键加密推送与离线待收配置箱（端到端签名防篡改）。",
+                    "暂无已配对设备",
                     style = MaterialTheme.typography.bodySmall,
                     color = AgMuted
                 )
@@ -147,7 +149,7 @@ fun SyncPairedCard(
     if (showBindScanner) {
         QrScannerDialog(
             qrKind = SyncQrKind.PAIR,
-            title = "扫码绑定新设备",
+            title = "扫码绑定设备",
             onResult = { scanned ->
                 showBindScanner = false
                 showBindSection = false
@@ -159,9 +161,9 @@ fun SyncPairedCard(
 
     overwriteInboxItemId?.let { targetItemId ->
         AgConfirmDialog(
-            title = "确认覆盖导入收件箱配置",
-            message = "覆盖导入将替换本机现有的主机、SSH 密钥、快捷命令和模板（已配对设备与自定义中继配置将安全保留）。导入成功后将向中继发送签名确认销毁该密文，确定继续？",
-            confirmLabel = "确认覆盖导入",
+            title = "确认覆盖导入",
+            message = "覆盖导入将替换本机现有的主机、密钥、快捷命令和模板，确定继续？",
+            confirmLabel = "确认覆盖",
             dangerous = true,
             onConfirm = {
                 overwriteInboxItemId = null
@@ -173,9 +175,9 @@ fun SyncPairedCard(
 
     revokeTargetDevice?.let { dev ->
         AgConfirmDialog(
-            title = "吊销配对设备",
-            message = "确定吊销「${dev.label.ifBlank { dev.deviceId }}」的配对信任并撤销其投递令牌吗？吊销后需重新绑定才能推送。",
-            confirmLabel = "确认吊销",
+            title = "解除配对",
+            message = "确定解除与「${dev.label.ifBlank { dev.deviceId }}」的配对吗？",
+            confirmLabel = "解除配对",
             dangerous = true,
             onConfirm = {
                 revokeTargetDevice = null
@@ -222,7 +224,7 @@ private fun PairedDeviceItemRow(
                         }
                     }
                     Text(
-                        text = "ID: ${device.deviceId.take(12)} · 绑定于 ${formatEpochSecShort(device.issuedAt)}",
+                        text = "绑定于 ${formatEpochSecShort(device.issuedAt)}",
                         fontFamily = MonoFontFamily,
                         fontSize = 10.sp,
                         color = AgMuted
@@ -237,10 +239,10 @@ private fun PairedDeviceItemRow(
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                         modifier = Modifier.height(34.dp)
                     ) {
-                        Text("一键推送", color = Color.White, fontSize = 12.sp)
+                        Text("推送", color = Color.White, fontSize = 12.sp)
                     }
                     IconButton(onClick = onRevoke, enabled = !busy, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Rounded.Delete, contentDescription = "吊销", tint = AgDanger, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Rounded.Delete, contentDescription = "解除配对", tint = AgDanger, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -258,7 +260,7 @@ private fun PairedDeviceItemRow(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "当前中继离线暂存不可用或配额已满，可在对端在线时直接实时传输：",
+                            text = "离线暂存不可用，可改用实时直传",
                             style = MaterialTheme.typography.bodySmall,
                             color = AgWarning,
                             modifier = Modifier.weight(1f).padding(end = 8.dp)
@@ -271,7 +273,7 @@ private fun PairedDeviceItemRow(
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             modifier = Modifier.height(32.dp)
                         ) {
-                            Text("改用实时直传", color = AgBg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("实时直传", color = AgBg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -294,24 +296,24 @@ private fun BindNewDevicePanel(
     var joinInput by remember { mutableStateOf("") }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("方式 A：由本机发起绑定邀请", style = MaterialTheme.typography.titleSmall, color = AgText)
+        Text("发起绑定", style = MaterialTheme.typography.titleSmall, color = AgText)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AgFilterChip(
                 selected = offerMode == 1,
                 onClick = { offerMode = 1 },
-                label = "展示二维码 (m=1)",
+                label = "二维码",
                 selectedColor = AgCyan
             )
             AgFilterChip(
                 selected = offerMode == 2,
                 onClick = { offerMode = 2 },
-                label = "8 位码 + 安全码 (m=2)",
+                label = "8 位房间码",
                 selectedColor = AgAccent
             )
         }
         if (offerMode == 1 && isCustomRelay) {
             AgSwitchRow(
-                label = "二维码携带自定义中继配置 (新设备一码绑定)",
+                label = "附带自定义中继配置",
                 checked = includeRelay,
                 onCheckedChange = { includeRelay = it }
             )
@@ -323,17 +325,17 @@ private fun BindNewDevicePanel(
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier.fillMaxWidth().height(40.dp)
         ) {
-            Text(if (offerMode == 1) "生成绑定二维码" else "生成 8 位绑定房间码", color = Color.White)
+            Text(if (offerMode == 1) "生成二维码" else "生成房间码", color = Color.White)
         }
 
         HorizontalDivider(color = AgBorder)
 
-        Text("方式 B：响应对端发起的绑定", style = MaterialTheme.typography.titleSmall, color = AgText)
+        Text("响应绑定", style = MaterialTheme.typography.titleSmall, color = AgText)
         AgTextField(
             value = joinInput,
             onValueChange = { joinInput = it },
-            label = "对端 8 位房间码或 synctool://pair URI",
-            placeholder = "例如 K7M9-P4X2",
+            label = "8 位房间码",
+            placeholder = "XXXX-XXXX",
             mono = true
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -385,7 +387,7 @@ private fun ActivePairedRoomFlowCard(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = if (isDirectPipe) "已配对设备实时直传通道" else "正在绑定新设备",
+                text = if (isDirectPipe) "实时直传" else "绑定设备",
                 style = MaterialTheme.typography.titleMedium,
                 color = AgCyan
             )
@@ -404,7 +406,7 @@ private fun ActivePairedRoomFlowCard(
             }
             if (remainingSec > 0L && state.flowStage == SyncFlowStage.WAITING_PEER) {
                 Text(
-                    text = "房间有效期 ${String.format(Locale.US, "%02d:%02d", remainingSec / 60, remainingSec % 60)}",
+                    text = "剩余有效期 ${String.format(Locale.US, "%02d:%02d", remainingSec / 60, remainingSec % 60)}",
                     style = MaterialTheme.typography.labelMedium,
                     color = AgSuccess
                 )
@@ -413,7 +415,7 @@ private fun ActivePairedRoomFlowCard(
                 SyncTransferProgressRow(
                     bytesDone = state.bytesDone,
                     bytesTotal = state.bytesTotal,
-                    label = state.statusMessage.ifBlank { "正在通过端到端加密通道传输..." }
+                    label = state.statusMessage.ifBlank { "正在传输..." }
                 )
             } else if (state.statusMessage.isNotBlank()) {
                 Text(state.statusMessage, style = MaterialTheme.typography.bodySmall, color = AgMuted)
@@ -438,7 +440,7 @@ private fun ActivePairedRoomFlowCard(
                     border = BorderStroke(1.dp, AgDanger),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(if (isDirectPipe) "取消直传" else "取消绑定", color = AgDanger)
+                    Text("取消", color = AgDanger)
                 }
             }
         }

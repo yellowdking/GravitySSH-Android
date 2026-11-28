@@ -36,26 +36,26 @@ fun SyncPreviewCard(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(AgIcons.VerifiedUser, contentDescription = null, tint = AgCyan, modifier = Modifier.size(20.dp))
-            Text("解密校验成功 · 待导入配置预览", style = MaterialTheme.typography.titleMedium, color = AgCyan)
+            Text("待导入配置", style = MaterialTheme.typography.titleMedium, color = AgCyan)
         }
         Spacer(Modifier.height(8.dp))
         val srcName = preview.sourceDevice.ifBlank { preview.sourcePlatform.ifBlank { "远端设备" } }
         val platPart = if (preview.sourcePlatform.isNotBlank()) " (${preview.sourcePlatform})" else ""
         Text(
-            text = "来源设备：$srcName$platPart",
+            text = "来源：$srcName$platPart",
             style = MaterialTheme.typography.bodyMedium,
             color = AgText
         )
         if (preview.exportedAt.isNotBlank()) {
             Text(
-                text = "打包时间：${preview.exportedAt}",
+                text = "时间：${preview.exportedAt}",
                 style = MaterialTheme.typography.labelSmall,
                 color = AgMuted
             )
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "包含：${preview.serverCount} 台主机 · ${preview.keyCount} 把密钥 · ${preview.shortcutCount} 快捷命令 · ${preview.templateCount} 模板",
+            text = "${preview.serverCount} 主机 · ${preview.keyCount} 密钥 · ${preview.shortcutCount} 快捷命令 · ${preview.templateCount} 模板",
             style = MaterialTheme.typography.bodySmall,
             color = AgCyan
         )
@@ -72,7 +72,7 @@ fun SyncPreviewCard(
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
                 Spacer(Modifier.width(8.dp))
             }
-            Text(if (busy) "正在导入..." else "安全合并", color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text(if (busy) "正在导入..." else "合并导入", color = Color.White, fontWeight = FontWeight.SemiBold)
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -83,7 +83,7 @@ fun SyncPreviewCard(
                 shape = RoundedCornerShape(10.dp),
                 border = BorderStroke(1.dp, AgDanger)
             ) {
-                Text("全量覆盖", color = AgDanger)
+                Text("覆盖导入", color = AgDanger)
             }
             OutlinedButton(
                 onClick = onDiscard,
@@ -99,9 +99,9 @@ fun SyncPreviewCard(
 
     if (confirmOverwrite) {
         AgConfirmDialog(
-            title = "确认全量覆盖本地数据",
-            message = "全量覆盖将替换本机现有的所有主机、SSH 密钥、快捷命令和运维模板（已配对设备与自定义中继配置将安全保留）。确定继续？",
-            confirmLabel = "确认全量覆盖",
+            title = "确认覆盖导入",
+            message = "覆盖导入将替换本机现有的所有主机、密钥、快捷命令和模板，确定继续？",
+            confirmLabel = "确认覆盖",
             dangerous = true,
             onConfirm = {
                 confirmOverwrite = false
@@ -130,7 +130,7 @@ fun SyncSummaryBanner(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "同步已完成 (${if (summary.mode == SyncImportMode.MERGE) "安全合并" else "全量覆盖"})",
+                    text = "已导入 (${if (summary.mode == SyncImportMode.MERGE) "合并" else "覆盖"})",
                     style = MaterialTheme.typography.titleSmall,
                     color = AgSuccess
                 )
