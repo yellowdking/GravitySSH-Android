@@ -47,16 +47,16 @@ internal fun SyncInboxSectionCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(AgIcons.Download, null, tint = AgCyan, modifier = Modifier.size(18.dp))
-                Text("待收配置箱", style = MaterialTheme.typography.titleMedium, color = AgText)
+                Text("待收配置", style = MaterialTheme.typography.titleMedium, color = AgText)
                 if (items.isNotEmpty()) {
-                    AgBadge(text = "${items.size} 待处理", color = AgCyan)
+                    AgBadge(text = "${items.size}", color = AgCyan)
                 }
             }
             IconButton(onClick = onRefresh, enabled = !isRefreshing && !busy, modifier = Modifier.size(30.dp)) {
                 if (isRefreshing) {
                     CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = AgCyan)
                 } else {
-                    Icon(Icons.Rounded.Refresh, contentDescription = "刷新收件箱", tint = AgCyan, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Rounded.Refresh, contentDescription = "刷新", tint = AgCyan, modifier = Modifier.size(18.dp))
                 }
             }
         }
@@ -64,7 +64,7 @@ internal fun SyncInboxSectionCard(
         if (items.isEmpty()) {
             Spacer(Modifier.height(6.dp))
             Text(
-                "当前无待收配置。其他已配对设备推送后将在此实时显示摘要，解密导入成功后自动签名焚毁云端密文。",
+                "暂无待收配置",
                 style = MaterialTheme.typography.bodySmall,
                 color = AgMuted
             )
@@ -109,7 +109,7 @@ internal fun SyncInboxSectionCard(
                             if (item.pairingBroken) {
                                 AgStatusBanner(
                                     message = item.errorMessage.ifBlank {
-                                        "配对信任已失效 (ERR_PAIRING_BROKEN)，无法验证或解密此密文，请直接销毁并重新绑定该设备。"
+                                        "配对状态已失效，请删除并重新绑定设备"
                                     },
                                     color = AgDanger,
                                     icon = Icons.Rounded.Warning
@@ -121,7 +121,7 @@ internal fun SyncInboxSectionCard(
                                     shape = RoundedCornerShape(8.dp),
                                     modifier = Modifier.fillMaxWidth().height(36.dp)
                                 ) {
-                                    Text("销毁", color = AgDanger, fontSize = 12.sp)
+                                    Text("删除", color = AgDanger, fontSize = 12.sp)
                                 }
                             } else {
                                 Text(
@@ -133,7 +133,7 @@ internal fun SyncInboxSectionCard(
                                     SyncTransferProgressRow(
                                         bytesDone = bytesDone,
                                         bytesTotal = bytesTotal,
-                                        label = "正在解密校验并导入..."
+                                        label = "正在导入..."
                                     )
                                 }
                                 Row(
@@ -152,7 +152,7 @@ internal fun SyncInboxSectionCard(
                                             CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
                                             Spacer(Modifier.width(5.dp))
                                         }
-                                        Text("安全合并", color = Color.White, fontSize = 12.sp)
+                                        Text("合并导入", color = Color.White, fontSize = 12.sp)
                                     }
                                     OutlinedButton(
                                         onClick = { onRequestOverwrite(item.itemId) },
@@ -172,7 +172,7 @@ internal fun SyncInboxSectionCard(
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                         modifier = Modifier.weight(0.8f).height(36.dp)
                                     ) {
-                                        Text("销毁", color = AgDanger, fontSize = 12.sp)
+                                        Text("删除", color = AgDanger, fontSize = 12.sp)
                                     }
                                 }
                             }
