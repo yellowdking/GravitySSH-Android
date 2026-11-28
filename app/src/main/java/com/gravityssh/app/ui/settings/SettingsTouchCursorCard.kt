@@ -47,13 +47,7 @@ internal fun SettingsTouchCursorCard(viewModel: AppViewModel) {
 
     AgCard {
         Text("触控光标与 Nano 编辑器手势", style = MaterialTheme.typography.titleMedium, color = AgText)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "慢滑精准逐字微调、快滑智能加速跳转；支持点击定位光标与快速滑行减速。",
-            style = MaterialTheme.typography.bodySmall,
-            color = AgMuted
-        )
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
 
         Text("触控模式", style = MaterialTheme.typography.labelMedium, color = AgMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {

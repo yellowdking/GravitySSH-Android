@@ -38,15 +38,11 @@ fun QrScannerDialog(
     onDismiss: () -> Unit,
     qrKind: SyncQrKind = SyncQrKind.PAIR,
     title: String = when (qrKind) {
-        SyncQrKind.RELAY -> "扫描自定义中继二维码"
-        SyncQrKind.PAIR -> "扫描同步 / 绑定二维码"
-        SyncQrKind.ANY -> "扫描 synctool 二维码"
+        SyncQrKind.RELAY -> "扫描中继二维码"
+        SyncQrKind.PAIR -> "扫描二维码"
+        SyncQrKind.ANY -> "扫描二维码"
     },
-    hint: String = when (qrKind) {
-        SyncQrKind.RELAY -> "将 synctool-relay init 生成的 synctool://relay 二维码对准取景框"
-        SyncQrKind.PAIR -> "将对端 GravitySSH 显示的 synctool://pair 二维码对准取景框"
-        SyncQrKind.ANY -> "将二维码对准取景框自动识别"
-    }
+    hint: String = "将二维码对准取景框"
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current

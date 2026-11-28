@@ -94,12 +94,6 @@ fun SettingsSecuritySection(viewModel: AppViewModel) {
 
     AgCard {
         Text("保险库安全与锁屏", style = MaterialTheme.typography.titleMedium, color = AgText)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            if (lockState.hasPassword) "已启用主密码双层加密保护" else "当前使用 Android Keystore 硬件密钥自动保护",
-            style = MaterialTheme.typography.bodySmall,
-            color = AgMuted
-        )
         Spacer(Modifier.height(8.dp))
         AgSwitchRow(
             label = "生物识别指纹解锁",
