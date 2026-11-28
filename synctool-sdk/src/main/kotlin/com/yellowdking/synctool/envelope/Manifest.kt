@@ -397,6 +397,7 @@ data class ParcelInput(
         )
     }
 }
+
 data class ReceivedBlob(
     val descriptor: BlobDescriptor,
     val safeFile: File,
