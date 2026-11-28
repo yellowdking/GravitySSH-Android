@@ -53,6 +53,7 @@ class SshSessionManager(
 
     fun setAppForeground(foreground: Boolean) {
         _appForeground.value = foreground
+        if (foreground) syncKeepAlive()
     }
 
     fun getTerminalController(sessionId: String): TerminalSessionController? = sessions[sessionId]?.terminal
@@ -296,6 +297,7 @@ class SshSessionManager(
         _tabs.update { l -> l.map { if (it.sessionId == id) fn(it) else it } }
 
     private fun syncKeepAlive() = SshKeepAliveService.update(
-        appContext, _tabs.value.count { it.status == SessionStatus.CONNECTED }
+        appContext,
+        _tabs.value.count { it.status == SessionStatus.CONNECTED || it.status == SessionStatus.CONNECTING }
     )
 }
