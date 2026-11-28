@@ -3,15 +3,21 @@ package com.gravityssh.app.ui.sync
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.gravityssh.app.model.SyncImportMode
 import com.gravityssh.app.model.SyncImportSummary
 import com.gravityssh.app.model.SyncReceivePreview
 import com.gravityssh.app.ui.components.AgCard
+import com.gravityssh.app.ui.components.AgConfirmDialog
+import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.theme.*
 
 @Composable
@@ -19,60 +25,126 @@ fun SyncPreviewCard(
     preview: SyncReceivePreview,
     busy: Boolean = false,
     onMerge: () -> Unit,
-    onRequestOverwrite: () -> Unit,
-    onDiscard: (() -> Unit)? = null
+    onOverwrite: () -> Unit,
+    onDiscard: () -> Unit
 ) {
-    AgCard(borderColor = AgAccent) {
-        Text("解密成功 · 待导入数据预览", style = MaterialTheme.typography.titleMedium, color = AgCyan)
-        Spacer(Modifier.height(6.dp))
-        Text("来源设备：${preview.sourceDevice.ifBlank { preview.sourcePlatform }} (${preview.sourcePlatform})", style = MaterialTheme.typography.bodySmall, color = AgText)
-        Text("包含：${preview.serverCount} 台主机 · ${preview.keyCount} 把密钥 · ${preview.shortcutCount} 快捷命令 · ${preview.templateCount} 模板", style = MaterialTheme.typography.bodySmall, color = AgMuted)
+    var confirmOverwrite by remember { mutableStateOf(false) }
+
+    AgCard(borderColor = AgCyan) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(AgIcons.VerifiedUser, contentDescription = null, tint = AgCyan, modifier = Modifier.size(20.dp))
+            Text("解密校验成功 · 待导入配置预览", style = MaterialTheme.typography.titleMedium, color = AgCyan)
+        }
+        Spacer(Modifier.height(8.dp))
+        val srcName = preview.sourceDevice.ifBlank { preview.sourcePlatform.ifBlank { "远端设备" } }
+        val platPart = if (preview.sourcePlatform.isNotBlank()) " (${preview.sourcePlatform})" else ""
+        Text(
+            text = "来源设备：$srcName$platPart",
+            style = MaterialTheme.typography.bodyMedium,
+            color = AgText
+        )
+        if (preview.exportedAt.isNotBlank()) {
+            Text(
+                text = "打包时间：${preview.exportedAt}",
+                style = MaterialTheme.typography.labelSmall,
+                color = AgMuted
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "包含：${preview.serverCount} 台主机 · ${preview.keyCount} 把密钥 · ${preview.shortcutCount} 快捷命令 · ${preview.templateCount} 模板",
+            style = MaterialTheme.typography.bodySmall,
+            color = AgCyan
+        )
         Spacer(Modifier.height(12.dp))
+
         Button(
             onClick = onMerge,
             enabled = !busy,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(44.dp),
             shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
-        ) { Text(if (busy) "正在导入..." else "安全合并（推荐）", color = Color.White) }
+        ) {
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(if (busy) "正在导入..." else "安全合并", color = Color.White, fontWeight = FontWeight.SemiBold)
+        }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = onRequestOverwrite,
-            enabled = !busy,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(1.dp, AgDanger)
-        ) { Text("完全覆盖本地数据", color = AgDanger) }
-        if (onDiscard != null) {
-            Spacer(Modifier.height(4.dp))
-            TextButton(
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { confirmOverwrite = true },
+                enabled = !busy,
+                modifier = Modifier.weight(1.2f).height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, AgDanger)
+            ) {
+                Text("全量覆盖", color = AgDanger)
+            }
+            OutlinedButton(
                 onClick = onDiscard,
                 enabled = !busy,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("放弃此预览", color = AgMuted) }
+                modifier = Modifier.weight(0.8f).height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, AgBorderLight)
+            ) {
+                Text("放弃", color = AgMuted)
+            }
         }
+    }
+
+    if (confirmOverwrite) {
+        AgConfirmDialog(
+            title = "确认全量覆盖本地数据",
+            message = "全量覆盖将替换本机现有的所有主机、SSH 密钥、快捷命令和运维模板（已配对设备与自定义中继配置将安全保留）。确定继续？",
+            confirmLabel = "确认全量覆盖",
+            dangerous = true,
+            onConfirm = {
+                confirmOverwrite = false
+                onOverwrite()
+            },
+            onDismiss = { confirmOverwrite = false }
+        )
     }
 }
 
 @Composable
-fun SyncSummaryBanner(summary: SyncImportSummary) {
+fun SyncSummaryBanner(
+    summary: SyncImportSummary,
+    onDismiss: (() -> Unit)? = null
+) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = AgSuccess.copy(alpha = 0.14f),
         border = BorderStroke(1.dp, AgSuccess),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                "同步已完成 (${if (summary.mode == SyncImportMode.MERGE) "安全合并" else "完全覆盖"})",
-                style = MaterialTheme.typography.titleSmall,
-                color = AgSuccess
-            )
-            Text(
-                "主机 +${summary.serversAdded}/${summary.serversUpdated}更新 · 密钥 +${summary.keysAdded}/${summary.keysUpdated}更新 · 快捷命令 +${summary.shortcutsAdded} · 模板 +${summary.templatesAdded}",
-                style = MaterialTheme.typography.bodySmall,
-                color = AgText
-            )
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "同步已完成 (${if (summary.mode == SyncImportMode.MERGE) "安全合并" else "全量覆盖"})",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AgSuccess
+                )
+                Text(
+                    text = "主机 +${summary.serversAdded}/${summary.serversUpdated}更新 · 密钥 +${summary.keysAdded}/${summary.keysUpdated}更新 · 快捷命令 +${summary.shortcutsAdded} · 模板 +${summary.templatesAdded}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AgText
+                )
+            }
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭提示", tint = AgMuted, modifier = Modifier.size(16.dp))
+                }
+            }
         }
     }
 }
