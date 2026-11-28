@@ -1,629 +1,595 @@
 package com.gravityssh.app.sync
 
+import android.content.Context
 import android.os.Build
-import com.gravityssh.app.model.PairRequestPayload
+import android.os.Looper
 import com.gravityssh.app.model.SyncBundle
+import com.gravityssh.app.model.SyncFlowStage
 import com.gravityssh.app.model.SyncImportMode
 import com.gravityssh.app.model.SyncImportSummary
-import com.gravityssh.app.model.SyncReceivePollResult
-import com.gravityssh.app.model.SyncReceivePollState
+import com.gravityssh.app.model.SyncInboxItemUi
+import com.gravityssh.app.model.SyncPairedDeviceUi
+import com.gravityssh.app.model.SyncPingResultUi
 import com.gravityssh.app.model.SyncReceivePreview
-import com.gravityssh.app.model.SyncReceiveWaitSession
-import com.gravityssh.app.model.SyncSendPollResult
-import com.gravityssh.app.model.SyncSendPollState
-import com.gravityssh.app.model.SyncSendSession
+import com.gravityssh.app.model.SyncRelayStatusUi
+import com.gravityssh.app.model.SyncUiState
 import com.gravityssh.app.vault.VaultRepository
+import com.gravityssh.app.vault.VaultSyncKeyStore
+import com.yellowdking.synctool.client.DeliveryMode
+import com.yellowdking.synctool.client.SendOptions
+import com.yellowdking.synctool.client.SyncClient
+import com.yellowdking.synctool.client.SyncClientConfig
+import com.yellowdking.synctool.envelope.ErrorCode
+import com.yellowdking.synctool.envelope.MemoryKeyStore
+import com.yellowdking.synctool.envelope.RelayCertExpiringEvent
+import com.yellowdking.synctool.envelope.RelayProfile
+import com.yellowdking.synctool.envelope.SyncError
+import com.yellowdking.synctool.envelope.SyncUri
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.time.Instant
-import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
-class SyncService(
-    private val vaultRepository: VaultRepository,
-    private val relayClient: SyncRelayClient = SyncRelayClient()
+class SyncService internal constructor(
+    internal val vaultRepository: VaultRepository,
+    internal val cacheBaseDirProvider: () -> File,
+    internal val defaultDeviceLabelProvider: () -> String = ::resolveAndroidDeviceLabel,
+    internal val defaultRelayUriOverride: (() -> String)? = null
 ) {
-    private data class CachedPreview(
-        val bundle: SyncBundle,
-        val expiresAtMs: Long
+    constructor(
+        context: Context,
+        vaultRepository: VaultRepository
+    ) : this(
+        vaultRepository = vaultRepository,
+        cacheBaseDirProvider = {
+            val appCtx = context.applicationContext ?: context
+            val base = appCtx.cacheDir ?: File(System.getProperty("java.io.tmpdir", "."))
+            File(base, TEMP_DIR_NAME)
+        }
     )
 
-    private data class PendingSendSession(
-        val sessionId: String,
-        val channelId: String,
-        val senderToken: String,
-        val sendCode: String,
-        val relayUrl: String,
-        var bundle: SyncBundle?,
-        val expiresAtEpochMs: Long,
-        var approving: Boolean = false,
-        var approved: Boolean = false,
-        var cachedRequestKey: String? = null,
-        var cachedRequestPayload: PairRequestPayload? = null,
-        var cachedFormattedRecvCode: String? = null
+    internal data class CachedClientHolder(
+        val relayUriKey: String,
+        val deviceLabel: String,
+        val profile: RelayProfile,
+        val isCustom: Boolean,
+        val client: SyncClient,
+        val mailboxSynced: AtomicBoolean = AtomicBoolean(false)
     )
 
-    private data class PendingReceiveSession(
-        val waitId: String,
-        val channelId: String,
-        val sendCode: String,
-        val recvCode: String,
-        val requestId: String,
-        val relayUrl: String,
-        val expiresAtEpochMs: Long
-    )
+    internal val stateLock = Any()
+    internal val keyStore = VaultSyncKeyStore(vaultRepository)
+    internal val serviceJob = SupervisorJob()
+    internal val serviceScope = CoroutineScope(serviceJob + Dispatchers.IO)
+    internal val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val watcherScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val sessionLock = Any()
-    private val cancelScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var lockEpoch: Long = 0L
-    private val previews = LinkedHashMap<String, CachedPreview>()
-    private val pendingSends = LinkedHashMap<String, PendingSendSession>()
-    private val pendingReceives = LinkedHashMap<String, PendingReceiveSession>()
+    internal val lockEpoch = AtomicLong(0L)
+    internal val flowGeneration = AtomicLong(0L)
+
+    internal var activeClientHolder: CachedClientHolder? = null
+    internal var activeFlowJob: Job? = null
+    internal var inboxWatchJob: Job? = null
+    internal var sasInputDeferred: CompletableDeferred<String>? = null
+    internal var sasConfirmDeferred: CompletableDeferred<Boolean>? = null
+    internal var pendingPreviewBundle: Pair<SyncReceivePreview, SyncBundle>? = null
+    internal var lastCertMetaByRelayId: Pair<String, Pair<Long, Boolean>>? = null
+
+    internal val _uiState = MutableStateFlow(SyncUiState())
+    val uiState: StateFlow<SyncUiState> = _uiState.asStateFlow()
 
     init {
-        vaultRepository.addOnLockListener { clearAllSessions() }
-    }
-
-    private fun resolveRelayUrl(overrideUrl: String?): String {
-        val candidate = overrideUrl?.trim().orEmpty()
-        if (candidate.isNotEmpty()) {
-            return SyncConfig.normalizeRelayUrl(candidate).ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
+        vaultRepository.addOnLockListener { onVaultLocked() }
+        watcherScope.launch {
+            vaultRepository.state
+                .map { it.lockState.initialized to it.lockState.locked }
+                .distinctUntilChanged()
+                .collect { (initialized, locked) ->
+                    if (locked) {
+                        onVaultLocked()
+                    } else if (initialized) {
+                        refreshOverviewInternal()
+                    }
+                }
         }
-        val saved = vaultRepository.state.value.data.settings.syncRelayUrl.trim()
-        return if (saved.isNotEmpty()) {
-            SyncConfig.normalizeRelayUrl(saved).ifEmpty { SyncConfig.DEFAULT_RELAY_URL }
-        } else {
-            SyncConfig.DEFAULT_RELAY_URL
-        }
     }
 
-    private fun deviceName(): String {
-        val mfg = Build.MANUFACTURER.orEmpty().trim()
-        val model = Build.MODEL.orEmpty().trim()
-        return listOf(mfg, model).filter { it.isNotEmpty() }.joinToString(" ").ifEmpty { "Android" }.take(64)
-    }
-
-    private fun requireUnlocked(actionDesc: String) {
+    fun refreshOverview() {
         if (vaultRepository.state.value.lockState.locked) {
-            throw SecurityException("保险库已锁定，请先解锁后再$actionDesc")
+            _uiState.value = SyncUiState()
+            return
+        }
+        serviceScope.launch { refreshOverviewInternal() }
+    }
+
+    internal suspend fun refreshOverviewInternal() {
+        val epoch = lockEpoch.get()
+        val syncSnap = vaultRepository.readSyncStateOrNull() ?: return
+        runCatching {
+            val holder = getOrCreateClientHolder()
+            val identity = holder.client.getIdentity()
+            val devices = holder.client.keyStore.listDevices().map { card ->
+                SyncPairedDeviceUi(card.deviceId, card.label, card.platform, card.relayId, card.issuedAt)
+            }
+            val certMeta = synchronized(stateLock) {
+                lastCertMetaByRelayId?.takeIf { it.first == holder.profile.relayId }?.second
+            }
+            val relayUi = SyncConfig.toRelayStatusUi(
+                profile = holder.profile,
+                isCustom = holder.isCustom,
+                certExpiresAtEpochSec = certMeta?.first ?: 0L,
+                certRotateRecommended = certMeta?.second ?: false
+            )
+            if (lockEpoch.get() == epoch && !vaultRepository.state.value.lockState.locked) {
+                _uiState.update { cur ->
+                    cur.copy(
+                        localDeviceId = identity.deviceId,
+                        localDeviceLabel = identity.label,
+                        relay = relayUi,
+                        pairedDevices = devices
+                    )
+                }
+            }
+            if ((devices.isNotEmpty() || syncSnap.pendingTokenDeletes.isNotEmpty()) &&
+                holder.mailboxSynced.compareAndSet(false, true)
+            ) {
+                serviceScope.launch { runCatching { holder.client.syncMailbox() } }
+            }
+        }.onFailure { e ->
+            if (lockEpoch.get() == epoch && !vaultRepository.state.value.lockState.locked) {
+                _uiState.update { it.copy(errorMessage = SyncConfig.toFriendlyException(e).message) }
+            }
         }
     }
 
-    private fun parseExpiresMs(expiresAt: String): Long =
-        runCatching { Instant.parse(expiresAt).toEpochMilli() }
-            .getOrElse { System.currentTimeMillis() + SyncConfig.DEFAULT_TTL_SECONDS * 1000L }
-
-    private inline fun <V> evictOldestIfAtCapacity(
-        map: MutableMap<String, V>,
-        maxSize: Int,
-        crossinline expiresAtOf: (V) -> Long
-    ) {
-        while (map.size >= maxSize) {
-            val oldest = map.entries.minByOrNull { expiresAtOf(it.value) }?.key ?: break
-            map.remove(oldest)
-        }
-    }
-
-    suspend fun testRelay(relayUrl: String? = null): Long =
-        relayClient.ping(resolveRelayUrl(relayUrl))
-
-    fun generateReceiverCode(): String = SyncCrypto.generateSyncCode()
-
-    suspend fun startSend(relayUrl: String? = null): SyncSendSession {
-        val startEpoch = synchronized(sessionLock) {
-            requireUnlocked("发送同步数据")
-            lockEpoch
-        }
-        val url = resolveRelayUrl(relayUrl)
-        val bundle = vaultRepository.exportSyncBundle(deviceName())
-        val code = SyncCrypto.generateSyncCode()
-        val channelId = SyncCrypto.deriveChannelId(code)
-        val senderToken = SyncCrypto.generateHexToken32()
-        val sessionId = UUID.randomUUID().toString()
-
-        val resp = relayClient.pairInit(
-            relayUrl = url,
-            channelId = channelId,
-            senderToken = senderToken,
-            ttlSeconds = SyncConfig.DEFAULT_TTL_SECONDS
-        )
-        val expiresMs = parseExpiresMs(resp.expiresAt)
-
-        val lockedMidFlight = synchronized(sessionLock) {
-            if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
-                true
+    suspend fun saveCustomRelayUri(rawUri: String): Result<SyncRelayStatusUi> = withContext(Dispatchers.IO) {
+        runCatching {
+            requireUnlocked("保存同步中继配置")
+            val trimmed = rawUri.trim()
+            val canonicalCustomUri = if (trimmed.isEmpty()) {
+                ""
             } else {
-                pruneExpiredLocked()
-                evictOldestIfAtCapacity(pendingSends, MAX_PENDING_SESSIONS) { it.expiresAtEpochMs }
-                pendingSends[sessionId] = PendingSendSession(
-                    sessionId = sessionId,
-                    channelId = channelId,
-                    senderToken = senderToken,
-                    sendCode = code,
-                    relayUrl = url,
-                    bundle = bundle,
-                    expiresAtEpochMs = expiresMs
+                SyncUri.formatRelayUri(SyncUri.parseRelayUri(trimmed))
+            }
+            vaultRepository.updateSyncState { it.copy(customRelayUri = canonicalCustomUri) }
+            invalidateClientHolder()
+
+            val holder = getOrCreateClientHolder()
+            val identity = holder.client.getIdentity()
+            val devices = holder.client.keyStore.listDevices().map { card ->
+                SyncPairedDeviceUi(card.deviceId, card.label, card.platform, card.relayId, card.issuedAt)
+            }
+            val relayUi = SyncConfig.toRelayStatusUi(holder.profile, holder.isCustom)
+            _uiState.update { cur ->
+                cur.copy(
+                    localDeviceId = identity.deviceId,
+                    localDeviceLabel = identity.label,
+                    relay = relayUi,
+                    pairedDevices = devices,
+                    pingResult = null,
+                    errorMessage = null,
+                    statusMessage = if (holder.isCustom) "已保存自定义同步中继" else "已恢复官方默认中继"
                 )
+            }
+            if (inboxWatchJob?.isActive == true) {
+                stopForegroundInboxWatch()
+                startForegroundInboxWatch()
+            }
+            relayUi
+        }.recoverCatching { e ->
+            val friendly = SyncConfig.toFriendlyException(e)
+            _uiState.update { it.copy(errorMessage = friendly.message) }
+            throw friendly
+        }
+    }
+
+    suspend fun testRelay(rawUri: String = ""): Result<SyncPingResultUi> = withContext(Dispatchers.IO) {
+        _uiState.update { it.copy(isPinging = true, errorMessage = null) }
+        try {
+            runCatching {
+                val trimmed = rawUri.trim()
+                val (pingRes, testedRelayId) = if (trimmed.isNotEmpty()) {
+                    val profile = SyncUri.parseRelayUri(trimmed)
+                    probeRelayPing(profile) to profile.relayId
+                } else if (!vaultRepository.state.value.lockState.locked) {
+                    val holder = getOrCreateClientHolder()
+                    holder.client.ping() to holder.profile.relayId
+                } else {
+                    val (profile, _) = SyncConfig.resolveRelayProfile("", defaultRelayUriOverride)
+                    probeRelayPing(profile) to profile.relayId
+                }
+
+                val certIso = if (pingRes.certExpiresAt > 0L) {
+                    runCatching { Instant.ofEpochSecond(pingRes.certExpiresAt).toString() }.getOrDefault("")
+                } else {
+                    ""
+                }
+                val resultUi = SyncPingResultUi(
+                    rttMs = pingRes.rttMs,
+                    profile = pingRes.profile.ifBlank { "standard" },
+                    spoolMode = pingRes.spoolBackend.ifBlank { "off" },
+                    clockOffsetSec = pingRes.clockOffsetSec,
+                    certExpiresAt = certIso,
+                    certRotateRecommended = pingRes.certRotateRecommended
+                )
+                synchronized(stateLock) {
+                    lastCertMetaByRelayId = testedRelayId to (pingRes.certExpiresAt to pingRes.certRotateRecommended)
+                }
+                _uiState.update { cur ->
+                    val updatedRelay = if (cur.relay.relayId == testedRelayId) {
+                        cur.relay.copy(certExpiresAt = certIso, certRotateRecommended = pingRes.certRotateRecommended)
+                    } else {
+                        cur.relay
+                    }
+                    cur.copy(relay = updatedRelay, pingResult = resultUi, errorMessage = null)
+                }
+                resultUi
+            }.recoverCatching { e ->
+                val friendly = SyncConfig.toFriendlyException(e)
+                _uiState.update { it.copy(errorMessage = friendly.message) }
+                throw friendly
+            }
+        } finally {
+            _uiState.update { it.copy(isPinging = false) }
+        }
+    }
+
+    suspend fun updateDeviceLabel(label: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            requireUnlocked("修改设备名称")
+            val clean = label.trim().ifBlank { defaultDeviceLabelProvider() }.take(64)
+            vaultRepository.updateSyncState { it.copy(localDeviceLabel = clean) }
+            invalidateClientHolder()
+            refreshOverviewInternal()
+            _uiState.update { it.copy(localDeviceLabel = clean, errorMessage = null, statusMessage = "已更新本机设备名称") }
+        }.recoverCatching { e ->
+            val friendly = SyncConfig.toFriendlyException(e)
+            _uiState.update { it.copy(errorMessage = friendly.message) }
+            throw friendly
+        }
+    }
+
+    fun startForegroundInboxWatch() {
+        if (vaultRepository.state.value.lockState.locked) return
+        val shouldLaunch = synchronized(stateLock) {
+            if (inboxWatchJob?.isActive == true) {
                 false
-            }
-        }
-        if (lockedMidFlight) {
-            withContext(NonCancellable) {
-                runCatching { relayClient.pairCancel(url, channelId, senderToken) }
-            }
-            throw SecurityException("保险库已锁定，请先解锁后再发送同步数据")
-        }
-
-        return SyncSendSession(
-            code = code,
-            qrText = SyncCrypto.buildQrUri(code),
-            expiresAt = resp.expiresAt.ifEmpty { Instant.ofEpochMilli(expiresMs).toString() },
-            expiresAtEpochMs = expiresMs,
-            relayUrl = SyncConfig.parseRelayEndpoint(url).baseUrl,
-            serverCount = bundle.servers.size,
-            keyCount = bundle.sshKeys.size,
-            shortcutCount = bundle.shortcuts.size,
-            templateCount = bundle.templates.size,
-            sessionId = sessionId
-        )
-    }
-
-    suspend fun pollSend(sessionId: String): SyncSendPollResult {
-        val snapshot = synchronized(sessionLock) {
-            pruneExpiredLocked()
-            pendingSends[sessionId]?.let {
-                Triple(it.relayUrl, it.channelId, it.senderToken) to (it.sendCode to it.approved)
-            }
-        } ?: return SyncSendPollResult(state = SyncSendPollState.EXPIRED)
-
-        val (route, meta) = snapshot
-        val (relayUrl, channelId, senderToken) = route
-        val (sendCode, wasApproved) = meta
-
-        val poll = relayClient.pairPoll(relayUrl, channelId, senderToken)
-        return when (poll.state) {
-            "waiting" -> {
-                val nowApproved = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
-                if (wasApproved || nowApproved) {
-                    SyncSendPollResult(state = SyncSendPollState.APPROVED)
-                } else {
-                    SyncSendPollResult(state = SyncSendPollState.WAITING)
-                }
-            }
-            "requested" -> {
-                val requestCacheKey = "${poll.requestId}|${poll.salt}|${poll.nonce}|${poll.ciphertext}"
-                val cachedHit: Triple<Boolean, PairRequestPayload?, String?> = synchronized(sessionLock) {
-                    val s = pendingSends[sessionId]
-                    when {
-                        wasApproved || s?.approved == true -> Triple(true, null, null)
-                        s != null && poll.requestId.isNotBlank() && s.cachedRequestKey == requestCacheKey &&
-                            s.cachedRequestPayload != null && s.cachedFormattedRecvCode != null ->
-                            Triple(false, s.cachedRequestPayload, s.cachedFormattedRecvCode)
-                        else -> Triple(false, null, null)
-                    }
-                }
-                if (cachedHit.first) {
-                    return SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
-                }
-                val cachedPayload = cachedHit.second
-                val cachedCode = cachedHit.third
-                if (cachedPayload != null && cachedCode != null) {
-                    return SyncSendPollResult(
-                        state = SyncSendPollState.REQUESTED,
-                        requestId = poll.requestId,
-                        receiverCode = cachedCode,
-                        receiverDevice = cachedPayload.receiverDevice.ifBlank { "未知设备" },
-                        receiverPlatform = cachedPayload.receiverPlatform.ifBlank { "unknown" },
-                        requestedAt = cachedPayload.requestedAt
-                    )
-                }
-                val decoded = runCatching {
-                    val payload = withContext(Dispatchers.Default) {
-                        SyncCrypto.decryptPairRequest(sendCode, poll.salt, poll.nonce, poll.ciphertext)
-                    }
-                    val formattedCode = SyncCrypto.formatCode(payload.receiverCode)
-                    require(poll.requestId.isNotBlank()) { "请求 ID 缺失" }
-                    payload to formattedCode
-                }
-                decoded.fold(
-                    onSuccess = { (payload, formattedCode) ->
-                        val approvedDuringDecrypt = synchronized(sessionLock) {
-                            val s = pendingSends[sessionId]
-                            if (s?.approved == true) {
-                                true
-                            } else {
-                                if (s != null) {
-                                    s.cachedRequestKey = requestCacheKey
-                                    s.cachedRequestPayload = payload
-                                    s.cachedFormattedRecvCode = formattedCode
-                                }
-                                false
-                            }
-                        }
-                        if (approvedDuringDecrypt) {
-                            SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
-                        } else {
-                            SyncSendPollResult(
-                                state = SyncSendPollState.REQUESTED,
-                                requestId = poll.requestId,
-                                receiverCode = formattedCode,
-                                receiverDevice = payload.receiverDevice.ifBlank { "未知设备" },
-                                receiverPlatform = payload.receiverPlatform.ifBlank { "unknown" },
-                                requestedAt = payload.requestedAt
-                            )
-                        }
-                    },
-                    onFailure = {
-                        val approvedDuringDecrypt = synchronized(sessionLock) { pendingSends[sessionId]?.approved == true }
-                        if (approvedDuringDecrypt) {
-                            SyncSendPollResult(state = SyncSendPollState.APPROVED, requestId = poll.requestId)
-                        } else {
-                            runCatching {
-                                if (poll.requestId.isNotBlank()) {
-                                    relayClient.pairReject(relayUrl, channelId, senderToken, poll.requestId)
-                                } else {
-                                    relayClient.pairCancel(relayUrl, channelId, senderToken)
-                                }
-                            }
-                            synchronized(sessionLock) { pendingSends.remove(sessionId) }
-                            SyncSendPollResult(
-                                state = SyncSendPollState.ERROR,
-                                errorMessage = "接收端验证请求解密失败，已自动拒绝此次配对"
-                            )
-                        }
-                    }
-                )
-            }
-            "approved" -> SyncSendPollResult(
-                state = SyncSendPollState.APPROVED,
-                requestId = poll.requestId
-            )
-            "rejected" -> {
-                synchronized(sessionLock) { pendingSends.remove(sessionId) }
-                SyncSendPollResult(
-                    state = SyncSendPollState.REJECTED,
-                    requestId = poll.requestId
-                )
-            }
-            "gone" -> {
-                val removed = synchronized(sessionLock) { pendingSends.remove(sessionId) }
-                val approved = wasApproved || (removed?.approved == true)
-                SyncSendPollResult(
-                    state = if (approved) SyncSendPollState.CONSUMED else SyncSendPollState.EXPIRED
-                )
-            }
-            else -> SyncSendPollResult(
-                state = SyncSendPollState.ERROR,
-                errorMessage = "未知中继状态: ${poll.state}"
-            )
-        }
-    }
-
-    suspend fun approveSend(sessionId: String, requestId: String, receiverCode: String) {
-        requireUnlocked("同意发送同步数据")
-        require(requestId.isNotBlank()) { "请求 ID 不能为空" }
-
-        val startEpoch: Long
-        val relayUrl: String
-        val channelId: String
-        val senderToken: String
-        val sendCode: String
-        val bundle: SyncBundle
-        synchronized(sessionLock) {
-            requireUnlocked("同意发送同步数据")
-            pruneExpiredLocked()
-            val s = pendingSends[sessionId]
-                ?: throw IllegalStateException("同步会话已过期，请重新生成同步码")
-            if (s.approved || s.bundle == null) {
-                throw IllegalStateException("该同步会话已发送，请重新生成同步码")
-            }
-            if (s.approving) {
-                throw IllegalStateException("该同步会话正在处理中，请勿重复发送")
-            }
-            s.approving = true
-            startEpoch = lockEpoch
-            relayUrl = s.relayUrl
-            channelId = s.channelId
-            senderToken = s.senderToken
-            sendCode = s.sendCode
-            bundle = s.bundle!!
-        }
-
-        try {
-            val encrypted = withContext(Dispatchers.Default) {
-                SyncCrypto.encryptBundleDual(bundle, sendCode, receiverCode, requestId)
-            }
-
-            synchronized(sessionLock) {
-                if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
-                    throw SecurityException("保险库已锁定，已中止发送同步数据")
-                }
-                val cur = pendingSends[sessionId]
-                if (cur == null || !cur.approving || cur.approved) {
-                    throw IllegalStateException("同步会话已取消或已失效，请重新生成同步码")
-                }
-            }
-
-            relayClient.pairApprove(
-                relayUrl = relayUrl,
-                channelId = channelId,
-                senderToken = senderToken,
-                requestId = requestId,
-                salt = encrypted.saltB64,
-                nonce = encrypted.nonceB64,
-                ciphertext = encrypted.ciphertextB64
-            )
-
-            val postRpcAbortReason: String? = synchronized(sessionLock) {
-                when {
-                    vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch -> {
-                        pendingSends.remove(sessionId)
-                        "locked"
-                    }
-                    pendingSends[sessionId] == null -> "cancelled"
-                    else -> {
-                        val cur = pendingSends[sessionId]!!
-                        cur.approving = false
-                        cur.approved = true
-                        cur.bundle = null
-                        null
-                    }
-                }
-            }
-            if (postRpcAbortReason != null) {
-                withContext(NonCancellable) {
-                    runCatching { relayClient.pairCancel(relayUrl, channelId, senderToken) }
-                }
-                if (postRpcAbortReason == "locked") {
-                    throw SecurityException("保险库已锁定，已尝试撤销同步数据")
-                } else {
-                    throw IllegalStateException("同步会话已取消，已尝试撤销同步数据")
-                }
-            }
-        } catch (t: Throwable) {
-            synchronized(sessionLock) {
-                pendingSends[sessionId]?.let {
-                    if (!it.approved) it.approving = false
-                }
-            }
-            throw t
-        }
-    }
-
-    suspend fun rejectSend(sessionId: String, requestId: String) {
-        val removed = synchronized(sessionLock) { pendingSends.remove(sessionId) } ?: return
-        try {
-            if (requestId.isNotBlank()) {
-                relayClient.pairReject(removed.relayUrl, removed.channelId, removed.senderToken, requestId)
             } else {
-                relayClient.pairCancel(removed.relayUrl, removed.channelId, removed.senderToken)
+                val epoch = lockEpoch.get()
+                inboxWatchJob = serviceScope.launch {
+                    runCatching {
+                        val holder = getOrCreateClientHolder()
+                        runCatching { holder.client.syncMailbox() }
+                        refreshInbox()
+                        holder.client.watchInbox { _ ->
+                            if (lockEpoch.get() == epoch && !vaultRepository.state.value.lockState.locked) {
+                                refreshInbox()
+                            }
+                        }
+                    }.onFailure { e ->
+                        if (e is CancellationException) throw e
+                        val se = e as? SyncError
+                        if (se?.code == ErrorCode.ERR_SPOOL_DISABLED) return@onFailure
+                        if (lockEpoch.get() == epoch && !vaultRepository.state.value.lockState.locked && se?.isSecurityAlert == true) {
+                            _uiState.update { it.copy(errorMessage = SyncConfig.toFriendlyException(se).message) }
+                        }
+                    }
+                }
+                true
             }
-        } catch (_: RelayGoneException) {
-            // Already expired or consumed on relay
+        }
+        if (!shouldLaunch) {
+            serviceScope.launch { refreshInbox() }
         }
     }
 
-    suspend fun cancelSend(sessionIdOrCode: String) {
-        val removed = synchronized(sessionLock) {
-            pendingSends.remove(sessionIdOrCode) ?: pendingSends.entries
-                .firstOrNull { it.value.sendCode == sessionIdOrCode }
-                ?.let { pendingSends.remove(it.key) }
-        } ?: return
-        try {
-            relayClient.pairCancel(removed.relayUrl, removed.channelId, removed.senderToken)
-        } catch (_: RelayGoneException) {
-            // Already expired or consumed on relay
-        }
+    fun stopForegroundInboxWatch() {
+        val job = synchronized(stateLock) { inboxWatchJob.also { inboxWatchJob = null } }
+        job?.cancel()
     }
 
-    suspend fun startReceiveRequest(
-        codeOrUri: String,
-        receiverCode: String,
-        relayUrl: String? = null
-    ): SyncReceiveWaitSession {
-        val startEpoch = synchronized(sessionLock) {
-            requireUnlocked("接收同步数据")
-            lockEpoch
-        }
-        val url = resolveRelayUrl(relayUrl)
-        val canonicalSend = SyncCrypto.canonicalizeCode(codeOrUri)
-        val canonicalRecv = SyncCrypto.canonicalizeCode(receiverCode)
-        val formattedSend = SyncCrypto.formatCode(canonicalSend)
-        val formattedRecv = SyncCrypto.formatCode(canonicalRecv)
-        val requestId = SyncCrypto.generateHexToken32()
-        val nowIso = Instant.now().toString()
-
-        val encrypted = withContext(Dispatchers.Default) {
-            SyncCrypto.encryptPairRequest(
-                sendCode = canonicalSend,
-                info = PairRequestPayload(
-                    receiverCode = formattedRecv,
-                    receiverDevice = deviceName(),
-                    receiverPlatform = "android",
-                    requestedAt = nowIso
-                )
-            )
-        }
-
-        synchronized(sessionLock) {
-            if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
-                throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
-            }
-        }
-
-        val resp = relayClient.pairRequest(
-            relayUrl = url,
-            channelId = encrypted.channelId,
-            requestId = requestId,
-            salt = encrypted.saltB64,
-            nonce = encrypted.nonceB64,
-            ciphertext = encrypted.ciphertextB64
-        )
-        val expiresMs = parseExpiresMs(resp.expiresAt)
-        val waitId = UUID.randomUUID().toString()
-
-        synchronized(sessionLock) {
-            if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
-                throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
-            }
-            pruneExpiredLocked()
-            evictOldestIfAtCapacity(pendingReceives, MAX_PENDING_SESSIONS) { it.expiresAtEpochMs }
-            pendingReceives[waitId] = PendingReceiveSession(
-                waitId = waitId,
-                channelId = encrypted.channelId,
-                sendCode = formattedSend,
-                recvCode = formattedRecv,
-                requestId = requestId,
-                relayUrl = url,
-                expiresAtEpochMs = expiresMs
-            )
-        }
-
-        return SyncReceiveWaitSession(
-            waitId = waitId,
-            receiverCode = formattedRecv,
-            sendCode = formattedSend,
-            requestId = requestId,
-            relayUrl = SyncConfig.parseRelayEndpoint(url).baseUrl,
-            expiresAt = resp.expiresAt.ifEmpty { Instant.ofEpochMilli(expiresMs).toString() },
-            expiresAtEpochMs = expiresMs
-        )
-    }
-
-    suspend fun pollReceiveStatus(waitId: String): SyncReceivePollResult {
+    suspend fun refreshInbox(): Result<List<SyncInboxItemUi>> = withContext(Dispatchers.IO) {
+        val epoch = lockEpoch.get()
         if (vaultRepository.state.value.lockState.locked) {
-            cancelReceiveWait(waitId)
-            throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
+            return@withContext Result.failure(SecurityException("保险库已锁定"))
         }
-
-        val (session, startEpoch) = synchronized(sessionLock) {
-            pruneExpiredLocked()
-            val s = pendingReceives[waitId]
-            s to lockEpoch
-        }
-        if (session == null) {
-            return SyncReceivePollResult(state = SyncReceivePollState.EXPIRED)
-        }
-
-        val statusResp = try {
-            relayClient.pairStatus(session.relayUrl, session.channelId, session.requestId)
-        } catch (_: RelayGoneException) {
-            synchronized(sessionLock) { pendingReceives.remove(waitId) }
-            return SyncReceivePollResult(state = SyncReceivePollState.EXPIRED)
-        }
-
-        return when (statusResp.state) {
-            "pending" -> SyncReceivePollResult(state = SyncReceivePollState.PENDING)
-            "rejected" -> {
-                synchronized(sessionLock) { pendingReceives.remove(waitId) }
-                SyncReceivePollResult(state = SyncReceivePollState.REJECTED)
+        _uiState.update { it.copy(isRefreshingInbox = true) }
+        try {
+            runCatching {
+                val holder = getOrCreateClientHolder()
+                val items = holder.client.listInbox(SyncConfig.APP_ID)
+                    .map(SyncParcelCodec::toInboxItemUi)
+                    .sortedByDescending { it.createdAt }
+                if (lockEpoch.get() == epoch && !vaultRepository.state.value.lockState.locked) {
+                    _uiState.update { it.copy(inboxItems = items) }
+                }
+                items
+            }.recoverCatching { e -> throw SyncConfig.toFriendlyException(e) }
+        } finally {
+            if (lockEpoch.get() == epoch) {
+                _uiState.update { it.copy(isRefreshingInbox = false) }
             }
-            "gone", "expired" -> {
-                synchronized(sessionLock) { pendingReceives.remove(waitId) }
-                SyncReceivePollResult(state = SyncReceivePollState.EXPIRED)
-            }
-            "approved" -> {
-                val bundle = withContext(Dispatchers.Default) {
-                    SyncCrypto.decryptBundleDual(
-                        saltB64 = statusResp.salt,
-                        nonceB64 = statusResp.nonce,
-                        ctB64 = statusResp.ciphertext,
-                        sendCode = session.sendCode,
-                        recvCode = session.recvCode,
-                        requestId = session.requestId
+        }
+    }
+
+    suspend fun sendToPairedDevice(deviceId: String, deliveryMode: String = "auto"): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val epoch = lockEpoch.get()
+            val myGen = beginNewFlowLocked()
+            val callerJob = currentCoroutineContext()[Job]
+            synchronized(stateLock) { activeFlowJob = callerJob }
+            runCatching {
+                requireUnlocked("推送同步配置")
+                val mode = deliveryMode.trim().lowercase().ifEmpty { DeliveryMode.AUTO }
+                val holder = getOrCreateClientHolder()
+                val parcel = SyncParcelCodec.encodeVaultParcel(vaultRepository.exportSyncBundle(holder.deviceLabel))
+
+                updateFlowStateIfCurrent(epoch, myGen) { cur ->
+                    cur.copy(
+                        flowStage = if (mode == DeliveryMode.PIPE) SyncFlowStage.WAITING_PEER else SyncFlowStage.TRANSFERRING,
+                        flowPurpose = "direct",
+                        flowRole = "sender",
+                        flowMode = 0,
+                        pairUri = "",
+                        roomCode = "",
+                        expiresAtEpochSec = 0L,
+                        bytesDone = 0L,
+                        bytesTotal = 0L,
+                        suggestPipeDeviceId = null,
+                        errorMessage = null,
+                        statusMessage = if (mode == DeliveryMode.PIPE) "正在创建已配对设备实时直传房间..." else "正在通过 0-RTT 端到端加密投递..."
                     )
                 }
-                val preview = synchronized(sessionLock) {
-                    pendingReceives.remove(waitId)
-                    if (vaultRepository.state.value.lockState.locked || lockEpoch != startEpoch) {
-                        throw SecurityException("保险库已锁定，请先解锁后再接收同步数据")
-                    }
-                    cachePreviewLocked(bundle)
+
+                val sendRes = holder.client.sendToDevice(
+                    targetDeviceId = deviceId,
+                    parcel = parcel,
+                    options = SendOptions(
+                        deliveryMode = mode,
+                        includeRelay = holder.isCustom,
+                        onOfferReady = { offer ->
+                            updateFlowStateIfCurrent(epoch, myGen) { cur ->
+                                cur.copy(
+                                    flowStage = SyncFlowStage.WAITING_PEER,
+                                    flowPurpose = "direct",
+                                    flowRole = "sender",
+                                    flowMode = offer.mode,
+                                    pairUri = offer.pairUri,
+                                    roomCode = offer.displayCode,
+                                    expiresAtEpochSec = offer.expiresAt,
+                                    statusMessage = "请在对端选择「一次性接收」扫码或输入 8 位房间码实时直传"
+                                )
+                            }
+                        },
+                        onProgress = { ev -> onTransferProgress(epoch, myGen, ev) }
+                    )
+                )
+
+                updateFlowStateIfCurrent(epoch, myGen) { cur ->
+                    cur.copy(
+                        flowStage = SyncFlowStage.COMPLETED,
+                        pairUri = "",
+                        roomCode = "",
+                        expiresAtEpochSec = 0L,
+                        suggestPipeDeviceId = null,
+                        errorMessage = null,
+                        statusMessage = if (sendRes.mode == DeliveryMode.PIPE) "实时直传完成，对端已确认接收" else "已通过 0-RTT 加密投递至设备收件箱"
+                    )
                 }
-                SyncReceivePollResult(state = SyncReceivePollState.APPROVED, preview = preview)
-            }
-            else -> throw IllegalStateException("未知中继状态: ${statusResp.state}")
-        }
-    }
-
-    fun cancelReceiveWait(waitId: String) {
-        synchronized(sessionLock) {
-            pendingReceives.remove(waitId)
-        }
-    }
-
-    private fun cachePreviewLocked(bundle: SyncBundle): SyncReceivePreview {
-        val previewId = UUID.randomUUID().toString()
-        pruneExpiredLocked()
-        evictOldestIfAtCapacity(previews, MAX_CACHED_PREVIEWS) { it.expiresAtMs }
-        previews[previewId] = CachedPreview(
-            bundle = bundle,
-            expiresAtMs = System.currentTimeMillis() + PREVIEW_TTL_MS
-        )
-
-        return SyncReceivePreview(
-            previewId = previewId,
-            sourcePlatform = bundle.sourcePlatform,
-            sourceDevice = bundle.sourceDevice,
-            exportedAt = bundle.exportedAt,
-            serverCount = bundle.servers.size,
-            keyCount = bundle.sshKeys.size,
-            shortcutCount = bundle.shortcuts.size,
-            templateCount = bundle.templates.size
-        )
-    }
-
-    fun applyReceive(previewId: String, mode: SyncImportMode): SyncImportSummary {
-        val cached = synchronized(sessionLock) {
-            pruneExpiredLocked()
-            previews[previewId]
-        } ?: throw IllegalStateException("同步预览已过期，请重新获取同步码")
-
-        val summary = vaultRepository.importSyncBundle(cached.bundle, mode)
-        synchronized(sessionLock) {
-            previews.remove(previewId)
-        }
-        return summary
-    }
-
-    fun discardPreview(previewId: String) {
-        synchronized(sessionLock) {
-            previews.remove(previewId)
-        }
-    }
-
-    fun clearAllSessions() {
-        val toCancel = synchronized(sessionLock) {
-            lockEpoch++
-            val activeSends = pendingSends.values.map {
-                Triple(it.relayUrl, it.channelId, it.senderToken)
-            }
-            previews.clear()
-            pendingSends.clear()
-            pendingReceives.clear()
-            activeSends
-        }
-        for ((relayUrl, channelId, senderToken) in toCancel) {
-            cancelScope.launch {
-                runCatching { relayClient.pairCancel(relayUrl, channelId, senderToken) }
+            }.recoverCatching { e ->
+                if (e is CancellationException) throw e
+                val se = e as? SyncError
+                val friendly = SyncConfig.toFriendlyException(e)
+                updateFlowStateIfCurrent(epoch, myGen) { cur ->
+                    cur.copy(
+                        flowStage = SyncFlowStage.ERROR,
+                        pairUri = "",
+                        roomCode = "",
+                        suggestPipeDeviceId = if (se?.suggestPipeMode == true) deviceId else null,
+                        errorMessage = friendly.message,
+                        statusMessage = ""
+                    )
+                }
+                throw friendly
             }
         }
+
+    suspend fun applyInboxItem(itemId: String, importMode: String): Result<SyncImportSummary> =
+        applyInboxItemInternal(itemId, importMode)
+
+    suspend fun dismissInboxItem(itemId: String): Result<Unit> =
+        dismissInboxItemInternal(itemId)
+
+    suspend fun revokePairedDevice(deviceId: String): Result<Unit> =
+        revokePairedDeviceInternal(deviceId)
+
+    fun startDeviceBindOffer(mode: Int, includeRelay: Boolean) =
+        launchDeviceBindOffer(mode, includeRelay)
+
+    fun acceptDeviceBind(codeOrUri: String) =
+        launchAcceptDeviceBind(codeOrUri)
+
+    fun startOneShotSend(mode: Int, includeRelay: Boolean) =
+        launchOneShotSend(mode, includeRelay)
+
+    fun startReceive(codeOrUri: String) =
+        launchStartReceive(codeOrUri)
+
+    fun submitSasInput(sasDigits: String) {
+        val clean = sasDigits.filter { it.isDigit() }
+        synchronized(stateLock) { sasInputDeferred }?.complete(clean)
     }
 
-    private fun pruneExpiredLocked() {
-        val now = System.currentTimeMillis()
-        previews.entries.removeIf { it.value.expiresAtMs < now }
-        pendingSends.entries.removeIf { it.value.expiresAtEpochMs + CLOCK_SKEW_GRACE_MS <= now }
-        pendingReceives.entries.removeIf { it.value.expiresAtEpochMs + CLOCK_SKEW_GRACE_MS <= now }
+    fun confirmResponderSas(approved: Boolean) {
+        synchronized(stateLock) { sasConfirmDeferred }?.complete(approved)
+    }
+
+    fun cancelActiveFlow() {
+        val toCancel = synchronized(stateLock) {
+            flowGeneration.incrementAndGet()
+            Triple(sasInputDeferred, sasConfirmDeferred, activeFlowJob).also {
+                sasInputDeferred = null
+                sasConfirmDeferred = null
+                activeFlowJob = null
+            }
+        }
+        toCancel.first?.cancel(CancellationException("用户取消了安全码输入"))
+        toCancel.second?.cancel(CancellationException("用户取消了安全码核验"))
+        toCancel.third?.cancel(CancellationException("用户取消了同步操作"))
+
+        _uiState.update { cur ->
+            cur.copy(
+                flowStage = SyncFlowStage.IDLE,
+                flowPurpose = "",
+                flowRole = "",
+                pairUri = "",
+                roomCode = "",
+                expiresAtEpochSec = 0L,
+                sasCode = "",
+                sasAttemptsRemaining = 3,
+                bytesDone = 0L,
+                bytesTotal = 0L,
+                suggestPipeDeviceId = null,
+                errorMessage = null,
+                statusMessage = ""
+            )
+        }
+    }
+
+    suspend fun applyPendingPreview(importMode: String): Result<SyncImportSummary> = withContext(Dispatchers.IO) {
+        val epoch = lockEpoch.get()
+        runCatching {
+            requireUnlocked("导入同步配置")
+            val parsedMode = SyncImportMode.fromWire(importMode)
+            val pair = synchronized(stateLock) { pendingPreviewBundle }
+                ?: throw IllegalStateException("同步预览不存在或已过期，请重新接收")
+
+            val summary = vaultRepository.importSyncBundle(pair.second, parsedMode)
+            synchronized(stateLock) {
+                if (pendingPreviewBundle?.first?.previewId == pair.first.previewId) {
+                    pendingPreviewBundle = null
+                }
+            }
+            if (lockEpoch.get() == epoch && !vaultRepository.state.value.lockState.locked) {
+                _uiState.update { cur ->
+                    cur.copy(
+                        flowStage = SyncFlowStage.COMPLETED,
+                        pendingPreview = null,
+                        errorMessage = null,
+                        statusMessage = "配置导入完成"
+                    )
+                }
+            }
+            summary
+        }.recoverCatching { e ->
+            val friendly = SyncConfig.toFriendlyException(e)
+            _uiState.update { it.copy(errorMessage = friendly.message) }
+            throw friendly
+        }
+    }
+
+    fun clearPendingPreview() {
+        synchronized(stateLock) { pendingPreviewBundle = null }
+        _uiState.update { cur ->
+            cur.copy(
+                pendingPreview = null,
+                flowStage = if (cur.flowStage == SyncFlowStage.READY_PREVIEW) SyncFlowStage.IDLE else cur.flowStage,
+                statusMessage = if (cur.flowStage == SyncFlowStage.READY_PREVIEW) "" else cur.statusMessage,
+                errorMessage = null
+            )
+        }
+    }
+
+    fun onVaultLocked() {
+        var oldHolder: CachedClientHolder? = null
+        var watchJob: Job? = null
+        var flowJob: Job? = null
+        var sasIn: CompletableDeferred<String>? = null
+        var sasConf: CompletableDeferred<Boolean>? = null
+
+        synchronized(stateLock) {
+            lockEpoch.incrementAndGet()
+            flowGeneration.incrementAndGet()
+            oldHolder = activeClientHolder; activeClientHolder = null
+            watchJob = inboxWatchJob; inboxWatchJob = null
+            flowJob = activeFlowJob; activeFlowJob = null
+            sasIn = sasInputDeferred; sasInputDeferred = null
+            sasConf = sasConfirmDeferred; sasConfirmDeferred = null
+            pendingPreviewBundle = null
+        }
+
+        sasIn?.cancel(CancellationException("保险库已锁定"))
+        sasConf?.cancel(CancellationException("保险库已锁定"))
+        watchJob?.cancel(CancellationException("保险库已锁定"))
+        flowJob?.cancel(CancellationException("保险库已锁定"))
+        serviceJob.cancelChildren(CancellationException("保险库已锁定"))
+        keyStore.clearVolatileCaches()
+        _uiState.value = SyncUiState()
+
+        val tempDir = runCatching { cacheBaseDirProvider() }.getOrNull()
+        val isMain = runCatching { Looper.getMainLooper()?.thread === Thread.currentThread() }.getOrDefault(false)
+        if (isMain) {
+            cleanupScope.launch {
+                runCatching { oldHolder?.client?.close() }
+                runCatching { tempDir?.deleteRecursively() }
+            }
+        } else {
+            runCatching { oldHolder?.client?.close() }
+            runCatching { tempDir?.deleteRecursively() }
+        }
+    }
+
+    internal suspend fun probeRelayPing(profile: RelayProfile) =
+        SyncClient(
+            SyncClientConfig(
+                relay = profile,
+                keyStore = MemoryKeyStore(),
+                appId = SyncConfig.APP_ID,
+                deviceLabel = "PingProbe",
+                platform = "android",
+                tempDir = cacheBaseDirProvider()
+            )
+        ).use { it.ping() }
+
+    internal fun onRelayCertExpiring(ev: RelayCertExpiringEvent) {
+        val certIso = if (ev.expiresAt > 0L) {
+            runCatching { Instant.ofEpochSecond(ev.expiresAt).toString() }.getOrDefault("")
+        } else {
+            ""
+        }
+        synchronized(stateLock) { lastCertMetaByRelayId = ev.relayId to (ev.expiresAt to true) }
+        _uiState.update { cur ->
+            if (cur.relay.relayId == ev.relayId) {
+                cur.copy(relay = cur.relay.copy(certExpiresAt = certIso, certRotateRecommended = true))
+            } else {
+                cur
+            }
+        }
     }
 
     companion object {
-        private const val PREVIEW_TTL_MS = 10 * 60 * 1000L
-        private const val CLOCK_SKEW_GRACE_MS = 135_000L // App Gate maxClockSkew (120s) + 15s grace
-        private const val MAX_CACHED_PREVIEWS = 2
-        private const val MAX_PENDING_SESSIONS = 8
+        internal const val TEMP_DIR_NAME = "synctool-tmp"
+
+        internal fun resolveAndroidDeviceLabel(): String {
+            val mfg = Build.MANUFACTURER.orEmpty().trim()
+            val model = Build.MODEL.orEmpty().trim()
+            return listOf(mfg, model).filter { it.isNotEmpty() }.joinToString(" ").ifEmpty { "Android" }.take(64)
+        }
     }
 }
