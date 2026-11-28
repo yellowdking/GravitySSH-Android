@@ -342,7 +342,7 @@ class GoldenVectorsTest {
         val ctA = Handshake.sealPairBind(resPair.sessionKey, resPair.prk, resPair.th, isInitiator = true, ptA.toByteArray(StandardCharsets.UTF_8))
         val ctB = Handshake.sealPairBind(resPair.sessionKey, resPair.prk, resPair.th, isInitiator = false, ptB.toByteArray(StandardCharsets.UTF_8))
         assertEquals(pbObj["expected_ct_a_b64u"]!!.jsonPrimitive.content, KeysAndAuth.b64uEncode(ctA))
-        assertEquals(pbObj["expected_ct_b64u"]!!.jsonPrimitive.content, KeysAndAuth.b64uEncode(ctB))
+        assertEquals(pbObj["expected_ct_b_b64u"]!!.jsonPrimitive.content, KeysAndAuth.b64uEncode(ctB))
         assertEquals(ptA, String(Handshake.openPairBind(resPair.sessionKey, resPair.prk, resPair.th, fromInitiator = true, ctA), StandardCharsets.UTF_8))
         assertEquals(ptB, String(Handshake.openPairBind(resPair.sessionKey, resPair.prk, resPair.th, fromInitiator = false, ctB), StandardCharsets.UTF_8))
 
