@@ -21,4 +21,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "GravitySSH-Android"
-include(":app")
+include(":app", ":synctool-sdk")
