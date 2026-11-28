@@ -44,14 +44,8 @@ fun SyncReceiveCard(
 
     AgCard {
         if (!isReceiveFlowActive) {
-            Text("一次性安全接收", style = MaterialTheme.typography.titleMedium, color = AgText)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "直接扫描发送端二维码（若二维码携带自定义中继将自动切换连接），或输入发送端显示的 8 位房间码。",
-                style = MaterialTheme.typography.bodySmall,
-                color = AgMuted
-            )
-            Spacer(Modifier.height(14.dp))
+            Text("接收配置", style = MaterialTheme.typography.titleMedium, color = AgText)
+            Spacer(Modifier.height(10.dp))
 
             Button(
                 onClick = { showPairScanner = true },
@@ -62,20 +56,18 @@ fun SyncReceiveCard(
             ) {
                 Icon(AgIcons.QrCodeScanner, contentDescription = null, tint = AgBg, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("扫码立即接收", color = AgBg, fontWeight = FontWeight.Bold)
+                Text("扫码接收", color = AgBg, fontWeight = FontWeight.Bold)
             }
 
             Spacer(Modifier.height(14.dp))
             HorizontalDivider(color = AgBorder)
             Spacer(Modifier.height(12.dp))
 
-            Text("手动输入 8 位房间码接收", style = MaterialTheme.typography.titleSmall, color = AgText)
-            Spacer(Modifier.height(8.dp))
             AgTextField(
                 value = roomOrUriInput,
                 onValueChange = { roomOrUriInput = it },
-                label = "XXXX-XXXX 房间码或 synctool://pair URI",
-                placeholder = "例如 K7M9-P4X2",
+                label = "8 位房间码",
+                placeholder = "XXXX-XXXX",
                 mono = true,
                 trailingIcon = {
                     IconButton(
@@ -102,7 +94,7 @@ fun SyncReceiveCard(
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
             ) {
-                Text("加入房间并验证接收", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text("接收", color = Color.White, fontWeight = FontWeight.SemiBold)
             }
         } else {
             Column(
@@ -110,7 +102,7 @@ fun SyncReceiveCard(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("正在接收端到端加密配置", style = MaterialTheme.typography.titleMedium, color = AgCyan)
+                Text("正在接收", style = MaterialTheme.typography.titleMedium, color = AgCyan)
 
                 if (state.roomCode.isNotBlank()) {
                     Text(
@@ -125,7 +117,7 @@ fun SyncReceiveCard(
                     SyncTransferProgressRow(
                         bytesDone = state.bytesDone,
                         bytesTotal = state.bytesTotal,
-                        label = state.statusMessage.ifBlank { "正在接收并校验 64 KiB 加密分块..." }
+                        label = state.statusMessage.ifBlank { "正在接收..." }
                     )
                 } else {
                     Row(
@@ -134,7 +126,7 @@ fun SyncReceiveCard(
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = AgCyan)
                         Text(
-                            text = state.statusMessage.ifBlank { "正在与发送端建立加密通道..." },
+                            text = state.statusMessage.ifBlank { "正在连接..." },
                             style = MaterialTheme.typography.bodySmall,
                             color = AgMuted
                         )
@@ -147,7 +139,7 @@ fun SyncReceiveCard(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("取消接收", color = AgDanger)
+                    Text("取消", color = AgDanger)
                 }
             }
         }
@@ -156,7 +148,7 @@ fun SyncReceiveCard(
     if (showPairScanner) {
         QrScannerDialog(
             qrKind = SyncQrKind.PAIR,
-            title = "扫码立即接收",
+            title = "扫码接收",
             onResult = { scanned ->
                 showPairScanner = false
                 roomOrUriInput = ""
