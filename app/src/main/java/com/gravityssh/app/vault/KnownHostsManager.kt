@@ -181,12 +181,17 @@ class KnownHostsManager(
 
     private fun handleCorruptFileLocked(e: Exception) {
         runCatching { Log.e(TAG, "Corrupt known_hosts file, backing up", e) }
-        val backup = File(
-            storageFile.parentFile ?: File("."),
-            "${storageFile.name}.corrupt.${System.currentTimeMillis()}"
-        )
+        val dir = storageFile.parentFile ?: File(".")
+        val prefix = "${storageFile.name}.corrupt."
+        var ts = System.currentTimeMillis()
+        var backup = File(dir, "$prefix$ts")
+        while (backup.exists()) {
+            ts++
+            backup = File(dir, "$prefix$ts")
+        }
         val moved = runCatching {
             Files.move(storageFile.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            VaultPersistence.pruneCorruptBackups(dir, prefix, MAX_CORRUPT_BACKUPS)
             true
         }.getOrDefault(false)
         // Preserve any already-loaded in-memory entries; if initial load failed and backup succeeded, allow recovery
@@ -216,5 +221,6 @@ class KnownHostsManager(
 
     companion object {
         private const val TAG = "KnownHostsManager"
+        private const val MAX_CORRUPT_BACKUPS = 3
     }
 }
