@@ -39,7 +39,7 @@ internal suspend fun SyncService.applyInboxItemInternal(
                 bytesDone = 0L,
                 bytesTotal = 0L,
                 errorMessage = null,
-                statusMessage = "正在拉取并校验加密配置包..."
+                statusMessage = "正在拉取配置..."
             )
         }
 
@@ -76,7 +76,7 @@ internal suspend fun SyncService.applyInboxItemInternal(
                     bytesDone = 0L,
                     bytesTotal = 0L,
                     errorMessage = null,
-                    statusMessage = "已成功导入并销毁云端密文"
+                    statusMessage = "导入完成"
                 )
             }
         }
@@ -112,7 +112,7 @@ internal suspend fun SyncService.dismissInboxItemInternal(itemId: String): Resul
                         inboxItems = cur.inboxItems.filterNot { it.itemId == cleanItemId },
                         pendingInboxItemId = cur.pendingInboxItemId?.takeUnless { it == cleanItemId },
                         errorMessage = null,
-                        statusMessage = "已销毁该待收配置"
+                        statusMessage = "已删除"
                     )
                 }
             }
@@ -127,7 +127,7 @@ internal suspend fun SyncService.revokePairedDeviceInternal(deviceId: String): R
     withContext(Dispatchers.IO) {
         val epoch = lockEpoch.get()
         runCatching {
-            requireUnlocked("吊销配对设备")
+            requireUnlocked("解除配对")
             val cleanId = deviceId.trim().lowercase()
             require(cleanId.isNotEmpty()) { "设备 ID 不能为空" }
             val holder = getOrCreateClientHolder()
@@ -150,7 +150,7 @@ internal suspend fun SyncService.revokePairedDeviceInternal(deviceId: String): R
                     cur.copy(
                         suggestPipeDeviceId = cur.suggestPipeDeviceId?.takeUnless { it.lowercase() == cleanId },
                         errorMessage = null,
-                        statusMessage = "已吊销该配对设备"
+                        statusMessage = "已解除配对"
                     )
                 }
             }
@@ -182,7 +182,7 @@ internal fun SyncService.launchDeviceBindOffer(mode: Int, includeRelay: Boolean)
                     sasCode = "",
                     sasAttemptsRemaining = 3,
                     errorMessage = null,
-                    statusMessage = "正在创建设备绑定房间..."
+                    statusMessage = "正在准备..."
                 )
             }
 
@@ -201,16 +201,16 @@ internal fun SyncService.launchDeviceBindOffer(mode: Int, includeRelay: Boolean)
                                 roomCode = offer.displayCode,
                                 expiresAtEpochSec = offer.expiresAt,
                                 statusMessage = if (effectiveMode == Handshake.MODE_QR_OOB) {
-                                    "请使用待绑定设备扫描二维码"
+                                    "请使用对端扫码"
                                 } else {
-                                    "请在待绑定设备输入 8 位房间码"
+                                    "请在对端输入房间码"
                                 }
                             )
                         }
                     },
                     onSASInput = {
                         val remaining = (3 - sasAttemptIdx).coerceAtLeast(1)
-                        val retryErr = if (sasAttemptIdx > 0) "安全码不匹配，请重新核对（剩余 $remaining 次机会）" else null
+                        val retryErr = if (sasAttemptIdx > 0) "安全码不匹配，剩余 $remaining 次" else null
                         sasAttemptIdx++
                         awaitInitiatorSasInput(epoch, myGen, remaining, retryErr)
                     }
@@ -226,7 +226,7 @@ internal fun SyncService.launchDeviceBindOffer(mode: Int, includeRelay: Boolean)
                     expiresAtEpochSec = 0L,
                     sasCode = "",
                     errorMessage = null,
-                    statusMessage = "已成功绑定设备：${pairedCard.label}"
+                    statusMessage = "已绑定设备：${pairedCard.label}"
                 )
             }
         }.onFailure { e -> handleAsyncFlowFailure(epoch, myGen, e) }
@@ -238,7 +238,7 @@ internal fun SyncService.launchAcceptDeviceBind(codeOrUri: String) {
     if (failIfLocked()) return
     val trimmed = codeOrUri.trim()
     if (trimmed.isEmpty()) {
-        _uiState.update { it.copy(flowStage = SyncFlowStage.ERROR, errorMessage = "请输入 8 位房间码或扫描配对二维码") }
+        _uiState.update { it.copy(flowStage = SyncFlowStage.ERROR, errorMessage = "请输入房间码或扫描二维码") }
         return
     }
     val epoch = lockEpoch.get()
@@ -260,7 +260,7 @@ internal fun SyncService.launchAcceptDeviceBind(codeOrUri: String) {
                     roomCode = "",
                     sasCode = "",
                     errorMessage = null,
-                    statusMessage = "正在加入配对房间并执行密钥协商..."
+                    statusMessage = "正在连接..."
                 )
             }
 
@@ -278,7 +278,7 @@ internal fun SyncService.launchAcceptDeviceBind(codeOrUri: String) {
                     flowStage = SyncFlowStage.COMPLETED,
                     sasCode = "",
                     errorMessage = null,
-                    statusMessage = "已成功绑定设备：${pairedCard.label}"
+                    statusMessage = "已绑定设备：${pairedCard.label}"
                 )
             }
         }.onFailure { e -> handleAsyncFlowFailure(epoch, myGen, e) }
@@ -311,7 +311,7 @@ internal fun SyncService.launchOneShotSend(mode: Int, includeRelay: Boolean) {
                     bytesDone = 0L,
                     bytesTotal = 0L,
                     errorMessage = null,
-                    statusMessage = "正在创建一次性加密传输房间..."
+                    statusMessage = "正在准备..."
                 )
             }
 
@@ -331,16 +331,16 @@ internal fun SyncService.launchOneShotSend(mode: Int, includeRelay: Boolean) {
                                 roomCode = offer.displayCode,
                                 expiresAtEpochSec = offer.expiresAt,
                                 statusMessage = if (effectiveMode == Handshake.MODE_QR_OOB) {
-                                    "请使用接收端扫描二维码立即接收"
+                                    "请使用接收端扫码"
                                 } else {
-                                    "请在接收端输入 8 位房间码"
+                                    "请在接收端输入房间码"
                                 }
                             )
                         }
                     },
                     onSASInput = {
                         val remaining = (3 - sasAttemptIdx).coerceAtLeast(1)
-                        val retryErr = if (sasAttemptIdx > 0) "安全码不匹配，请重新核对（剩余 $remaining 次机会）" else null
+                        val retryErr = if (sasAttemptIdx > 0) "安全码不匹配，剩余 $remaining 次" else null
                         sasAttemptIdx++
                         awaitInitiatorSasInput(epoch, myGen, remaining, retryErr)
                     },
@@ -356,7 +356,7 @@ internal fun SyncService.launchOneShotSend(mode: Int, includeRelay: Boolean) {
                     expiresAtEpochSec = 0L,
                     sasCode = "",
                     errorMessage = null,
-                    statusMessage = "配置已端到端加密传输完成"
+                    statusMessage = "发送完成"
                 )
             }
         }.onFailure { e -> handleAsyncFlowFailure(epoch, myGen, e) }
@@ -368,7 +368,7 @@ internal fun SyncService.launchStartReceive(codeOrUri: String) {
     if (failIfLocked()) return
     val trimmed = codeOrUri.trim()
     if (trimmed.isEmpty()) {
-        _uiState.update { it.copy(flowStage = SyncFlowStage.ERROR, errorMessage = "请扫描配对二维码或输入 8 位房间码") }
+        _uiState.update { it.copy(flowStage = SyncFlowStage.ERROR, errorMessage = "请扫码或输入房间码") }
         return
     }
     val epoch = lockEpoch.get()
@@ -393,7 +393,7 @@ internal fun SyncService.launchStartReceive(codeOrUri: String) {
                     bytesTotal = 0L,
                     pendingPreview = null,
                     errorMessage = null,
-                    statusMessage = "正在加入房间并建立端到端加密通道..."
+                    statusMessage = "正在连接..."
                 )
             }
 
@@ -435,7 +435,7 @@ internal fun SyncService.launchStartReceive(codeOrUri: String) {
                     sasCode = "",
                     pendingPreview = preview,
                     errorMessage = null,
-                    statusMessage = "已解密并校验配置，请选择合并或全量覆盖"
+                    statusMessage = "请选择导入方式"
                 )
             }
         }.onFailure { e -> handleAsyncFlowFailure(epoch, myGen, e) }
@@ -502,7 +502,7 @@ internal suspend fun SyncService.awaitInitiatorSasInput(
             flowStage = SyncFlowStage.AWAITING_SAS_INPUT,
             sasAttemptsRemaining = attemptsRemaining,
             errorMessage = retryError,
-            statusMessage = "请输入接收端屏幕显示的 6 位安全码"
+            statusMessage = "请输入对端显示的 6 位安全码"
         )
     }
     return try {
@@ -511,7 +511,7 @@ internal suspend fun SyncService.awaitInitiatorSasInput(
             cur.copy(
                 flowStage = SyncFlowStage.TRANSFERRING,
                 errorMessage = null,
-                statusMessage = "正在核验安全码并传输加密数据..."
+                statusMessage = "正在传输..."
             )
         }
         entered
@@ -540,7 +540,7 @@ internal suspend fun SyncService.awaitResponderSasConfirmation(
             flowMode = Handshake.MODE_COMMIT_SAS,
             sasCode = sas,
             errorMessage = null,
-            statusMessage = "请与发送端当面或语音核对 6 位安全码是否完全一致"
+            statusMessage = "请确认两端安全码一致"
         )
     }
     return try {
@@ -550,7 +550,7 @@ internal suspend fun SyncService.awaitResponderSasConfirmation(
                 cur.copy(
                     flowStage = SyncFlowStage.TRANSFERRING,
                     errorMessage = null,
-                    statusMessage = "安全码已核验一致，正在等待对端加密数据..."
+                    statusMessage = "正在接收..."
                 )
             }
         }
