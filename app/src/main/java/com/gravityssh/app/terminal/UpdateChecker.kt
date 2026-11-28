@@ -1,7 +1,6 @@
 package com.gravityssh.app.terminal
 
 import com.gravityssh.app.model.UpdateCheckResult
-import com.gravityssh.app.sync.SyncHttpClients
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -10,10 +9,13 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionSpec
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
+import okhttp3.TlsVersion
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
@@ -48,11 +50,16 @@ open class UpdateChecker(
 
     private val json = Json { ignoreUnknownKeys = true }
     private val client by lazy {
-        SyncHttpClients.baseClient.newBuilder()
+        val tls13Spec = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+            .tlsVersions(TlsVersion.TLS_1_3)
+            .build()
+        OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
+            .writeTimeout(12, TimeUnit.SECONDS)
             .followRedirects(false)
             .followSslRedirects(false)
+            .connectionSpecs(listOf(tls13Spec))
             .build()
     }
 
