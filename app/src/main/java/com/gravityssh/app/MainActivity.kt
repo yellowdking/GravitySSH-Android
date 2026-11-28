@@ -12,13 +12,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.lifecycleScope
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.AppViewModelFactory
 import com.gravityssh.app.ui.navigation.GravitySshRoot
 import com.gravityssh.app.ui.theme.GravitySshTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
 
@@ -61,9 +58,9 @@ class MainActivity : FragmentActivity() {
         if (container != null && bgAt > 0L) {
             val now = SystemClock.elapsedRealtime()
             if (container.vaultRepository.shouldAutoLock(bgAt, now)) {
-                lifecycleScope.launch(Dispatchers.IO) {
-                    container.vaultRepository.lockNow()
-                }
+                // Synchronous memory wipe + locked=true emission (<0.1ms) prevents 1-frame plaintext UI flash;
+                // dirty vault snapshot (if any) flushes asynchronously on VaultRepository's ioScope.
+                container.vaultRepository.lockNow()
             }
         }
     }

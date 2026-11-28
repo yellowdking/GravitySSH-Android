@@ -17,81 +17,26 @@ data class SyncBundle(
 
 enum class SyncImportMode {
     MERGE,
-    OVERWRITE
+    OVERWRITE;
+
+    companion object {
+        fun fromWire(mode: String): SyncImportMode = when (mode.trim().lowercase()) {
+            "merge" -> MERGE
+            "overwrite" -> OVERWRITE
+            else -> throw IllegalArgumentException("不支持的同步导入模式: $mode")
+        }
+    }
 }
-
-data class SyncSendSession(
-    val code: String,
-    val qrText: String,
-    val expiresAt: String,
-    val expiresAtEpochMs: Long,
-    val relayUrl: String,
-    val serverCount: Int,
-    val keyCount: Int,
-    val shortcutCount: Int,
-    val templateCount: Int,
-    val sessionId: String = ""
-)
-
-@Serializable
-data class PairRequestPayload(
-    @SerialName("receiverCode") val receiverCode: String,
-    @SerialName("receiverDevice") val receiverDevice: String,
-    @SerialName("receiverPlatform") val receiverPlatform: String = "android",
-    @SerialName("requestedAt") val requestedAt: String = ""
-)
-
-enum class SyncSendPollState {
-    WAITING,
-    REQUESTED,
-    APPROVED,
-    REJECTED,
-    CONSUMED,
-    EXPIRED,
-    ERROR
-}
-
-data class SyncSendPollResult(
-    val state: SyncSendPollState,
-    val requestId: String = "",
-    val receiverCode: String = "",
-    val receiverDevice: String = "",
-    val receiverPlatform: String = "",
-    val requestedAt: String = "",
-    val errorMessage: String? = null
-)
-
-data class SyncReceiveWaitSession(
-    val waitId: String,
-    val receiverCode: String,
-    val sendCode: String,
-    val requestId: String,
-    val relayUrl: String,
-    val expiresAt: String,
-    val expiresAtEpochMs: Long
-)
-
-enum class SyncReceivePollState {
-    PENDING,
-    APPROVED,
-    REJECTED,
-    EXPIRED
-}
-
-data class SyncReceivePollResult(
-    val state: SyncReceivePollState,
-    val preview: SyncReceivePreview? = null
-)
 
 data class SyncReceivePreview(
-    val previewId: String,
-    val sourcePlatform: String,
-    val sourceDevice: String,
-    val exportedAt: String,
-    val serverCount: Int,
-    val keyCount: Int,
-    val shortcutCount: Int,
-    val templateCount: Int
+    val previewId: String = "",
+    val sourcePlatform: String = "",
+    val sourceDevice: String = "",
+    val exportedAt: String = "",
+    val serverCount: Int = 0,
+    val keyCount: Int = 0,
+    val shortcutCount: Int = 0,
+    val templateCount: Int = 0
 )
 
 data class SyncImportSummary(
@@ -104,4 +49,87 @@ data class SyncImportSummary(
     val shortcutsUpdated: Int,
     val templatesAdded: Int,
     val templatesUpdated: Int
+)
+
+data class SyncRelayStatusUi(
+    val mode: String = "default",
+    val endpoint: String = "",
+    val redactedUri: String = "",
+    val relayId: String = "",
+    val tlsMode: String = "spki_pin",
+    val spkiPinShort: String = "",
+    val certExpiresAt: String = "",
+    val certRotateRecommended: Boolean = false
+)
+
+data class SyncPingResultUi(
+    val rttMs: Long,
+    val profile: String,
+    val spoolMode: String,
+    val clockOffsetSec: Long,
+    val certExpiresAt: String = "",
+    val certRotateRecommended: Boolean = false
+)
+
+data class SyncPairedDeviceUi(
+    val deviceId: String,
+    val label: String,
+    val platform: String,
+    val relayId: String,
+    val issuedAt: Long
+)
+
+data class SyncInboxItemUi(
+    val itemId: String,
+    val msgId: String,
+    val senderDeviceId: String,
+    val senderLabel: String,
+    val senderPlatform: String,
+    val createdAt: Long,
+    val expiresAt: Long,
+    val totalBytes: Long,
+    val serverCount: Int,
+    val keyCount: Int,
+    val shortcutCount: Int,
+    val templateCount: Int,
+    val pairingBroken: Boolean = false,
+    val errorMessage: String = ""
+)
+
+enum class SyncFlowStage {
+    IDLE,
+    WAITING_PEER,
+    AWAITING_SAS_INPUT,
+    AWAITING_SAS_CONFIRM,
+    TRANSFERRING,
+    READY_PREVIEW,
+    COMPLETED,
+    ERROR
+}
+
+data class SyncUiState(
+    val localDeviceId: String = "",
+    val localDeviceLabel: String = "",
+    val relay: SyncRelayStatusUi = SyncRelayStatusUi(),
+    val pairedDevices: List<SyncPairedDeviceUi> = emptyList(),
+    val inboxItems: List<SyncInboxItemUi> = emptyList(),
+    val isRefreshingInbox: Boolean = false,
+    val flowStage: SyncFlowStage = SyncFlowStage.IDLE,
+    val flowPurpose: String = "",
+    val flowRole: String = "",
+    val flowMode: Int = 1,
+    val pairUri: String = "",
+    val roomCode: String = "",
+    val expiresAtEpochSec: Long = 0L,
+    val sasCode: String = "",
+    val sasAttemptsRemaining: Int = 3,
+    val bytesDone: Long = 0L,
+    val bytesTotal: Long = 0L,
+    val suggestPipeDeviceId: String? = null,
+    val pendingPreview: SyncReceivePreview? = null,
+    val pendingInboxItemId: String? = null,
+    val statusMessage: String = "",
+    val errorMessage: String? = null,
+    val pingResult: SyncPingResultUi? = null,
+    val isPinging: Boolean = false
 )

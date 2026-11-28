@@ -10,6 +10,22 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 
+# synctool-sdk @Serializable types & serializers
+-if @kotlinx.serialization.Serializable class com.yellowdking.synctool.**
+-keepclassmembers class <1> {
+    static <1>$Companion Companion;
+}
+-keep,includedescriptorclasses class com.yellowdking.synctool.**$$serializer { *; }
+-keepnames class com.yellowdking.synctool.**$$serializer { *; }
+-keepclassmembers class com.yellowdking.synctool.**$$serializer {
+    public static final ** INSTANCE;
+    kotlinx.serialization.KSerializer[] childSerializers();
+}
+-keepclassmembers class com.yellowdking.synctool.** {
+    *** Companion;
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
 # SSHJ & Ed25519 (dynamic factories, ciphers, KEX, key format providers)
 -keep class com.hierynomus.sshj.** { *; }
 -keep class net.schmizz.sshj.** { *; }
@@ -53,6 +69,8 @@
 -keep class org.bouncycastle.jcajce.provider.asymmetric.EdEC { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.EdEC$* { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.edec.** { *; }
+-keep class org.bouncycastle.math.ec.rfc7748.X25519 { *; }
+-keep class org.bouncycastle.math.ec.rfc8032.Ed25519 { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.X509 { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.X509$* { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.x509.** { *; }

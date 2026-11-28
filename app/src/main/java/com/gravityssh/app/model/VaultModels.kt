@@ -1,5 +1,6 @@
 package com.gravityssh.app.model
 
+import com.yellowdking.synctool.envelope.DeviceCard
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -78,6 +79,24 @@ data class AppSettings(
 )
 
 @Serializable
+data class SeenMsgRecord(
+    @SerialName("msgId") val msgId: String = "",
+    @SerialName("createdAt") val createdAt: Long = 0L,
+    @SerialName("seenAt") val seenAt: Long = 0L
+)
+
+@Serializable
+data class SyncVaultState(
+    @SerialName("masterSeedB64u") val masterSeedB64u: String = "",
+    @SerialName("localDeviceLabel") val localDeviceLabel: String = "",
+    @SerialName("customRelayUri") val customRelayUri: String = "",
+    @SerialName("pairedDevices") val pairedDevices: List<DeviceCard> = emptyList(),
+    @SerialName("pendingTokenDeletes") val pendingTokenDeletes: List<String> = emptyList(),
+    @SerialName("seenMsgIds") val seenMsgIds: List<SeenMsgRecord> = emptyList(),
+    @SerialName("replayWatermarkTs") val replayWatermarkTs: Long = 0L
+)
+
+@Serializable
 data class VaultData(
     @SerialName("version") val version: Int = 2,
     @SerialName("servers") val servers: List<ServerConfig> = emptyList(),
@@ -85,7 +104,8 @@ data class VaultData(
     @SerialName("shortcuts") val shortcuts: List<CommandShortcut> = emptyList(),
     @SerialName("templates") val templates: List<BuiltinTemplate> = emptyList(),
     @SerialName("history") val history: List<CommandRecord> = emptyList(),
-    @SerialName("settings") val settings: AppSettings = AppSettings()
+    @SerialName("settings") val settings: AppSettings = AppSettings(),
+    @SerialName("syncState") val syncState: SyncVaultState = SyncVaultState()
 )
 
 data class VaultLockState(

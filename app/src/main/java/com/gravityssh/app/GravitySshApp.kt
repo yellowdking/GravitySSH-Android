@@ -7,7 +7,6 @@ import com.gravityssh.app.ssh.KeyDeployer
 import com.gravityssh.app.ssh.SftpService
 import com.gravityssh.app.ssh.SshConnector
 import com.gravityssh.app.ssh.SshSessionManager
-import com.gravityssh.app.sync.SyncRelayClient
 import com.gravityssh.app.sync.SyncService
 import com.gravityssh.app.terminal.UpdateChecker
 import com.gravityssh.app.vault.KnownHostsManager
@@ -33,8 +32,7 @@ class AppContainer(context: Context) {
     val keyDeployer = KeyDeployer(sshConnector)
     val sshSessionManager = SshSessionManager(appContext, vaultRepository, sshConnector)
     val sftpService = SftpService(sshSessionManager)
-    val syncRelayClient = SyncRelayClient()
-    val syncService = SyncService(vaultRepository, syncRelayClient)
+    val syncService = SyncService(appContext, vaultRepository)
     val updateChecker = UpdateChecker(BuildConfig.APP_VERSION)
 
     init {
