@@ -115,7 +115,7 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           set -o pipefail
-          gradle testDebugUnitTest lintDebug assembleRelease --build-cache --stacktrace 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+          gradle :synctool-sdk:test testDebugUnitTest lintDebug assembleRelease --build-cache --stacktrace 2>&1 | tee "$RUNNER_TEMP/gradle.log"
 
       - name: Clean Up Release Keystore
         if: always()
@@ -312,6 +312,8 @@ jobs:
                   b"Lorg/bouncycastle/jcajce/provider/symmetric/OpenSSLPBKDF$Mappings;",
                   b"Lorg/bouncycastle/jcajce/provider/symmetric/Blowfish;",
                   b"Lorg/bouncycastle/jcajce/provider/symmetric/Blowfish$Mappings;",
+                  b"Lorg/bouncycastle/math/ec/rfc7748/X25519;",
+                  b"Lorg/bouncycastle/math/ec/rfc8032/Ed25519;",
               ]
               missing = [m.decode("ascii") for m in required_bc_markers if m not in dex_blob]
               if missing:
