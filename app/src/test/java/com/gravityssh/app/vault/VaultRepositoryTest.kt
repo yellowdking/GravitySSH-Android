@@ -19,8 +19,8 @@ import com.gravityssh.app.model.SyncImportMode
 import com.gravityssh.app.model.VaultLockState
 import com.gravityssh.app.model.isSshPortTemplate
 import com.gravityssh.app.model.resolveSshPortCommand
+import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.ui.sanitizeUploadDisplayName
-import com.gravityssh.app.ui.sync.isValidGravitySshQrPayload
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -626,12 +626,15 @@ class VaultRepositoryTest {
         assertEquals("upload.bin", sanitizeUploadDisplayName("   "))
         assertEquals("upload.bin", sanitizeUploadDisplayName(null))
 
-        assertTrue(isValidGravitySshQrPayload("gssh-sync://v1?code=K7M9-P4X2"))
-        assertTrue(isValidGravitySshQrPayload("  GSSH-SYNC://v1?code=K7M9P4X2  "))
-        assertFalse(isValidGravitySshQrPayload("https://example.com"))
-        assertFalse(isValidGravitySshQrPayload("K7M9-P4X2"))
-        assertFalse(isValidGravitySshQrPayload("gssh-sync://v1?code=BAD"))
-        assertFalse(isValidGravitySshQrPayload("gssh-sync://v1?code=0000-1111"))
+        val sampleRelay = "synctool://relay?v=1&u=https%3A%2F%2F43.155.231.14%3A54843&pin=${"a".repeat(64)}#k=${"K".repeat(43)}"
+        val samplePair = "synctool://pair?r=K7M9P2XQ&m=1&p=oneshot&v=1#s=AAAAAAAAAAAAAAAAAAAAAA"
+        assertTrue(SyncConfig.isValidRelayUri(sampleRelay))
+        assertTrue(SyncConfig.isValidPairUri(samplePair))
+        assertTrue(SyncConfig.isValidRoomCodeOrPairUri(samplePair))
+        assertTrue(SyncConfig.isValidRoomCodeOrPairUri("K7M9-P4X2"))
+        assertFalse(SyncConfig.isValidRoomCodeOrPairUri("https://example.com"))
+        assertFalse(SyncConfig.isValidRoomCodeOrPairUri("BAD"))
+        assertFalse(SyncConfig.redactUri(sampleRelay).contains("KKKKKKKK"))
     }
 
     @Test
