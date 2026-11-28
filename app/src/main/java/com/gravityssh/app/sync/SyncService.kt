@@ -184,7 +184,7 @@ class SyncService internal constructor(
                     pairedDevices = devices,
                     pingResult = null,
                     errorMessage = null,
-                    statusMessage = if (holder.isCustom) "已保存自定义同步中继" else "已恢复官方默认中继"
+                    statusMessage = if (holder.isCustom) "已保存自定义中继" else "已恢复默认官方中继"
                 )
             }
             if (inboxWatchJob?.isActive == true) {
@@ -353,7 +353,7 @@ class SyncService internal constructor(
                         bytesTotal = 0L,
                         suggestPipeDeviceId = null,
                         errorMessage = null,
-                        statusMessage = if (mode == DeliveryMode.PIPE) "正在创建已配对设备实时直传房间..." else "正在通过 0-RTT 端到端加密投递..."
+                        statusMessage = if (mode == DeliveryMode.PIPE) "正在准备实时直传..." else "正在推送..."
                     )
                 }
 
@@ -373,7 +373,7 @@ class SyncService internal constructor(
                                     pairUri = offer.pairUri,
                                     roomCode = offer.displayCode,
                                     expiresAtEpochSec = offer.expiresAt,
-                                    statusMessage = "请在对端选择「一次性接收」扫码或输入 8 位房间码实时直传"
+                                    statusMessage = "请在对端「接收」页扫码或输入房间码"
                                 )
                             }
                         },
@@ -389,7 +389,7 @@ class SyncService internal constructor(
                         expiresAtEpochSec = 0L,
                         suggestPipeDeviceId = null,
                         errorMessage = null,
-                        statusMessage = if (sendRes.mode == DeliveryMode.PIPE) "实时直传完成，对端已确认接收" else "已通过 0-RTT 加密投递至设备收件箱"
+                        statusMessage = if (sendRes.mode == DeliveryMode.PIPE) "实时直传完成" else "已推送至对端"
                     )
                 }
             }.recoverCatching { e ->
