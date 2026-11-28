@@ -21,7 +21,6 @@ import com.gravityssh.app.ui.cancelSyncFlow
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgFilterChip
 import com.gravityssh.app.ui.components.AgIcons
-import com.gravityssh.app.ui.components.AgStatusBanner
 import com.gravityssh.app.ui.components.AgSwitchRow
 import com.gravityssh.app.ui.startSyncOneShotSend
 import com.gravityssh.app.ui.theme.*
@@ -76,49 +75,30 @@ fun SyncSendCard(
 
     AgCard {
         if (!isOneShotSendActive) {
-            Text("一次性端到端发送", style = MaterialTheme.typography.titleMedium, color = AgText)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "无需长期绑定设备，通过阅后即焚房间将本机配置加密直传至对端（接收确认后中继立即销毁房间）。",
-                style = MaterialTheme.typography.bodySmall,
-                color = AgMuted
-            )
+            Text("发送配置", style = MaterialTheme.typography.titleMedium, color = AgText)
             Spacer(Modifier.height(10.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AgFilterChip(
                     selected = sendMode == 1,
                     onClick = { sendMode = 1 },
-                    label = "扫码速传 (QR)",
+                    label = "二维码",
                     selectedColor = AgCyan
                 )
                 AgFilterChip(
                     selected = sendMode == 2,
                     onClick = { sendMode = 2 },
-                    label = "8 位码 + 6 位安全码",
+                    label = "8 位房间码",
                     selectedColor = AgAccent
                 )
             }
 
-            Spacer(Modifier.height(8.dp))
-            if (sendMode == 1) {
-                Text(
-                    "二维码内含 128-bit 带外随机密钥，对端扫码即可完成 X25519 零知识握手并自动流式传输。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AgMuted
-                )
-                if (isCustomRelay) {
-                    Spacer(Modifier.height(6.dp))
-                    AgSwitchRow(
-                        label = "携带自定义中继（新手机免配置一码直传）",
-                        checked = includeCustomRelay,
-                        onCheckedChange = { includeCustomRelay = it }
-                    )
-                }
-            } else {
-                AgStatusBanner(
-                    message = "无摄像头或跨网远程发送：对端输入 8 位房间码后，双方通过语音或当面核对 6 位安全码。切勿将房间码与安全码发在同一聊天窗口！",
-                    color = AgWarning
+            if (sendMode == 1 && isCustomRelay) {
+                Spacer(Modifier.height(8.dp))
+                AgSwitchRow(
+                    label = "附带自定义中继配置",
+                    checked = includeCustomRelay,
+                    onCheckedChange = { includeCustomRelay = it }
                 )
             }
 
@@ -143,7 +123,7 @@ fun SyncSendCard(
                 colors = ButtonDefaults.buttonColors(containerColor = AgAccent)
             ) {
                 Text(
-                    text = if (sendMode == 1) "生成扫码速传二维码" else "生成 8 位房间码",
+                    text = if (sendMode == 1) "生成二维码" else "生成房间码",
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -158,7 +138,7 @@ fun SyncSendCard(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = if (state.flowMode == 1) "请用接收端扫描下方二维码" else "请让接收端输入 8 位房间码",
+                    text = if (state.flowMode == 1) "请使用接收端扫码" else "请在接收端输入房间码",
                     style = MaterialTheme.typography.titleSmall,
                     color = AgText
                 )
@@ -180,7 +160,7 @@ fun SyncSendCard(
 
                 if (remainingSec > 0L && state.flowStage == SyncFlowStage.WAITING_PEER) {
                     Text(
-                        text = "剩余有效期 ${String.format(Locale.US, "%02d:%02d", remainingSec / 60, remainingSec % 60)} · 阅后即焚",
+                        text = "剩余有效期 ${String.format(Locale.US, "%02d:%02d", remainingSec / 60, remainingSec % 60)}",
                         style = MaterialTheme.typography.labelMedium,
                         color = AgSuccess
                     )
@@ -190,7 +170,7 @@ fun SyncSendCard(
                     SyncTransferProgressRow(
                         bytesDone = state.bytesDone,
                         bytesTotal = state.bytesTotal,
-                        label = state.statusMessage.ifBlank { "正在端到端分块加密传输..." }
+                        label = state.statusMessage.ifBlank { "正在传输..." }
                     )
                 } else {
                     Row(
@@ -199,7 +179,7 @@ fun SyncSendCard(
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = AgCyan)
                         Text(
-                            text = state.statusMessage.ifBlank { "等待接收端加入房间..." },
+                            text = state.statusMessage.ifBlank { "等待接收端连接..." },
                             style = MaterialTheme.typography.bodySmall,
                             color = AgMuted
                         )
@@ -211,7 +191,7 @@ fun SyncSendCard(
                         OutlinedButton(
                             onClick = {
                                 clipboard.setText(AnnotatedString(formattedRoom))
-                                viewModel.showToast("已复制 8 位房间码 $formattedRoom")
+                                viewModel.showToast("已复制房间码 $formattedRoom")
                             },
                             border = BorderStroke(1.dp, AgCyan),
                             modifier = Modifier.weight(1f)
@@ -226,7 +206,7 @@ fun SyncSendCard(
                         border = BorderStroke(1.dp, AgDanger),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("取消并销毁", color = AgDanger)
+                        Text("取消", color = AgDanger)
                     }
                 }
             }
