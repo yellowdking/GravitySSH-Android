@@ -112,15 +112,15 @@ object SyncConfig {
             val detail = error.cleanMessage
             val msg = when (error.code) {
                 ErrorCode.ERR_TLS_PIN_MISMATCH ->
-                    "中继服务器 TLS SPKI 指纹不匹配，已阻断连接以防中间人攻击"
+                    "中继证书指纹不匹配，已阻断连接"
                 ErrorCode.ERR_TLS_CERT_INVALID ->
-                    "中继服务器 TLS 证书无效或已过期"
+                    "中继服务器证书无效或已过期"
                 ErrorCode.ERR_AUTH_FAILED ->
-                    "中继访问密钥（#k=）认证失败，请核对中继 URI"
+                    "中继认证失败，请检查中继地址"
                 ErrorCode.ERR_UNAUTHORIZED_TOKEN ->
-                    "投递令牌或房间凭证已失效（可能已被对端吊销）"
+                    "配对凭证已失效，请重新绑定设备"
                 ErrorCode.ERR_URI_INVALID ->
-                    "同步 URI 格式无效（需为 synctool://relay?...#k=... 或 synctool://pair?...）"
+                    "地址或房间码格式无效"
                 ErrorCode.ERR_SAS_MISMATCH ->
                     "6 位安全核验码不一致或已拒绝，配对房间已自动销毁"
                 ErrorCode.ERR_ROOM_BURNED ->
