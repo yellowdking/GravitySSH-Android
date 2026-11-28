@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gravityssh.app.model.SyncPingResultUi
 import com.gravityssh.app.model.SyncUiState
+import com.gravityssh.app.sync.SyncConfig
 import com.gravityssh.app.ui.AppViewModel
 import com.gravityssh.app.ui.components.AgBadge
 import com.gravityssh.app.ui.components.AgCard
@@ -39,9 +40,12 @@ fun SyncRelayCard(
     val isCustom = relay.mode == "custom"
     val safeRedactedDisplay = remember(relay) {
         if (isCustom) {
-            relay.redactedUri.ifBlank { relay.endpoint }.substringBefore('#').ifBlank { "自定义中继" }
+            SyncConfig.redactUri(relay.endpoint)
+                .substringBefore('#')
+                .ifBlank { relay.redactedUri.substringBefore('#') }
+                .ifBlank { "自定义中继" }
         } else {
-            "官方默认中继 (TLS 1.3 + SPKI Pin)"
+            "默认官方中继"
         }
     }
 
@@ -74,11 +78,10 @@ fun SyncRelayCard(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text("同步中继与设备身份", style = MaterialTheme.typography.titleSmall, color = AgText)
-                        AgBadge(
-                            text = if (isCustom) "自定义" else "官方默认",
-                            color = if (isCustom) AgAccentLight else AgCyan
-                        )
+                        Text("同步中继", style = MaterialTheme.typography.titleSmall, color = AgText)
+                        if (isCustom) {
+                            AgBadge(text = "自定义", color = AgAccentLight)
+                        }
                     }
                     Text(
                         text = safeRedactedDisplay,
@@ -102,23 +105,13 @@ fun SyncRelayCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                val devLabel = state.localDeviceLabel.ifBlank { "Android 设备" }
-                val devIdShort = state.localDeviceId.take(8)
-                Text(
-                    text = if (devIdShort.isNotEmpty()) "本机：$devLabel · ID $devIdShort" else "本机：$devLabel",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AgText
-                )
-                if (relay.spkiPinShort.isNotBlank()) {
-                    Text(
-                        text = "TLS: ${relay.tlsMode} · Pin ${relay.spkiPinShort}",
-                        fontFamily = MonoFontFamily,
-                        fontSize = 10.sp,
-                        color = AgSubtle
-                    )
-                }
-            }
+            val devLabel = state.localDeviceLabel.ifBlank { "Android 设备" }
+            Text(
+                text = "本机：$devLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = AgText,
+                modifier = Modifier.weight(1f)
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { showLabelDialog = true }, modifier = Modifier.size(30.dp)) {
                     Icon(Icons.Rounded.Edit, contentDescription = "修改本机名称", tint = AgMuted, modifier = Modifier.size(16.dp))
@@ -159,8 +152,6 @@ fun SyncRelayCard(
 
         effectivePing?.let { ping ->
             Spacer(Modifier.height(8.dp))
-            val skewText = if (ping.clockOffsetSec >= 0) "+${ping.clockOffsetSec}s" else "${ping.clockOffsetSec}s"
-            val certPart = if (ping.certExpiresAt.isNotBlank()) " · 证书到期 ${ping.certExpiresAt.take(10)}" else ""
             Surface(
                 shape = RoundedCornerShape(9.dp),
                 color = AgSuccess.copy(alpha = 0.12f),
@@ -168,7 +159,7 @@ fun SyncRelayCard(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "✓ 已连通 ${ping.rttMs}ms · 规格 ${ping.profile} · 暂存 ${ping.spoolMode} · 时钟偏差 $skewText$certPart",
+                    text = "已连通${ping.rttMs}ms",
                     style = MaterialTheme.typography.bodySmall,
                     color = AgSuccess,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
@@ -179,7 +170,7 @@ fun SyncRelayCard(
         if (rotateWarn) {
             Spacer(Modifier.height(8.dp))
             AgStatusBanner(
-                message = "中继证书即将到期，建议管理员执行 synctool-relay cert-rotate --stage-next 无缝轮换证书",
+                message = "中继证书即将到期，请及时轮换证书",
                 color = AgWarning,
                 icon = Icons.Rounded.Warning
             )
@@ -196,8 +187,8 @@ fun SyncRelayCard(
                     customUriInput = it
                     localPingError = null
                 },
-                label = "自定义中继 synctool://relay URI",
-                placeholder = if (isCustom) safeRedactedDisplay else "synctool://relay?v=1&u=https%3A%2F%2F...&pin=...#k=...",
+                label = "自定义中继地址",
+                placeholder = if (isCustom) safeRedactedDisplay else "synctool://relay?...",
                 mono = true,
                 visualTransformation = if (uriVisible) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -205,7 +196,7 @@ fun SyncRelayCard(
                     IconButton(onClick = { uriVisible = !uriVisible }) {
                         Icon(
                             imageVector = if (uriVisible) AgIcons.VisibilityOff else AgIcons.Visibility,
-                            contentDescription = if (uriVisible) "隐藏密钥" else "显示 URI",
+                            contentDescription = if (uriVisible) "隐藏" else "显示",
                             tint = AgMuted
                         )
                     }
@@ -222,7 +213,7 @@ fun SyncRelayCard(
                 ) {
                     Icon(AgIcons.QrCodeScanner, null, tint = AgCyan, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(5.dp))
-                    Text("扫码填入中继 URI", color = AgCyan, fontSize = 12.sp)
+                    Text("扫码配置", color = AgCyan, fontSize = 12.sp)
                 }
                 Button(
                     onClick = {
@@ -243,7 +234,7 @@ fun SyncRelayCard(
                     modifier = Modifier.weight(1f).height(38.dp),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                 ) {
-                    Text("保存自定义中继", color = Color.White, fontSize = 12.sp)
+                    Text("保存", color = Color.White, fontSize = 12.sp)
                 }
             }
             if (isCustom || customUriInput.isNotBlank()) {
@@ -258,7 +249,7 @@ fun SyncRelayCard(
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("恢复官方默认中继", color = AgWarning, fontSize = 12.sp)
+                    Text("恢复默认官方中继", color = AgWarning, fontSize = 12.sp)
                 }
             }
         }
