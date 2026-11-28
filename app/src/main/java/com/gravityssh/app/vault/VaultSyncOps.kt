@@ -77,7 +77,8 @@ object VaultSyncOps {
                 servers = overwriteServers,
                 sshKeys = overwriteKeys,
                 shortcuts = cleanShortcuts,
-                templates = cleanTemplates
+                templates = cleanTemplates,
+                syncState = current.syncState
             )
             return next to SyncImportSummary(
                 mode = mode,
@@ -271,7 +272,8 @@ object VaultSyncOps {
             servers = outServers,
             sshKeys = outKeys,
             shortcuts = outShortcuts,
-            templates = outTemplates
+            templates = outTemplates,
+            syncState = current.syncState
         )
         return next to SyncImportSummary(
             mode = mode,
