@@ -177,7 +177,7 @@ class SshBatch2HardeningTest {
     }
 
     @Test
-    fun sshExecHelperRunBoundedTimesOutWithIoExceptionAndCancelsCleanly() = runBlocking {
+    fun sshExecHelperRunBoundedTimesOutWithIoExceptionAndCancelsCleanly(): Unit = runBlocking {
         // 1. Timeout throws IOException (not CancellationException) and runs cleanup callback
         val timeoutCleaned = AtomicBoolean(false)
         val timeoutErr = runCatching {
