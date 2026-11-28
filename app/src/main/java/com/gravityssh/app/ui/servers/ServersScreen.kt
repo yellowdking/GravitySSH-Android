@@ -92,7 +92,7 @@ fun ServersScreen(
                 title = {
                     Column {
                         Text("GravitySSH", style = MaterialTheme.typography.titleLarge, color = AgText)
-                        Text("${servers.size} 台主机 · 加密保险库", style = MaterialTheme.typography.labelSmall, color = AgMuted)
+                        Text("${servers.size} 台主机", style = MaterialTheme.typography.labelSmall, color = AgMuted)
                     }
                 },
                 actions = {
