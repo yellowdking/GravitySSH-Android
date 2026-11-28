@@ -28,28 +28,48 @@ import com.google.zxing.BinaryBitmap
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
-import com.gravityssh.app.sync.SyncConfig
-import com.gravityssh.app.sync.SyncCrypto
 import com.gravityssh.app.ui.theme.AgDanger
+import com.yellowdking.synctool.envelope.SyncUri
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-internal fun isValidGravitySshQrPayload(raw: String): Boolean {
+enum class SyncQrKind {
+    PAIR,
+    RELAY,
+    ANY
+}
+
+internal fun isValidGravitySshQrPayload(
+    raw: String,
+    kind: SyncQrKind = SyncQrKind.ANY
+): Boolean {
     val trimmed = raw.trim()
-    if (!trimmed.startsWith(SyncConfig.QR_SCHEME_PREFIX, ignoreCase = true) &&
-        !trimmed.startsWith("gssh-sync://", ignoreCase = true)
-    ) {
-        return false
+    if (trimmed.isEmpty()) return false
+    val validPair = {
+        trimmed.startsWith("synctool://pair", ignoreCase = true) &&
+            runCatching { SyncUri.parsePairUri(trimmed).also { it.zeroSecrets() } }.isSuccess
     }
-    return runCatching { SyncCrypto.canonicalizeCode(trimmed) }.isSuccess
+    val validRelay = {
+        trimmed.startsWith("synctool://relay", ignoreCase = true) &&
+            runCatching { SyncUri.parseRelayUri(trimmed) }.isSuccess
+    }
+    return when (kind) {
+        SyncQrKind.PAIR -> validPair()
+        SyncQrKind.RELAY -> validRelay()
+        SyncQrKind.ANY -> validPair() || validRelay()
+    }
 }
 
 @Composable
-fun QrCameraPreview(onScanned: (String) -> Unit) {
+fun QrCameraPreview(
+    qrKind: SyncQrKind = SyncQrKind.ANY,
+    onScanned: (String) -> Unit
+) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnScanned by rememberUpdatedState(onScanned)
+    val currentQrKind by rememberUpdatedState(qrKind)
     val executor = remember { Executors.newSingleThreadExecutor() }
     val delivered = remember { AtomicBoolean(false) }
     val disposed = remember { AtomicBoolean(false) }
@@ -116,7 +136,7 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
                                         val needed = width * height
                                         if (yuvBuf.size < needed) yuvBuf = ByteArray(needed)
                                         copyYPlaneTightly(
-                                            buf = plane.buffer,
+                                            buf = plane.buffer.duplicate(),
                                             width = width,
                                             height = height,
                                             rowStride = plane.rowStride,
@@ -125,7 +145,9 @@ fun QrCameraPreview(onScanned: (String) -> Unit) {
                                         )
                                         decodeQr(width, height, yuvBuf, reader)?.let { text ->
                                             val candidate = text.trim()
-                                            if (isValidGravitySshQrPayload(candidate) && delivered.compareAndSet(false, true)) {
+                                            if (isValidGravitySshQrPayload(candidate, currentQrKind) &&
+                                                delivered.compareAndSet(false, true)
+                                            ) {
                                                 mainExecutor.execute {
                                                     if (!disposed.get()) currentOnScanned(candidate)
                                                 }
@@ -178,12 +200,13 @@ private fun copyYPlaneTightly(
     pixelStride: Int,
     dst: ByteArray
 ) {
-    val basePos = buf.position()
-    val limit = buf.limit()
+    val src = buf.duplicate()
+    val basePos = src.position()
+    val limit = src.limit()
     val needed = width * height
     if (pixelStride == 1 && rowStride == width) {
         val toRead = minOf(needed, (limit - basePos).coerceAtLeast(0))
-        if (toRead > 0) buf.get(dst, 0, toRead)
+        if (toRead > 0) src.get(dst, 0, toRead)
         if (toRead < needed) dst.fill(0, toRead, needed)
         return
     }
@@ -195,14 +218,14 @@ private fun copyYPlaneTightly(
             break
         }
         if (pixelStride == 1) {
-            buf.position(rowStart)
+            src.position(rowStart)
             val toRead = minOf(width, limit - rowStart)
-            buf.get(dst, dstOff, toRead)
+            src.get(dst, dstOff, toRead)
             if (toRead < width) dst.fill(0, dstOff + toRead, dstOff + width)
         } else {
             for (c in 0 until width) {
                 val idx = rowStart + c * pixelStride
-                dst[dstOff + c] = if (idx < limit) buf.get(idx) else 0
+                dst[dstOff + c] = if (idx < limit) src.get(idx) else 0
             }
         }
     }

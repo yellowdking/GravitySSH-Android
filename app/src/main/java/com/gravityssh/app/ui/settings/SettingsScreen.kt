@@ -12,7 +12,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gravityssh.app.model.SyncRelayStatusUi
 import com.gravityssh.app.ui.AppViewModel
+import com.gravityssh.app.ui.components.AgBadge
 import com.gravityssh.app.ui.components.AgCard
 import com.gravityssh.app.ui.components.AgIcons
 import com.gravityssh.app.ui.components.AgSwitchRow
@@ -29,6 +31,12 @@ private data class SettingsNavCounts(
     val historyCount: Int
 )
 
+private data class SettingsSyncOverview(
+    val relay: SyncRelayStatusUi,
+    val pairedCount: Int,
+    val inboxCount: Int
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -37,11 +45,12 @@ fun SettingsScreen(
     onOpenKeys: () -> Unit,
     onOpenTools: () -> Unit
 ) {
-    val settings by remember(viewModel) {
-        viewModel.vaultState.map { it.data.settings }.distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = viewModel.vaultState.value.data.settings)
-    val navCounts by remember(viewModel) {
-        viewModel.vaultState
+    val vm = viewModel
+    val settings by remember(vm) {
+        vm.vaultState.map { it.data.settings }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = vm.vaultState.value.data.settings)
+    val navCounts by remember(vm) {
+        vm.vaultState
             .map {
                 SettingsNavCounts(
                     keyCount = it.data.sshKeys.size,
@@ -52,12 +61,49 @@ fun SettingsScreen(
             }
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(
-        initialValue = viewModel.vaultState.value.data.let {
+        initialValue = vm.vaultState.value.data.let {
             SettingsNavCounts(it.sshKeys.size, it.shortcuts.size, it.templates.size, it.history.size)
         }
     )
+    val syncOverview by remember(vm) {
+        vm.syncUiState
+            .map {
+                SettingsSyncOverview(
+                    relay = it.relay,
+                    pairedCount = it.pairedDevices.size,
+                    inboxCount = it.inboxItems.size
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(
+        initialValue = vm.syncUiState.value.let {
+            SettingsSyncOverview(
+                relay = it.relay,
+                pairedCount = it.pairedDevices.size,
+                inboxCount = it.inboxItems.size
+            )
+        }
+    )
+
     var fontSizeSlider by remember(settings.terminalFontSize) {
         mutableFloatStateOf(settings.terminalFontSize.toFloat())
+    }
+
+    val relaySubtitle = remember(syncOverview) {
+        val relayLabel = if (syncOverview.relay.mode == "custom") {
+            val safeRedacted = syncOverview.relay.redactedUri
+                .ifBlank { syncOverview.relay.endpoint }
+                .substringBefore('#')
+                .ifBlank { "自定义中继" }
+            "自定义中继: $safeRedacted"
+        } else {
+            "官方默认中继 (TLS 1.3 + SPKI Pin)"
+        }
+        if (syncOverview.pairedCount > 0) {
+            "$relayLabel · 已配对 ${syncOverview.pairedCount} 台"
+        } else {
+            relayLabel
+        }
     }
 
     Scaffold(
@@ -84,8 +130,8 @@ fun SettingsScreen(
                 tint = AgCyan,
                 borderColor = AgCyan.copy(alpha = 0.5f),
                 title = "多端同步与中继",
-                subtitle = if (settings.syncRelayUrl.isNotBlank()) "自定义中继: ${settings.syncRelayUrl}"
-                else "一次性同步码 / 二维码端到端加密迁移 · 中继设置",
+                subtitle = relaySubtitle,
+                badgeText = if (syncOverview.inboxCount > 0) "待收 ${syncOverview.inboxCount}" else null,
                 onClick = onOpenSync
             )
             SettingsNavCard(
@@ -106,12 +152,12 @@ fun SettingsScreen(
             AgCard {
                 Text("终端体验与智能辅助", style = MaterialTheme.typography.titleMedium, color = AgText)
                 Spacer(Modifier.height(6.dp))
-                AgSwitchRow("实时命令自动补全", settings.autocompleteEnabled) { v -> viewModel.updateSettings { it.copy(autocompleteEnabled = v) } }
-                AgSwitchRow("终端顶部主机监控条 (CPU/RAM/RTT)", settings.monitorBarEnabled) { v -> viewModel.updateSettings { it.copy(monitorBarEnabled = v) } }
-                AgSwitchRow("安全粘贴拦截 (高危命令/隐藏字符)", settings.pasteGuardEnabled) { v -> viewModel.updateSettings { it.copy(pasteGuardEnabled = v) } }
-                AgSwitchRow("终端关键字语义高亮 (Error/Warn/IP)", settings.keywordHighlightEnabled) { v -> viewModel.updateSettings { it.copy(keywordHighlightEnabled = v) } }
-                AgSwitchRow("记录命令执行历史", settings.recordCommands) { v -> viewModel.updateSettings { it.copy(recordCommands = v) } }
-                AgSwitchRow("启动时自动检查更新", settings.checkUpdatesOnStartup) { v -> viewModel.updateSettings { it.copy(checkUpdatesOnStartup = v) } }
+                AgSwitchRow("实时命令自动补全", settings.autocompleteEnabled) { v -> vm.updateSettings { it.copy(autocompleteEnabled = v) } }
+                AgSwitchRow("终端顶部主机监控条 (CPU/RAM/RTT)", settings.monitorBarEnabled) { v -> vm.updateSettings { it.copy(monitorBarEnabled = v) } }
+                AgSwitchRow("安全粘贴拦截 (高危命令/隐藏字符)", settings.pasteGuardEnabled) { v -> vm.updateSettings { it.copy(pasteGuardEnabled = v) } }
+                AgSwitchRow("终端关键字语义高亮 (Error/Warn/IP)", settings.keywordHighlightEnabled) { v -> vm.updateSettings { it.copy(keywordHighlightEnabled = v) } }
+                AgSwitchRow("记录命令执行历史", settings.recordCommands) { v -> vm.updateSettings { it.copy(recordCommands = v) } }
+                AgSwitchRow("启动时自动检查更新", settings.checkUpdatesOnStartup) { v -> vm.updateSettings { it.copy(checkUpdatesOnStartup = v) } }
                 Spacer(Modifier.height(8.dp))
                 Text("终端字号：${fontSizeSlider.roundToInt()} sp", style = MaterialTheme.typography.bodyMedium, color = AgText)
                 Slider(
@@ -120,7 +166,7 @@ fun SettingsScreen(
                     onValueChangeFinished = {
                         val target = fontSizeSlider.roundToInt().coerceIn(10, 22)
                         if (target != settings.terminalFontSize) {
-                            viewModel.updateSettings { it.copy(terminalFontSize = target) }
+                            vm.updateSettings { it.copy(terminalFontSize = target) }
                         }
                     },
                     valueRange = 10f..22f,
@@ -129,9 +175,9 @@ fun SettingsScreen(
                 )
             }
 
-            SettingsTouchCursorCard(viewModel = viewModel)
-            SettingsSecuritySection(viewModel = viewModel)
-            SettingsUpdateCard(viewModel = viewModel)
+            SettingsTouchCursorCard(viewModel = vm)
+            SettingsSecuritySection(viewModel = vm)
+            SettingsUpdateCard(viewModel = vm)
             Spacer(Modifier.height(20.dp))
         }
     }
@@ -144,6 +190,7 @@ private fun SettingsNavCard(
     title: String,
     subtitle: String,
     borderColor: Color = AgBorder,
+    badgeText: String? = null,
     onClick: () -> Unit
 ) {
     AgCard(borderColor = borderColor, modifier = Modifier.clickable(onClick = onClick)) {
@@ -159,7 +206,15 @@ private fun SettingsNavCard(
             ) {
                 Icon(icon, null, tint = tint, modifier = Modifier.size(28.dp))
                 Column {
-                    Text(title, style = MaterialTheme.typography.titleMedium, color = AgText)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(title, style = MaterialTheme.typography.titleMedium, color = AgText)
+                        if (!badgeText.isNullOrBlank()) {
+                            AgBadge(text = badgeText, color = AgCyan)
+                        }
+                    }
                     Text(subtitle, style = MaterialTheme.typography.bodySmall, color = AgMuted)
                 }
             }
